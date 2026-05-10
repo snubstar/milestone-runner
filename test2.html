@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>THE COMING ERA</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --fg: #000000;
+        }
+
+        /* Basic Reset */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--fg);
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.1;
+            padding: 4vw;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Large Fluid Typography */
+        h1 {
+            font-size: 14vw; /* Scales with screen width */
+            font-weight: 600;
+            letter-spacing: -0.05em;
+            line-height: 0.85;
+            text-transform: uppercase;
+            margin-bottom: 5vw;
+            word-wrap: break-word;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4vw;
+            margin-top: 10vh;
+        }
+
+        .thought-block {
+            border-top: 2px solid var(--fg);
+            padding-top: 1.5vw;
+        }
+
+        .label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            margin-bottom: 2vw;
+            display: block;
+            font-weight: 700;
+        }
+
+        p {
+            font-size: 2.5vw;
+            line-height: 1.2;
+            letter-spacing: -0.02em;
+            max-width: 90%;
+        }
+
+        footer {
+            margin-top: 15vh;
+            display: flex;
+            justify-content: space-between;
+            font-size: 1rem;
+            font-weight: 500;
+        }
+
+        /* Mobile Adjustments */
+        @media (max-width: 768px) {
+            h1 { font-size: 18vw; }
+            .content-grid { grid-template-columns: 1fr; }
+            p { font-size: 1.5rem; }
+            footer { flex-direction: column; gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>The Coming<br>Era.</h1>
+    </header>
+
+    <main class="content-grid">
+        <div class="thought-block">
+            <span class="label">01 / Synthesis</span>
+            <p>We are transitioning from the age of information to the age of agency. Tools will no longer just inform us; they will act on our behalf.</p>
+        </div>
+
+        <div class="thought-block">
+            <span class="label">02 / Value</span>
+            <p>As synthetic content approaches infinite abundance, the value of the unoptimized, the physical, and the human-error will skyrocket.</p>
+        </div>
+    </main>
+
+    <footer>
+        <div>EST. 2025</div>
+        <div>A PROSPECTUS ON CHANGE</div>
+        <div><a href="mailto:hello@example.com" style="color:inherit; text-decoration: none;">CONTACT →</a></div>
+    </footer>
+
+</body>
+</html>
