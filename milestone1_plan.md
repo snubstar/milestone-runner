@@ -48,6 +48,7 @@ Milestone 1 should establish this layout:
 package.json
 tsconfig.json
 README.md
+.gitignore
 orchestrator.config.example.json
 schemas/
   config.schema.json
@@ -58,6 +59,7 @@ src/
   artifacts/
   checks/
   cli/
+    main.ts
   config/
   git/
   prompts/
@@ -65,18 +67,14 @@ src/
   runners/
     codex-exec/
     fake/
-  schemas/
   state/
-scripts/
-  ai-run-goal.ts
 tests/
   fixtures/
   smoke/
   unit/
-.agent-work/
 ```
 
-If `.agent-work/` is created during implementation, it should be treated as generated runtime output and excluded from normal source control once the repository has Git configured.
+`.agent-work/` is generated runtime output and should not be created as part of the scaffold. It should be listed in `.gitignore`, and later runner code should create it on demand.
 
 ## Work Plan
 
@@ -88,15 +86,29 @@ Expected outputs:
 
 - `package.json`
 - `tsconfig.json`
+- `.gitignore`
 - `src/` module directories
-- `scripts/ai-run-goal.ts`
+- `src/cli/main.ts`
 - `tests/` directories
 
 Notes:
 
 - Keep dependencies minimal.
 - Prefer built-in Node APIs where reasonable.
+- Configure `package.json` with a `bin` entry that points to the compiled CLI output.
 - Do not add provider SDK dependencies yet; the first real runner adapter will shell out to `codex exec`.
+- Do not create `.agent-work/` yet.
+
+`.gitignore` should include at least:
+
+```text
+node_modules/
+dist/
+coverage/
+.agent-work/
+orchestrator.config.json
+*.log
+```
 
 ### Step 2: Document The Prototype Contract
 
@@ -176,9 +188,11 @@ Initial config fields:
   "runner": {
     "type": "codex-exec",
     "command": "codex",
-    "sandboxForPlanning": "read-only",
-    "sandboxForImplementation": "workspace-write",
-    "approvalPolicy": "never"
+    "options": {
+      "sandboxForPlanning": "read-only",
+      "sandboxForImplementation": "workspace-write",
+      "approvalPolicy": "never"
+    }
   },
   "maxFixAttempts": 2,
   "artifactRoot": ".agent-work"
@@ -189,6 +203,7 @@ Notes:
 
 - `checks` should be an array of shell commands to run during verification.
 - Empty `checks` is valid for the earliest prototype but must be reported clearly later.
+- Runner-specific settings belong under `runner.options` so future adapters can use different option shapes.
 - The example config is not a local secret and can be committed.
 
 Expected outputs:
@@ -213,6 +228,8 @@ The state model should support:
 - Milestone statuses.
 - Fix attempt counts.
 - Last error.
+
+The schema should reference generated artifact paths as strings only. It should not require `.agent-work/` to exist during Milestone 1.
 
 Recommended status values:
 
@@ -316,10 +333,12 @@ Milestone 1 may create placeholder files or only document the convention. If pla
 Milestone 1 should be considered complete when:
 
 - The proposed project structure exists.
+- `.gitignore` excludes generated output, dependency folders, build output, coverage, logs, and local config.
 - `README.md` explains the prototype contract, Git safety model, artifact layout, config format, and schema purpose.
 - `orchestrator.config.example.json` exists and matches the documented config format.
 - JSON schema files exist for config, state, milestone metadata, and review verdicts.
 - Prompt-template placement is documented.
+- The scaffold does not create `.agent-work/`.
 - No real agent orchestration is attempted yet.
 
 ## Risks And Mitigations
@@ -347,5 +366,5 @@ Milestone 2 should start from these completed contracts and implement:
 - Git preflight checks.
 - A command runner abstraction.
 - An `AgentRunner` interface.
-- A `CodexExecRunner` adapter plan.
+- A `CodexExecRunner` adapter skeleton.
 - A fake runner for deterministic unit tests.
