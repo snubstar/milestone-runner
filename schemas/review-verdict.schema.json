@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/snubstar/automation/schemas/review-verdict.schema.json",
+  "title": "Agent Review Verdict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings", "reviewedArtifacts"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "needs_human_review"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "reviewedArtifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "file", "issue", "suggestedFix", "blocking"],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "file": {
+          "type": ["string", "null"],
+          "description": "Repository-relative file path when the finding is file-specific; null for cross-cutting findings."
+        },
+        "issue": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggestedFix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocking": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
+

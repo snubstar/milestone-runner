@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/snubstar/automation/schemas/config.schema.json",
+  "title": "Agent Milestone Orchestrator Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checks", "runner", "maxFixAttempts", "artifactRoot"],
+  "properties": {
+    "checks": {
+      "type": "array",
+      "description": "Shell commands to run during deterministic verification phases.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "runner": {
+      "type": "object",
+      "description": "Selected agent runner adapter and its adapter-specific options.",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["codex-exec", "fake"]
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "sandboxForPlanning",
+            "sandboxForImplementation",
+            "approvalPolicy"
+          ],
+          "properties": {
+            "sandboxForPlanning": {
+              "type": "string",
+              "enum": ["read-only", "workspace-write", "danger-full-access"]
+            },
+            "sandboxForImplementation": {
+              "type": "string",
+              "enum": ["read-only", "workspace-write", "danger-full-access"]
+            },
+            "approvalPolicy": {
+              "type": "string",
+              "enum": ["never", "on-request", "on-failure", "untrusted"]
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "codex-exec"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["command", "options"]
+          }
+        }
+      ]
+    },
+    "maxFixAttempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "artifactRoot": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

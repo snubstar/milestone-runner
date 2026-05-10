@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/snubstar/automation/schemas/state.schema.json",
+  "title": "Agent Milestone Orchestrator State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "goal",
+    "currentPhase",
+    "status",
+    "currentMilestoneId",
+    "artifactRoot",
+    "runDir",
+    "git",
+    "config",
+    "milestoneStatuses",
+    "fixAttempts",
+    "artifacts",
+    "lastError",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currentPhase": {
+      "$ref": "#/$defs/phase"
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "currentMilestoneId": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "artifactRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "planningOnly",
+        "root",
+        "startSha",
+        "dirtyAtStart",
+        "dirtyOverride",
+        "statusPorcelain"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "planningOnly": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": ["string", "null"]
+        },
+        "startSha": {
+          "type": ["string", "null"]
+        },
+        "dirtyAtStart": {
+          "type": "boolean"
+        },
+        "dirtyOverride": {
+          "type": "boolean"
+        },
+        "statusPorcelain": {
+          "type": "string"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "snapshot"],
+      "properties": {
+        "path": {
+          "type": ["string", "null"]
+        },
+        "snapshot": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "milestoneStatuses": {
+      "type": "object",
+      "description": "Map of milestone id to orchestration status.",
+      "additionalProperties": {
+        "$ref": "#/$defs/milestoneStatus"
+      }
+    },
+    "fixAttempts": {
+      "type": "object",
+      "description": "Map of milestone id to completed fix attempt count.",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "artifacts": {
+      "$ref": "#/$defs/artifacts"
+    },
+    "lastError": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["message", "phase", "occurredAt"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "details": {
+          "type": ["string", "object", "array", "null"]
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "phase": {
+      "type": "string",
+      "enum": [
+        "initialized",
+        "planning",
+        "plan_reviewing",
+        "ready_for_milestone",
+        "implementing",
+        "checking",
+        "reviewing",
+        "fixing",
+        "passed",
+        "failed",
+        "needs_human_review"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "initialized",
+        "planning",
+        "plan_reviewing",
+        "ready_for_milestone",
+        "implementing",
+        "checking",
+        "reviewing",
+        "fixing",
+        "passed",
+        "failed",
+        "needs_human_review"
+      ]
+    },
+    "milestoneStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "planned",
+        "implementing",
+        "checking",
+        "reviewing",
+        "fixing",
+        "passed",
+        "failed",
+        "needs_human_review"
+      ]
+    },
+    "artifactPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifactMap": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/artifactPath"
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "majorPlan": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "majorPlanReview": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "finalMajorPlanMarkdown": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "finalMajorPlanJson": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "milestones": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "milestonePlans": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "diffs": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "checks": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "reviews": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "summaries": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "fixes": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "logs": {
+          "$ref": "#/$defs/artifactMap"
+        }
+      }
+    }
+  }
+}
+

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/snubstar/automation/schemas/milestones.schema.json",
+  "title": "Agent Milestone Metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["milestones"],
+  "properties": {
+    "milestones": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/milestone"
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "milestoneStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "planned",
+        "implementing",
+        "checking",
+        "reviewing",
+        "fixing",
+        "passed",
+        "failed",
+        "needs_human_review"
+      ]
+    },
+    "milestone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "summary",
+        "scope",
+        "acceptanceCriteria",
+        "verification",
+        "dependencies",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scope": {
+          "$ref": "#/$defs/stringList"
+        },
+        "acceptanceCriteria": {
+          "$ref": "#/$defs/stringList"
+        },
+        "verification": {
+          "$ref": "#/$defs/stringList"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "uniqueItems": true
+        },
+        "status": {
+          "$ref": "#/$defs/milestoneStatus"
+        }
+      }
+    }
+  }
+}
+

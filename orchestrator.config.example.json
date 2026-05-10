@@ -1,0 +1,15 @@
+{
+  "checks": [],
+  "runner": {
+    "type": "codex-exec",
+    "command": "codex",
+    "options": {
+      "sandboxForPlanning": "read-only",
+      "sandboxForImplementation": "workspace-write",
+      "approvalPolicy": "never"
+    }
+  },
+  "maxFixAttempts": 2,
+  "artifactRoot": ".agent-work"
+}
+

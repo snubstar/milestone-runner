@@ -1,0 +1,424 @@
+# Agent Milestone Orchestrator
+
+Agent Milestone Orchestrator is a local TypeScript CLI prototype for automating a structured agent-assisted development loop.
+
+The first real runner adapter will use Codex Exec, but the orchestration core is intended to stay runner-agnostic. Codex, fake test runners, and future agent providers should all plug into the same workflow through a shared runner interface.
+
+## Problem
+
+Manual agent-assisted coding often repeats the same coordination loop:
+
+```text
+goal -> major plan -> plan review -> patched plan -> milestone plan -> implementation -> verification -> diff review -> fix loop -> milestone summary
+```
+
+This project turns that repeated meta-work into explicit local infrastructure. The orchestrator owns state, artifacts, retries, verification gates, and milestone progression. The selected agent runner handles narrow tasks inside that larger workflow.
+
+## Orchestration Contract
+
+The orchestrator, not the agent, controls:
+
+- Which phase runs next.
+- Where artifacts are written.
+- Which milestone is active.
+- Whether deterministic checks passed.
+- Whether a review verdict blocks progress.
+- How many fix attempts are allowed.
+- When a run stops for human review.
+
+Agent runners are expected to do scoped work only:
+
+- Generate a plan.
+- Review a plan.
+- Implement one milestone.
+- Review a diff.
+- Fix specific findings.
+
+They should not decide when the whole workflow is complete.
+
+## First Prototype Scope
+
+The first implementation target is a one-milestone local workflow:
+
+```text
+goal
+-> major plan
+-> plan review
+-> final major plan
+-> milestone 1 plan
+-> implement milestone 1
+-> run checks
+-> review diff
+-> fix if needed
+-> summarize
+-> stop
+```
+
+Multi-milestone automation comes only after the one-milestone loop is reliable, testable, and inspectable.
+
+## Git Safety
+
+Implementation-capable runs require a Git repository because the tool depends on Git for diff capture and safety checks.
+
+The intended safety model is strict by default:
+
+- Planning-only phases may eventually support non-Git directories.
+- Implementation, diff capture, and fix loops require Git.
+- Implementation-capable phases require a clean working tree by default.
+- The orchestrator records the starting commit SHA when available.
+- Diff capture uses `git diff`.
+- Overrides for dirty trees or non-Git operation must be explicit and visible in run state.
+
+Implementation-capable phases must run these preflight checks before an agent can edit files:
+
+```bash
+git rev-parse --show-toplevel
+git rev-parse HEAD
+git status --porcelain
+```
+
+Expected behavior:
+
+- If `git rev-parse --show-toplevel` fails, the run may continue only in planning-only mode.
+- If `git status --porcelain` returns any tracked or untracked changes, implementation must stop unless a future explicit dirty-tree override is enabled.
+- If a dirty-tree override is enabled, the run state must record that override and the dirty status observed at startup.
+- If `git rev-parse HEAD` fails because the repository has no commits, implementation must stop until an initial commit exists.
+- Diffs for review and summaries must be captured from Git, not inferred from agent output.
+
+The future `state.json` schema must include Git safety fields equivalent to:
+
+```json
+{
+  "git": {
+    "required": true,
+    "planningOnly": false,
+    "root": "/absolute/path/to/repo",
+    "startSha": "commit-sha",
+    "dirtyAtStart": false,
+    "dirtyOverride": false,
+    "statusPorcelain": ""
+  }
+}
+```
+
+These fields make safety decisions auditable after the run completes or stops.
+
+## Artifacts
+
+Run output belongs under `.agent-work/<run-id>/`.
+
+The run id should be unique and stable for the life of a workflow. A timestamp-based id is acceptable for the prototype.
+
+Initial run layout:
+
+```text
+.agent-work/<run-id>/
+  00-goal.txt
+  state.json
+  logs/
+    run.log
+  plans/
+    01-major-plan.md
+    02-major-plan-review.md
+    03-final-major-plan.md
+    04-final-major-plan.json
+  milestones/
+    05-milestones.json
+    10-milestone-1-plan.md
+    14-milestone-1-summary.md
+  reviews/
+    20-milestone-1-review.json
+    23-milestone-1-review-after-fix-<n>.json
+  checks/
+    13-milestone-1-checks.txt
+    22-milestone-1-checks-after-fix-<n>.txt
+  diffs/
+    12-milestone-1.diff
+  fixes/
+    21-milestone-1-fix-attempt-<n>.md
+```
+
+`.agent-work/` is generated runtime output. It is ignored by Git and should be created by runner code only when a workflow executes.
+
+Human-readable Markdown artifacts are for review. Machine-readable JSON artifacts are for orchestration decisions.
+
+Artifact filenames should keep their numeric prefixes stable so a run can be inspected in workflow order. When the same phase repeats, such as fix attempts, use `<n>` starting at `1`.
+
+The future `state.json` schema must track artifact paths as relative paths from the run directory. The shape should be equivalent to:
+
+```json
+{
+  "artifacts": {
+    "goal": "00-goal.txt",
+    "majorPlan": "plans/01-major-plan.md",
+    "majorPlanReview": "plans/02-major-plan-review.md",
+    "finalMajorPlanMarkdown": "plans/03-final-major-plan.md",
+    "finalMajorPlanJson": "plans/04-final-major-plan.json",
+    "milestones": "milestones/05-milestones.json",
+    "milestonePlans": {
+      "1": "milestones/10-milestone-1-plan.md"
+    },
+    "diffs": {
+      "1": "diffs/12-milestone-1.diff"
+    },
+    "checks": {
+      "1": "checks/13-milestone-1-checks.txt"
+    },
+    "reviews": {
+      "1": "reviews/20-milestone-1-review.json"
+    },
+    "summaries": {
+      "1": "milestones/14-milestone-1-summary.md"
+    }
+  }
+}
+```
+
+The orchestrator should write artifact paths to state when each artifact is produced. Missing paths mean the phase has not completed.
+
+## State
+
+Each run writes a `state.json` file in its run directory. This file is the source of truth for resuming, auditing, and deciding whether the next phase is allowed to run.
+
+The state schema lives in [schemas/state.schema.json](./schemas/state.schema.json).
+
+Conceptually, state contains:
+
+- `runId`: stable id for the workflow run.
+- `goal`: original user goal.
+- `currentPhase`: current orchestration phase.
+- `status`: current overall status.
+- `currentMilestoneId`: active milestone id, or `null` before milestone work begins.
+- `artifactRoot` and `runDir`: generated artifact locations.
+- `git`: safety metadata, including root, starting commit SHA, dirty-tree status, and override flags.
+- `config`: resolved config path and optional config snapshot.
+- `milestoneStatuses`: map of milestone id to status.
+- `fixAttempts`: map of milestone id to completed fix attempts.
+- `artifacts`: run-relative artifact path map.
+- `lastError`: structured failure information, or `null`.
+- `createdAt` and `updatedAt`: ISO 8601 timestamps.
+
+Initial status and phase values are:
+
+```text
+initialized
+planning
+plan_reviewing
+ready_for_milestone
+implementing
+checking
+reviewing
+fixing
+passed
+failed
+needs_human_review
+```
+
+State should reference artifact paths as strings only. The schema must not require `.agent-work/` to exist before a run creates it.
+
+## Milestone Metadata
+
+Markdown plans are for humans. Machine-readable milestone metadata is stored in `milestones/05-milestones.json` and is the source of truth for orchestration.
+
+The milestone metadata schema lives in [schemas/milestones.schema.json](./schemas/milestones.schema.json).
+
+Initial shape:
+
+```json
+{
+  "milestones": [
+    {
+      "id": 1,
+      "title": "Prototype foundations",
+      "summary": "Create the project scaffold and contracts.",
+      "scope": ["Create TypeScript scaffold", "Define schemas"],
+      "acceptanceCriteria": ["Scaffold exists", "Schemas are valid JSON"],
+      "verification": ["npm run typecheck"],
+      "dependencies": [],
+      "status": "pending"
+    }
+  ]
+}
+```
+
+Milestone fields:
+
+- `id`: stable positive integer used by state and artifact maps.
+- `title`: short human-readable milestone name.
+- `summary`: concise purpose of the milestone.
+- `scope`: list of included work items.
+- `acceptanceCriteria`: list of conditions required to accept the milestone.
+- `verification`: list of expected check commands or manual verification notes.
+- `dependencies`: milestone ids that must complete first.
+- `status`: orchestration status for the milestone.
+
+Milestone metadata needs semantic validation in addition to JSON Schema validation:
+
+- `id` values must be unique.
+- `dependencies` must reference existing milestone ids.
+- A milestone cannot depend on itself.
+- Dependencies should point to earlier milestones unless a future planner explicitly supports a dependency graph.
+
+Milestone status values are:
+
+```text
+pending
+planned
+implementing
+checking
+reviewing
+fixing
+passed
+failed
+needs_human_review
+```
+
+## Review Verdicts
+
+Review artifacts are machine-readable JSON files. The orchestrator must decide whether to proceed from the JSON verdict, not from free-form prose.
+
+The review verdict schema lives in [schemas/review-verdict.schema.json](./schemas/review-verdict.schema.json).
+
+Initial shape:
+
+```json
+{
+  "verdict": "fail",
+  "summary": "The milestone implementation is close, but one blocking issue remains.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "src/example.ts",
+      "issue": "The implementation does not handle the empty input case.",
+      "suggestedFix": "Add an explicit empty-input branch and a focused test.",
+      "blocking": true
+    }
+  ],
+  "reviewedArtifacts": [
+    "milestones/10-milestone-1-plan.md",
+    "diffs/12-milestone-1.diff",
+    "checks/13-milestone-1-checks.txt"
+  ]
+}
+```
+
+Verdict behavior:
+
+- `pass`: the milestone may be accepted if deterministic checks also passed or were explicitly unavailable.
+- `fail`: the orchestrator should run a scoped fix attempt when fix attempts remain.
+- `needs_human_review`: the orchestrator must stop and report the review summary.
+
+Finding fields:
+
+- `severity`: `high`, `medium`, or `low`.
+- `file`: repository-relative file path, or `null` for cross-cutting findings.
+- `issue`: concrete problem.
+- `suggestedFix`: actionable fix guidance.
+- `blocking`: whether the finding blocks milestone acceptance.
+
+## Configuration
+
+The example configuration lives in [orchestrator.config.example.json](./orchestrator.config.example.json). Local runtime configuration should use `orchestrator.config.json`, which is ignored by Git.
+
+Initial config shape:
+
+```json
+{
+  "checks": [],
+  "runner": {
+    "type": "codex-exec",
+    "command": "codex",
+    "options": {
+      "sandboxForPlanning": "read-only",
+      "sandboxForImplementation": "workspace-write",
+      "approvalPolicy": "never"
+    }
+  },
+  "maxFixAttempts": 2,
+  "artifactRoot": ".agent-work"
+}
+```
+
+Config fields:
+
+- `checks`: deterministic shell commands to run during verification phases. An empty array is valid for early prototypes, but later workflow output must report that no checks were configured.
+- `runner.type`: selected agent runner adapter. Initial supported values are `codex-exec` and `fake`.
+- `runner.command`: executable command for real subprocess-backed runners. For `codex-exec`, this defaults to `codex`.
+- `runner.options`: adapter-specific options. Codex-specific sandbox and approval settings belong here rather than at the top level.
+- `maxFixAttempts`: maximum number of review/fix retries before stopping.
+- `artifactRoot`: root directory for generated run artifacts.
+
+The config schema lives in [schemas/config.schema.json](./schemas/config.schema.json).
+
+## Runners
+
+The core abstraction is an `AgentRunner`.
+
+Planned runner adapters:
+
+- `FakeRunner`: deterministic test runner for unit and fixture tests.
+- `CodexExecRunner`: first real runner adapter, implemented by shelling out to `codex exec`.
+
+The fake runner should be usable before any real agent calls are wired in. This keeps the state machine, artifact handling, and review gates testable without model calls.
+
+## Prompt Templates
+
+Agent prompt templates live under `src/prompts/`. They are versioned files so workflow prompts can be reviewed, tested, and changed independently from orchestration code.
+
+Initial prompt template files:
+
+```text
+src/prompts/major-plan.md
+src/prompts/major-plan-review.md
+src/prompts/final-plan-json.md
+src/prompts/milestone-plan.md
+src/prompts/implement-milestone.md
+src/prompts/review-milestone.md
+src/prompts/fix-review-findings.md
+```
+
+Current templates are placeholders. Later milestones will replace them with executable prompt templates that declare required inputs, expected outputs, and referenced schemas.
+
+## Milestone Sequence
+
+The project plan is tracked in [general_plan.md](./general_plan.md).
+
+Current milestone detail is tracked in [milestone1_plan.md](./milestone1_plan.md).
+
+High-level sequence:
+
+1. Prototype foundations.
+2. Core orchestrator skeleton.
+3. Planning and plan review loop.
+4. One-milestone implementation loop.
+5. Review and fix gate.
+6. Test harness.
+7. Multi-milestone state machine.
+8. Hardening and developer experience.
+9. Optional CI and provider integrations.
+
+## Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run type checking:
+
+```bash
+npm run typecheck
+```
+
+Build:
+
+```bash
+npm run build
+```
+
+Run the current scaffold CLI after building:
+
+```bash
+node dist/cli/main.js "example goal"
+```
