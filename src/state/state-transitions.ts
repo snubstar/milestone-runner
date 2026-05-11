@@ -123,6 +123,66 @@ export function completePlanningState(
   };
 }
 
+export function advanceToMilestoneState(
+  state: RunState,
+  milestoneId: number,
+  now = new Date(),
+): RunState {
+  return {
+    ...state,
+    currentPhase: "ready_for_milestone",
+    status: "ready_for_milestone",
+    currentMilestoneId: milestoneId,
+    lastError: null,
+    updatedAt: now.toISOString(),
+  };
+}
+
+export function completeGoalState(
+  state: RunState,
+  now = new Date(),
+): RunState {
+  return {
+    ...state,
+    currentPhase: "passed",
+    status: "passed",
+    currentMilestoneId: null,
+    lastError: null,
+    updatedAt: now.toISOString(),
+  };
+}
+
+export interface StopGoalForHumanReviewOptions {
+  message: string;
+  details?: string | object | unknown[] | null;
+  currentMilestoneId?: number | null;
+}
+
+export function stopGoalForHumanReviewState(
+  state: RunState,
+  options: StopGoalForHumanReviewOptions,
+  now = new Date(),
+): RunState {
+  const timestamp = now.toISOString();
+
+  return {
+    ...state,
+    currentPhase: "needs_human_review",
+    status: "needs_human_review",
+    currentMilestoneId:
+      options.currentMilestoneId === undefined
+        ? state.currentMilestoneId
+        : options.currentMilestoneId,
+    lastError: {
+      message: options.message,
+      phase: "needs_human_review",
+      occurredAt: timestamp,
+      ...(options.details === undefined ? {} : { details: options.details }),
+    },
+    updatedAt: timestamp,
+  };
+}
+
 export interface FailStateOptions {
   phase: OrchestratorPhase;
   message: string;

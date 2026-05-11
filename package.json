@@ -8,8 +8,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test dist-test/tests/unit/*.test.js",
-    "test:build": "tsc -p tsconfig.test.json && npm test",
+    "test": "npm run test:unit",
+    "test:unit": "node --test dist-test/tests/unit/*.test.js",
+    "test:build": "tsc -p tsconfig.test.json && npm run test:unit",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

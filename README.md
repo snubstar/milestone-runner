@@ -36,9 +36,9 @@ Agent runners are expected to do scoped work only:
 
 They should not decide when the whole workflow is complete.
 
-## First Prototype Scope
+## Current Prototype Scope
 
-The first implementation target is a one-milestone local workflow:
+The current prototype is a deterministic multi-milestone local workflow:
 
 ```text
 goal
@@ -51,10 +51,12 @@ goal
 -> review diff
 -> fix if needed
 -> summarize
--> stop
+-> advance to the next runnable milestone
+-> repeat milestone work until complete or blocked
+-> final goal summary
 ```
 
-Multi-milestone automation comes only after the one-milestone loop is reliable, testable, and inspectable.
+The fake runner path can complete all generated fake milestones offline. Real implementation and review execution through `codex-exec` is still intentionally gated; Milestone 8 owns the user-facing resume and execution ergonomics.
 
 ## Git Safety
 
@@ -85,7 +87,7 @@ Expected behavior:
 - If `git rev-parse HEAD` fails because the repository has no commits, implementation must stop until an initial commit exists.
 - Diffs for review and summaries must be captured from Git, not inferred from agent output.
 
-The future `state.json` schema must include Git safety fields equivalent to:
+The `state.json` schema includes Git safety fields equivalent to:
 
 ```json
 {
@@ -124,18 +126,22 @@ Initial run layout:
     04-final-major-plan.json
   milestones/
     05-milestones.json
-    10-milestone-1-plan.md
-    14-milestone-1-summary.md
+    10-milestone-<id>-plan.md
+    11-milestone-<id>-implementation.md
+    14-milestone-<id>-summary.md
+    25-milestone-<id>-review-summary.md
+    90-goal-summary.md
   reviews/
-    20-milestone-1-review.json
-    23-milestone-1-review-after-fix-<n>.json
+    20-milestone-<id>-review.json
+    24-milestone-<id>-review-after-fix-<n>.json
   checks/
-    13-milestone-1-checks.txt
-    22-milestone-1-checks-after-fix-<n>.txt
+    13-milestone-<id>-checks.txt
+    23-milestone-<id>-checks-after-fix-<n>.txt
   diffs/
-    12-milestone-1.diff
+    12-milestone-<id>.diff
+    22-milestone-<id>-diff-after-fix-<n>.diff
   fixes/
-    21-milestone-1-fix-attempt-<n>.md
+    21-milestone-<id>-fix-attempt-<n>.md
 ```
 
 `.agent-work/` is generated runtime output. It is ignored by Git and should be created by runner code only when a workflow executes.
@@ -144,7 +150,7 @@ Human-readable Markdown artifacts are for review. Machine-readable JSON artifact
 
 Artifact filenames should keep their numeric prefixes stable so a run can be inspected in workflow order. When the same phase repeats, such as fix attempts, use `<n>` starting at `1`.
 
-The future `state.json` schema must track artifact paths as relative paths from the run directory. The shape should be equivalent to:
+The `state.json` schema tracks artifact paths as relative paths from the run directory. The shape is equivalent to:
 
 ```json
 {
@@ -158,6 +164,9 @@ The future `state.json` schema must track artifact paths as relative paths from 
     "milestonePlans": {
       "1": "milestones/10-milestone-1-plan.md"
     },
+    "implementations": {
+      "1": "milestones/11-milestone-1-implementation.md"
+    },
     "diffs": {
       "1": "diffs/12-milestone-1.diff"
     },
@@ -168,7 +177,9 @@ The future `state.json` schema must track artifact paths as relative paths from 
       "1": "reviews/20-milestone-1-review.json"
     },
     "summaries": {
-      "1": "milestones/14-milestone-1-summary.md"
+      "1": "milestones/14-milestone-1-summary.md",
+      "1-review": "milestones/25-milestone-1-review-summary.md",
+      "goal": "milestones/90-goal-summary.md"
     }
   }
 }
@@ -205,6 +216,7 @@ initialized
 planning
 plan_reviewing
 ready_for_milestone
+ready_for_review
 implementing
 checking
 reviewing
@@ -215,6 +227,10 @@ needs_human_review
 ```
 
 State should reference artifact paths as strings only. The schema must not require `.agent-work/` to exist before a run creates it.
+
+The goal workflow uses `milestoneStatuses` and `currentMilestoneId` to choose work. After one milestone passes, the selector advances to the lowest pending milestone whose dependencies passed. The run stops instead of advancing when implementation fails, checks fail, review needs human input, fix attempts are exhausted, dependencies are blocked, or persisted state is inconsistent.
+
+Resume behavior in the core workflow is conservative. Stable states such as `ready_for_milestone`, `ready_for_review`, and `passed` with pending work can continue from `state.json`. Ambiguous transient states such as partial implementation or review work stop as `needs_human_review` unless existing artifacts prove the next safe state.
 
 ## Milestone Metadata
 
@@ -264,6 +280,7 @@ Milestone status values are:
 ```text
 pending
 planned
+ready_for_review
 implementing
 checking
 reviewing
@@ -383,7 +400,7 @@ Current templates are placeholders. Later milestones will replace them with exec
 
 The project plan is tracked in [general_plan.md](./general_plan.md).
 
-Current milestone detail is tracked in [milestone1_plan.md](./milestone1_plan.md).
+Current milestone detail is tracked in [milestone7_plan.md](./milestone7_plan.md).
 
 High-level sequence:
 
@@ -417,8 +434,53 @@ Build:
 npm run build
 ```
 
-Run the current scaffold CLI after building:
+Run the current CLI after building:
 
 ```bash
-node dist/cli/main.js "example goal"
+node dist/cli/main.js --runner fake "example goal"
 ```
+
+The full fake path plans, implements, checks, reviews, and advances through every generated fake milestone. It prints the final state, sorted milestone statuses, and the final goal summary artifact when one is available:
+
+```text
+State: passed
+Current milestone: none
+Milestones:
+  1: passed
+  2: passed
+Final summary artifact: milestones/90-goal-summary.md
+```
+
+Planning-only operation remains available:
+
+```bash
+node dist/cli/main.js --planning-only --runner fake "example goal"
+```
+
+## Testing
+
+Normal local verification before handing off changes:
+
+```bash
+npm run typecheck
+npm run build
+npm run test:build
+```
+
+Command matrix:
+
+- `npm run typecheck`: checks production TypeScript without writing build output.
+- `npm run build`: compiles the CLI and production modules into `dist/`.
+- `npm run test:build`: compiles `src/` and `tests/` into `dist-test/`, then runs every required deterministic test.
+- `npm test`: runs the already-compiled unit test suite from `dist-test/tests/unit/*.test.js`.
+
+Required deterministic tests currently live under `tests/unit`, so the default test command intentionally discovers that compiled path. If required tests move under another folder such as `tests/integration`, update `package.json` so `npm run test:build` runs them too.
+
+Test helpers live under `tests/helpers`:
+
+- `fixture-repo.ts`: temporary Git repositories with committed fixture files.
+- `run-fixture.ts`: ready-state run directories, configs, and state setup.
+- `scenario-runner.ts`: scripted runner phases, file mutations, failures, thrown errors, and prompt/artifact capture.
+- `assertions.ts`: generated `state.json` shape checks plus milestone metadata and review verdict validator helpers.
+
+Default tests are deterministic and offline. `FakeRunner` covers the CLI happy path, while `ScenarioRunner` is used by workflow tests for precise success and failure cases. No `codex-exec` smoke test is currently enabled; if one is added later, it should be skipped by default and kept out of `npm test`.

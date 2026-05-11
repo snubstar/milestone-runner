@@ -121,6 +121,88 @@ test("FakeRunner returns deterministic milestone implementation plan", async () 
   });
 });
 
+test("FakeRunner returns milestone-specific outputs for generated fake milestones", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-runner-"));
+  try {
+    const runner = new FakeRunner();
+    const planOne = await runner.run({
+      phase: "milestone_plan",
+      prompt: "plan one",
+      milestoneId: 1,
+      artifacts: {
+        milestones: "milestones/05-milestones.json",
+      },
+    });
+    const planTwo = await runner.run({
+      phase: "milestone_plan",
+      prompt: "plan two",
+      milestoneId: 2,
+      artifacts: {
+        milestones: "milestones/05-milestones.json",
+      },
+    });
+
+    assert.equal(planOne.exitCode, 0);
+    assert.equal(planTwo.exitCode, 0);
+    assert.match(planOne.text, /^# Fake Milestone 1 Plan/);
+    assert.match(planTwo.text, /^# Fake Milestone 2 Plan/);
+    assert.match(planOne.text, /fake-milestone-1-implementation\.txt/);
+    assert.match(planTwo.text, /fake-milestone-2-implementation\.txt/);
+
+    const implementationOne = await runner.run({
+      phase: "implement_milestone",
+      prompt: "implement one",
+      cwd: tempDir,
+      milestoneId: 1,
+      artifacts: {
+        milestonePlan: "milestones/10-milestone-1-plan.md",
+      },
+    });
+    const implementationTwo = await runner.run({
+      phase: "implement_milestone",
+      prompt: "implement two",
+      cwd: tempDir,
+      milestoneId: 2,
+      artifacts: {
+        milestonePlan: "milestones/10-milestone-2-plan.md",
+      },
+    });
+
+    const outputOne = path.join(tempDir, "fake-milestone-1-implementation.txt");
+    const outputTwo = path.join(tempDir, "fake-milestone-2-implementation.txt");
+    assert.equal(implementationOne.exitCode, 0);
+    assert.equal(implementationTwo.exitCode, 0);
+    assert.equal(implementationOne.metadata?.outputPath, outputOne);
+    assert.equal(implementationTwo.metadata?.outputPath, outputTwo);
+    assert.match(await readFile(outputOne, "utf8"), /Milestone: 1/);
+    assert.match(await readFile(outputTwo, "utf8"), /Milestone: 2/);
+
+    const reviewTwo = await runner.run({
+      phase: "review_milestone",
+      prompt: "review two",
+      milestoneId: 2,
+      artifacts: {
+        diff: "diffs/12-milestone-2.diff",
+        checks: "checks/13-milestone-2-checks.txt",
+      },
+    });
+
+    assert.equal(reviewTwo.exitCode, 0);
+    const parsed = parseReviewVerdictJson(reviewTwo.text);
+    assert.equal(parsed.ok, true);
+    if (parsed.ok) {
+      assert.equal(parsed.value.verdict, "pass");
+      assert.equal(parsed.value.summary, "Fake review accepted milestone 2.");
+      assert.deepEqual(parsed.value.reviewedArtifacts, [
+        "diffs/12-milestone-2.diff",
+        "checks/13-milestone-2-checks.txt",
+      ]);
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("FakeRunner writes deterministic milestone implementation output inside cwd", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-runner-"));
   try {

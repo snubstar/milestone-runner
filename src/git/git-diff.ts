@@ -8,15 +8,102 @@ export interface CaptureGitDiffOptions {
   cwd: string;
   commandRunner: CommandRunner;
   excludedPaths?: string[];
+  baseTree?: string;
+}
+
+export interface CaptureGitTreeOptions {
+  cwd: string;
+  commandRunner: CommandRunner;
+  excludedPaths?: string[];
 }
 
 export type CaptureGitDiffResult =
   | { ok: true; diff: string }
   | { ok: false; error: string; details?: CommandResult };
 
+export type CaptureGitTreeResult =
+  | { ok: true; tree: string }
+  | { ok: false; error: string; details?: CommandResult };
+
 export async function captureGitDiff(
   options: CaptureGitDiffOptions,
 ): Promise<CaptureGitDiffResult> {
+  const setup = await prepareGitDiffSetup(options);
+  if (!setup.ok) return setup;
+
+  const index = await populateTemporaryIndex(setup.value);
+  if (!index.ok) return index;
+
+  try {
+    const diffResult = await options.commandRunner.run({
+      command: "git",
+      args: [
+        "diff",
+        "--cached",
+        "--binary",
+        options.baseTree ?? "HEAD",
+        "--",
+        ...setup.value.pathspecs,
+      ],
+      cwd: setup.value.gitRoot,
+      env: index.env,
+    });
+    if (diffResult.exitCode !== 0) {
+      return {
+        ok: false,
+        error: "Failed to capture Git diff.",
+        details: diffResult,
+      };
+    }
+
+    return { ok: true, diff: diffResult.stdout };
+  } finally {
+    await rm(index.tempDir, { recursive: true, force: true });
+  }
+}
+
+export async function captureGitTree(
+  options: CaptureGitTreeOptions,
+): Promise<CaptureGitTreeResult> {
+  const setup = await prepareGitDiffSetup(options);
+  if (!setup.ok) return setup;
+
+  const index = await populateTemporaryIndex(setup.value);
+  if (!index.ok) return index;
+
+  try {
+    const treeResult = await options.commandRunner.run({
+      command: "git",
+      args: ["write-tree"],
+      cwd: setup.value.gitRoot,
+      env: index.env,
+    });
+    if (treeResult.exitCode !== 0) {
+      return {
+        ok: false,
+        error: "Failed to capture Git tree.",
+        details: treeResult,
+      };
+    }
+
+    return { ok: true, tree: treeResult.stdout.trim() };
+  } finally {
+    await rm(index.tempDir, { recursive: true, force: true });
+  }
+}
+
+interface GitDiffSetup {
+  gitRoot: string;
+  gitDir: string;
+  pathspecs: string[];
+  commandRunner: CommandRunner;
+}
+
+async function prepareGitDiffSetup(options: {
+  cwd: string;
+  commandRunner: CommandRunner;
+  excludedPaths?: string[];
+}): Promise<{ ok: true; value: GitDiffSetup } | { ok: false; error: string; details?: CommandResult }> {
   const rootResult = await options.commandRunner.run({
     command: "git",
     args: ["rev-parse", "--show-toplevel"],
@@ -46,14 +133,32 @@ export async function captureGitDiff(
 
   const gitDir = path.resolve(gitRoot, gitDirResult.stdout.trim());
   const pathspecs = await buildGitPathspecs(gitRoot, options.excludedPaths ?? []);
+  return {
+    ok: true,
+    value: {
+      gitRoot,
+      gitDir,
+      pathspecs,
+      commandRunner: options.commandRunner,
+    },
+  };
+}
+
+async function populateTemporaryIndex(
+  setup: GitDiffSetup,
+): Promise<
+  | { ok: true; tempDir: string; env: NodeJS.ProcessEnv }
+  | { ok: false; error: string; details?: CommandResult }
+> {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-git-index-"));
   const tempIndex = path.join(tempDir, "index");
 
   try {
     try {
-      await copyFile(path.join(gitDir, "index"), tempIndex);
+      await copyFile(path.join(setup.gitDir, "index"), tempIndex);
     } catch (error) {
       if (!isNoEntryError(error)) {
+        await rm(tempDir, { recursive: true, force: true });
         return {
           ok: false,
           error: `Failed to copy Git index for diff capture: ${formatError(error)}`,
@@ -62,13 +167,14 @@ export async function captureGitDiff(
     }
 
     const env = { GIT_INDEX_FILE: tempIndex };
-    const addResult = await options.commandRunner.run({
+    const addResult = await setup.commandRunner.run({
       command: "git",
       args: ["add", "-A"],
-      cwd: gitRoot,
+      cwd: setup.gitRoot,
       env,
     });
     if (addResult.exitCode !== 0) {
+      await rm(tempDir, { recursive: true, force: true });
       return {
         ok: false,
         error: "Failed to populate temporary Git index for diff capture.",
@@ -76,23 +182,10 @@ export async function captureGitDiff(
       };
     }
 
-    const diffResult = await options.commandRunner.run({
-      command: "git",
-      args: ["diff", "--cached", "--binary", "HEAD", "--", ...pathspecs],
-      cwd: gitRoot,
-      env,
-    });
-    if (diffResult.exitCode !== 0) {
-      return {
-        ok: false,
-        error: "Failed to capture Git diff.",
-        details: diffResult,
-      };
-    }
-
-    return { ok: true, diff: diffResult.stdout };
-  } finally {
+    return { ok: true, tempDir, env };
+  } catch (error) {
     await rm(tempDir, { recursive: true, force: true });
+    throw error;
   }
 }
 

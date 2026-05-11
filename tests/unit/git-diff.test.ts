@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { captureGitDiff } from "../../src/git/git-diff.js";
+import { captureGitDiff, captureGitTree } from "../../src/git/git-diff.js";
 import { nodeCommandRunner } from "../../src/shell/command-runner.js";
 
 test("captureGitDiff includes tracked edits and untracked files without staging them", async () => {
@@ -59,6 +59,41 @@ test("captureGitDiff excludes requested paths even when they are unignored", asy
     assert.match(result.diff, /\+created/);
     assert.doesNotMatch(result.diff, /\.agent-work\/run-1/);
     assert.doesNotMatch(result.diff, /state\.json/);
+
+    const staged = await runGit(repo, ["diff", "--cached", "--name-only"]);
+    assert.equal(staged.stdout, "");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("captureGitDiff can compare against a captured working tree baseline", async () => {
+  const repo = await createCommittedRepo();
+  try {
+    await writeFile(path.join(repo, "prior-milestone.txt"), "accepted\n", "utf8");
+
+    const baseline = await captureGitTree({
+      cwd: repo,
+      commandRunner: nodeCommandRunner,
+    });
+    assert.equal(baseline.ok, true);
+    if (!baseline.ok) return;
+
+    await writeFile(path.join(repo, "current-milestone.txt"), "current\n", "utf8");
+
+    const result = await captureGitDiff({
+      cwd: repo,
+      commandRunner: nodeCommandRunner,
+      baseTree: baseline.tree,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    assert.match(result.diff, /diff --git a\/current-milestone\.txt b\/current-milestone\.txt/);
+    assert.match(result.diff, /\+current/);
+    assert.doesNotMatch(result.diff, /prior-milestone\.txt/);
+    assert.doesNotMatch(result.diff, /\+accepted/);
 
     const staged = await runGit(repo, ["diff", "--cached", "--name-only"]);
     assert.equal(staged.stdout, "");

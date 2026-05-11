@@ -11,12 +11,11 @@ import {
   validateConfig,
 } from "../config/config-loader.js";
 import { runGitPreflight } from "../git/git-preflight.js";
-import { runImplementationWorkflow } from "../implementation/implementation-workflow.js";
-import { runPlanningWorkflow } from "../planning/planning-workflow.js";
-import { runReviewWorkflow } from "../review/review-workflow.js";
+import { runGoalWorkflow } from "../orchestration/goal-workflow.js";
 import { createAgentRunner } from "../runners/create-runner.js";
 import { nodeCommandRunner } from "../shell/command-runner.js";
 import { createInitialState } from "../state/initial-state.js";
+import type { RunState } from "../state/state-types.js";
 import { writeState } from "../state/state-store.js";
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -29,7 +28,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (result.options.allowDirty && !result.options.planningOnly) {
-    console.error("--allow-dirty is only supported with --planning-only in Milestone 5.");
+    console.error("--allow-dirty is only supported with --planning-only.");
     return 1;
   }
 
@@ -73,7 +72,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (!result.options.planningOnly && runnerResult.runner.type !== "fake") {
-    console.error("Milestone 5 prototype execution currently requires --runner fake.");
+    console.error("Milestone 7 execution currently requires --runner fake.");
     return 1;
   }
 
@@ -97,96 +96,100 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   });
   await writeState(paths.files.state, state);
 
-  const planningResult = await runPlanningWorkflow({
+  const workflowResult = await runGoalWorkflow({
     goal: result.options.goal,
     config,
     paths,
     initialState: state,
     runner: runnerResult.runner,
+    commandRunner: nodeCommandRunner,
     cwd: process.cwd(),
+    planningOnly: result.options.planningOnly,
   });
 
-  if (!planningResult.ok) {
-    console.error(planningResult.error);
-    console.error(`Run dir: ${paths.runDir}`);
+  const finalState = workflowResult.state;
+
+  if (!workflowResult.ok) {
+    console.error(workflowResult.error ?? "Goal workflow failed.");
+    printRunReport({
+      runId,
+      paths,
+      goal: result.options.goal,
+      planningOnly: result.options.planningOnly,
+      allowDirty: result.options.allowDirty,
+      runnerType: runnerResult.runner.type,
+      configPath: loadedConfig.value.path,
+      artifactRoot: config.artifactRoot,
+      gitRequired: gitPreflight.metadata.required,
+      gitRoot: gitPreflight.metadata.root ?? "unavailable",
+      gitDirty: gitPreflight.metadata.dirtyAtStart,
+      finalState,
+    });
     return 1;
   }
 
-  let finalState = planningResult.state;
-  let implementationRan = false;
-  let reviewRan = false;
-
-  if (!result.options.planningOnly) {
-    const implementationResult = await runImplementationWorkflow({
-      goal: result.options.goal,
-      config,
-      paths,
-      initialState: planningResult.state,
-      runner: runnerResult.runner,
-      commandRunner: nodeCommandRunner,
-      cwd: process.cwd(),
-    });
-
-    implementationRan = true;
-    finalState = implementationResult.state;
-
-    if (!implementationResult.ok) {
-      console.error(implementationResult.error);
-      console.error(`Run dir: ${paths.runDir}`);
-      return 1;
-    }
-
-    const reviewResult = await runReviewWorkflow({
-      goal: result.options.goal,
-      config,
-      paths,
-      initialState: implementationResult.state,
-      runner: runnerResult.runner,
-      commandRunner: nodeCommandRunner,
-      cwd: process.cwd(),
-    });
-
-    reviewRan = true;
-    finalState = reviewResult.state;
-
-    if (!reviewResult.ok) {
-      console.error(reviewResult.error);
-      console.error(`Run dir: ${paths.runDir}`);
-      return 1;
-    }
-  }
-
-  console.log("Agent milestone orchestrator");
-  console.log(`Run id: ${runId}`);
-  console.log(`Run dir: ${paths.runDir}`);
-  console.log(`Goal: ${result.options.goal}`);
-  console.log(`Planning only: ${result.options.planningOnly}`);
-  console.log(`Allow dirty: ${result.options.allowDirty}`);
-  console.log(`Runner: ${runnerResult.runner.type}`);
-  console.log(`Config: ${loadedConfig.value.path}`);
-  console.log(`Artifact root: ${config.artifactRoot}`);
-  console.log(`Git required: ${gitPreflight.metadata.required}`);
-  console.log(`Git root: ${gitPreflight.metadata.root ?? "unavailable"}`);
-  console.log(`Git dirty: ${gitPreflight.metadata.dirtyAtStart}`);
-  console.log(`State: ${finalState.currentPhase}`);
-  console.log(`Current milestone: ${finalState.currentMilestoneId}`);
-  if (implementationRan && finalState.currentMilestoneId !== null) {
-    const milestoneId = String(finalState.currentMilestoneId);
-    console.log(`Diff artifact: ${finalState.artifacts.diffs?.[milestoneId] ?? "unavailable"}`);
-    console.log(`Checks artifact: ${finalState.artifacts.checks?.[milestoneId] ?? "unavailable"}`);
-    if (reviewRan) {
-      const fixAttempts = finalState.fixAttempts[milestoneId] ?? 0;
-      const latestArtifactKey = fixAttempts > 0 ? `${milestoneId}-fix-${fixAttempts}` : milestoneId;
-      console.log(`Review artifact: ${finalState.artifacts.reviews?.[latestArtifactKey] ?? "unavailable"}`);
-      console.log(`Fix attempts: ${fixAttempts}`);
-      console.log(`Latest diff artifact: ${finalState.artifacts.diffs?.[latestArtifactKey] ?? finalState.artifacts.diffs?.[milestoneId] ?? "unavailable"}`);
-      console.log(`Latest checks artifact: ${finalState.artifacts.checks?.[latestArtifactKey] ?? finalState.artifacts.checks?.[milestoneId] ?? "unavailable"}`);
-      console.log(`Summary artifact: ${finalState.artifacts.summaries?.[`${milestoneId}-review`] ?? "unavailable"}`);
-    } else {
-      console.log(`Summary artifact: ${finalState.artifacts.summaries?.[milestoneId] ?? "unavailable"}`);
-    }
-  }
+  printRunReport({
+    runId,
+    paths,
+    goal: result.options.goal,
+    planningOnly: result.options.planningOnly,
+    allowDirty: result.options.allowDirty,
+    runnerType: runnerResult.runner.type,
+    configPath: loadedConfig.value.path,
+    artifactRoot: config.artifactRoot,
+    gitRequired: gitPreflight.metadata.required,
+    gitRoot: gitPreflight.metadata.root ?? "unavailable",
+    gitDirty: gitPreflight.metadata.dirtyAtStart,
+    finalState,
+  });
   return 0;
+}
+
+function printRunReport(options: {
+  runId: string;
+  paths: { runDir: string };
+  goal: string;
+  planningOnly: boolean;
+  allowDirty: boolean;
+  runnerType: string;
+  configPath: string | null;
+  artifactRoot: string;
+  gitRequired: boolean;
+  gitRoot: string;
+  gitDirty: boolean;
+  finalState: RunState;
+}): void {
+  console.log("Agent milestone orchestrator");
+  console.log(`Run id: ${options.runId}`);
+  console.log(`Run dir: ${options.paths.runDir}`);
+  console.log(`Goal: ${options.goal}`);
+  console.log(`Planning only: ${options.planningOnly}`);
+  console.log(`Allow dirty: ${options.allowDirty}`);
+  console.log(`Runner: ${options.runnerType}`);
+  console.log(`Config: ${options.configPath}`);
+  console.log(`Artifact root: ${options.artifactRoot}`);
+  console.log(`Git required: ${options.gitRequired}`);
+  console.log(`Git root: ${options.gitRoot}`);
+  console.log(`Git dirty: ${options.gitDirty}`);
+  console.log(`State: ${options.finalState.currentPhase}`);
+  console.log(`Current milestone: ${options.finalState.currentMilestoneId ?? "none"}`);
+  console.log("Milestones:");
+  for (const line of formatMilestoneStatuses(options.finalState)) {
+    console.log(line);
+  }
+  const finalSummary = options.finalState.artifacts.summaries?.goal;
+  if (finalSummary) {
+    console.log(`Final summary artifact: ${finalSummary}`);
+  }
+}
+
+function formatMilestoneStatuses(state: RunState): string[] {
+  const entries = Object.entries(state.milestoneStatuses).sort(
+    ([left], [right]) => Number(left) - Number(right),
+  );
+
+  if (entries.length === 0) return ["  none"];
+  return entries.map(([milestoneId, status]) => `  ${milestoneId}: ${status}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

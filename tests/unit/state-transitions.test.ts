@@ -4,6 +4,8 @@ import test from "node:test";
 import { buildRunPaths } from "../../src/artifacts/paths.js";
 import { createInitialState } from "../../src/state/initial-state.js";
 import {
+  advanceToMilestoneState,
+  completeGoalState,
   completePlanningState,
   failState,
   recordArtifactByKey,
@@ -11,6 +13,7 @@ import {
   recordPlanningArtifact,
   setMilestoneStatus,
   setStatePhase,
+  stopGoalForHumanReviewState,
 } from "../../src/state/state-transitions.js";
 import type { RunState } from "../../src/state/state-types.js";
 
@@ -58,6 +61,134 @@ test("completePlanningState moves state to ready_for_milestone", () => {
   });
   assert.equal(state.lastError, null);
   assert.equal(state.updatedAt, "2026-05-10T12:00:03.000Z");
+});
+
+test("advanceToMilestoneState moves state to the selected milestone", () => {
+  const state = advanceToMilestoneState(
+    {
+      ...initialState(),
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "pending",
+      },
+      lastError: {
+        message: "previous stop",
+        phase: "needs_human_review",
+        occurredAt: "2026-05-10T11:59:00.000Z",
+      },
+    },
+    2,
+    new Date("2026-05-10T12:00:08.000Z"),
+  );
+
+  assert.equal(state.currentPhase, "ready_for_milestone");
+  assert.equal(state.status, "ready_for_milestone");
+  assert.equal(state.currentMilestoneId, 2);
+  assert.deepEqual(state.milestoneStatuses, {
+    "1": "passed",
+    "2": "pending",
+  });
+  assert.equal(state.lastError, null);
+  assert.equal(state.updatedAt, "2026-05-10T12:00:08.000Z");
+});
+
+test("completeGoalState marks the goal passed with no active milestone", () => {
+  const state = completeGoalState(
+    {
+      ...initialState(),
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: 2,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "passed",
+      },
+      lastError: {
+        message: "previous stop",
+        phase: "needs_human_review",
+        occurredAt: "2026-05-10T11:59:00.000Z",
+      },
+    },
+    new Date("2026-05-10T12:00:09.000Z"),
+  );
+
+  assert.equal(state.currentPhase, "passed");
+  assert.equal(state.status, "passed");
+  assert.equal(state.currentMilestoneId, null);
+  assert.deepEqual(state.milestoneStatuses, {
+    "1": "passed",
+    "2": "passed",
+  });
+  assert.equal(state.lastError, null);
+  assert.equal(state.updatedAt, "2026-05-10T12:00:09.000Z");
+});
+
+test("stopGoalForHumanReviewState records a terminal human-review stop", () => {
+  const state = stopGoalForHumanReviewState(
+    {
+      ...initialState(),
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "pending",
+      },
+    },
+    {
+      message: "No pending milestone can run.",
+      details: { blockedMilestoneIds: [2] },
+    },
+    new Date("2026-05-10T12:00:10.000Z"),
+  );
+
+  assert.equal(state.currentPhase, "needs_human_review");
+  assert.equal(state.status, "needs_human_review");
+  assert.equal(state.currentMilestoneId, 1);
+  assert.deepEqual(state.milestoneStatuses, {
+    "1": "passed",
+    "2": "pending",
+  });
+  assert.deepEqual(state.lastError, {
+    message: "No pending milestone can run.",
+    phase: "needs_human_review",
+    occurredAt: "2026-05-10T12:00:10.000Z",
+    details: { blockedMilestoneIds: [2] },
+  });
+  assert.equal(state.updatedAt, "2026-05-10T12:00:10.000Z");
+});
+
+test("stopGoalForHumanReviewState can override the active milestone id", () => {
+  const state = stopGoalForHumanReviewState(
+    {
+      ...initialState(),
+      currentPhase: "ready_for_milestone",
+      status: "ready_for_milestone",
+      currentMilestoneId: 2,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "pending",
+      },
+    },
+    {
+      message: "Resume state is unsafe.",
+      currentMilestoneId: null,
+    },
+    new Date("2026-05-10T12:00:11.000Z"),
+  );
+
+  assert.equal(state.currentPhase, "needs_human_review");
+  assert.equal(state.status, "needs_human_review");
+  assert.equal(state.currentMilestoneId, null);
+  assert.deepEqual(state.lastError, {
+    message: "Resume state is unsafe.",
+    phase: "needs_human_review",
+    occurredAt: "2026-05-10T12:00:11.000Z",
+  });
+  assert.equal(state.updatedAt, "2026-05-10T12:00:11.000Z");
 });
 
 test("setStatePhase accepts ready_for_review", () => {

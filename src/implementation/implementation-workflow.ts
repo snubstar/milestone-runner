@@ -4,7 +4,7 @@ import path from "node:path";
 import { buildMilestoneArtifactPaths } from "../artifacts/milestone-artifacts.js";
 import { buildPlanningArtifactPaths, writeTextArtifact } from "../artifacts/planning-artifacts.js";
 import { runChecks } from "../checks/check-runner.js";
-import { captureGitDiff } from "../git/git-diff.js";
+import { captureGitDiff, captureGitTree } from "../git/git-diff.js";
 import type { Milestone, MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
 import { loadPrompt } from "../prompts/prompt-loader.js";
@@ -139,6 +139,15 @@ export async function runImplementationWorkflow(
 
   state = await persist(setMilestoneStatus(state, activeMilestoneId, "implementing", clock()));
 
+  const diffBaseline = await captureGitTree({
+    cwd: options.cwd,
+    commandRunner: options.commandRunner,
+    excludedPaths: [options.paths.runDir],
+  });
+  if (!diffBaseline.ok) {
+    return fail("implementing", diffBaseline.error, diffBaseline.details);
+  }
+
   const implementation = await runPhase(
     "implement_milestone",
     implementationPrompt.value,
@@ -176,6 +185,7 @@ export async function runImplementationWorkflow(
     cwd: options.cwd,
     commandRunner: options.commandRunner,
     excludedPaths: [options.paths.runDir],
+    baseTree: diffBaseline.tree,
   });
   if (!diffResult.ok) return fail("implementing", diffResult.error, diffResult.details);
 

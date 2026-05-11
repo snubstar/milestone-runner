@@ -7,6 +7,11 @@ import test from "node:test";
 import { main } from "../../src/cli/main.js";
 import { nodeCommandRunner } from "../../src/shell/command-runner.js";
 import type { RunState } from "../../src/state/state-types.js";
+import {
+  assertMilestoneMetadataArtifact,
+  assertReviewVerdictArtifact,
+  assertRunStateShape,
+} from "../helpers/assertions.js";
 
 const projectRoot = process.cwd();
 
@@ -25,10 +30,20 @@ test("main stops after planning when --planning-only is set", async () => {
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Planning only: true/);
     assert.match(result.stdout, /State: ready_for_milestone/);
+    assert.match(result.stdout, /Current milestone: 1/);
+    assert.match(result.stdout, /Milestones:\n  1: pending\n  2: pending/);
+    assert.doesNotMatch(result.stdout, /Final summary artifact:/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.currentPhase, "ready_for_milestone");
     assert.equal(state.currentMilestoneId, 1);
+
+    const runDir = path.join(repo, ".agent-work", state.runId);
+    const metadata = await assertMilestoneMetadataArtifact(
+      path.join(runDir, state.artifacts.milestones ?? ""),
+    );
+    assert.deepEqual(metadata.milestones.map((milestone) => milestone.id), [1, 2]);
+
     await assert.rejects(
       () => readFile(path.join(repo, "fake-milestone-1-implementation.txt"), "utf8"),
       /ENOENT/,
@@ -38,7 +53,7 @@ test("main stops after planning when --planning-only is set", async () => {
   }
 });
 
-test("main runs one fake milestone through review when planning-only is not set", async () => {
+test("main runs all fake milestones through review when planning-only is not set", async () => {
   const repo = await createCliFixtureRepo();
   try {
     const result = await runMainInRepo(repo, [
@@ -52,44 +67,152 @@ test("main runs one fake milestone through review when planning-only is not set"
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Planning only: false/);
     assert.match(result.stdout, /State: passed/);
-    assert.match(result.stdout, /Diff artifact: diffs\/12-milestone-1\.diff/);
-    assert.match(result.stdout, /Checks artifact: checks\/13-milestone-1-checks\.txt/);
-    assert.match(result.stdout, /Review artifact: reviews\/20-milestone-1-review\.json/);
-    assert.match(result.stdout, /Fix attempts: 0/);
-    assert.match(result.stdout, /Latest diff artifact: diffs\/12-milestone-1\.diff/);
-    assert.match(result.stdout, /Latest checks artifact: checks\/13-milestone-1-checks\.txt/);
-    assert.match(result.stdout, /Summary artifact: milestones\/25-milestone-1-review-summary\.md/);
+    assert.match(result.stdout, /Current milestone: none/);
+    assert.match(result.stdout, /Milestones:\n  1: passed\n  2: passed/);
+    assert.match(result.stdout, /Final summary artifact: milestones\/90-goal-summary\.md/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.currentPhase, "passed");
+    assert.equal(state.currentMilestoneId, null);
     assert.deepEqual(state.milestoneStatuses, {
       "1": "passed",
-      "2": "pending",
+      "2": "passed",
     });
     assert.deepEqual(state.artifacts.reviews, {
       "1": path.join("reviews", "20-milestone-1-review.json"),
+      "2": path.join("reviews", "20-milestone-2-review.json"),
     });
     assert.deepEqual(state.artifacts.summaries, {
       "1": path.join("milestones", "14-milestone-1-summary.md"),
       "1-review": path.join("milestones", "25-milestone-1-review-summary.md"),
+      "2": path.join("milestones", "14-milestone-2-summary.md"),
+      "2-review": path.join("milestones", "25-milestone-2-review-summary.md"),
+      "goal": path.join("milestones", "90-goal-summary.md"),
     });
+
+    const runDir = path.join(repo, ".agent-work", state.runId);
+    const metadata = await assertMilestoneMetadataArtifact(
+      path.join(runDir, state.artifacts.milestones ?? ""),
+    );
+    assert.deepEqual(metadata.milestones.map((milestone) => milestone.id), [1, 2]);
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.diffs?.["1"] ?? ""), "utf8"),
+      /diff --git a\/fake-milestone-1-implementation\.txt b\/fake-milestone-1-implementation\.txt/,
+    );
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.checks?.["1"] ?? ""), "utf8"),
+      /cli check ok/,
+    );
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.diffs?.["2"] ?? ""), "utf8"),
+      /diff --git a\/fake-milestone-2-implementation\.txt b\/fake-milestone-2-implementation\.txt/,
+    );
+    assert.doesNotMatch(
+      await readFile(path.join(runDir, state.artifacts.diffs?.["2"] ?? ""), "utf8"),
+      /fake-milestone-1-implementation\.txt/,
+    );
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.checks?.["2"] ?? ""), "utf8"),
+      /cli check ok/,
+    );
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.summaries?.["1-review"] ?? ""), "utf8"),
+      /Fake review accepted milestone 1\./,
+    );
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.summaries?.["2-review"] ?? ""), "utf8"),
+      /Fake review accepted milestone 2\./,
+    );
+    const finalSummary = await readFile(
+      path.join(runDir, state.artifacts.summaries?.goal ?? ""),
+      "utf8",
+    );
+    assert.match(finalSummary, /Status: passed/);
+    assert.match(finalSummary, /fake-milestone-1-implementation\.txt/);
+    assert.match(finalSummary, /fake-milestone-2-implementation\.txt/);
     assert.match(
       await readFile(path.join(repo, "fake-milestone-1-implementation.txt"), "utf8"),
       /Milestone: 1/,
     );
-    const review = JSON.parse(
-      await readFile(
-        path.join(repo, ".agent-work", state.runId, "reviews", "20-milestone-1-review.json"),
-        "utf8",
-      ),
+    assert.match(
+      await readFile(path.join(repo, "fake-milestone-2-implementation.txt"), "utf8"),
+      /Milestone: 2/,
     );
-    assert.equal(review.verdict, "pass");
+    const review1 = await assertReviewVerdictArtifact(
+      path.join(runDir, state.artifacts.reviews?.["1"] ?? ""),
+    );
+    assert.equal(review1.verdict, "pass");
+    const review2 = await assertReviewVerdictArtifact(
+      path.join(runDir, state.artifacts.reviews?.["2"] ?? ""),
+    );
+    assert.equal(review2.verdict, "pass");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
 });
 
-test("main rejects --allow-dirty outside planning-only mode in Milestone 5", async () => {
+test("main prints final summary artifact when fake workflow fails after writing summary", async () => {
+  const repo = await createCliFixtureRepo({
+    checks: [
+      `${JSON.stringify(process.execPath)} -e "process.stderr.write('cli check failed'); process.exit(2)"`,
+    ],
+  });
+  try {
+    const result = await runMainInRepo(repo, [
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Checks failed for milestone 1/);
+    assert.match(result.stdout, /State: checking/);
+    assert.match(result.stdout, /Current milestone: 1/);
+    assert.match(result.stdout, /Milestones:\n  1: failed\n  2: pending/);
+    assert.match(result.stdout, /Final summary artifact: milestones\/90-goal-summary\.md/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "checking");
+    assert.equal(state.status, "failed");
+    assert.equal(state.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+
+    const runDir = path.join(repo, ".agent-work", state.runId);
+    const finalSummary = await readFile(
+      path.join(runDir, state.artifacts.summaries?.goal ?? ""),
+      "utf8",
+    );
+    assert.match(finalSummary, /Status: failed/);
+    assert.match(finalSummary, /Stop reason: Checks failed for milestone 1\./);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects dirty implementation runs before creating a run directory", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    await writeFile(path.join(repo, "README.md"), "# Dirty CLI Fixture\n", "utf8");
+
+    const result = await runMainInRepo(repo, [
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Git working tree is dirty/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects --allow-dirty outside planning-only mode", async () => {
   const repo = await createCliFixtureRepo();
   try {
     const result = await runMainInRepo(repo, [
@@ -109,7 +232,7 @@ test("main rejects --allow-dirty outside planning-only mode in Milestone 5", asy
   }
 });
 
-test("main rejects non-fake runners for Milestone 5 execution", async () => {
+test("main rejects non-fake runners for Milestone 7 execution", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
@@ -129,7 +252,7 @@ test("main rejects non-fake runners for Milestone 5 execution", async () => {
     ]);
 
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /Milestone 5 prototype execution currently requires --runner fake/);
+    assert.match(result.stderr, /Milestone 7 execution currently requires --runner fake/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -217,7 +340,7 @@ type CliFixtureRunnerConfig =
     };
 
 async function createCliFixtureRepo(
-  options: { runner?: CliFixtureRunnerConfig } = {},
+  options: { runner?: CliFixtureRunnerConfig; checks?: string[] } = {},
 ): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-cli-"));
   await writeFile(path.join(repo, ".gitignore"), ".agent-work/\n", "utf8");
@@ -226,7 +349,9 @@ async function createCliFixtureRepo(
     path.join(repo, "orchestrator.config.json"),
     `${JSON.stringify(
       {
-        checks: [`${JSON.stringify(process.execPath)} -e "process.stdout.write('cli check ok')"`],
+        checks: options.checks ?? [
+          `${JSON.stringify(process.execPath)} -e "process.stdout.write('cli check ok')"`,
+        ],
         runner: options.runner ?? { type: "fake" },
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
@@ -264,7 +389,9 @@ async function readOnlyRunState(repo: string): Promise<RunState> {
   const runIds = await readdir(runRoot);
   assert.equal(runIds.length, 1);
   const raw = await readFile(path.join(runRoot, runIds[0] ?? "", "state.json"), "utf8");
-  return JSON.parse(raw) as RunState;
+  const state: unknown = JSON.parse(raw);
+  assertRunStateShape(state);
+  return state;
 }
 
 async function git(repo: string, args: string[]): Promise<void> {
