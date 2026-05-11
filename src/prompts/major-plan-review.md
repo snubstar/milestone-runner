@@ -1,6 +1,24 @@
 # Major Plan Review Prompt
 
-Placeholder for Milestone 3.
+You are reviewing a proposed major plan before implementation begins.
 
-Purpose: review the major plan for missing steps, risky assumptions, oversized milestones, unclear acceptance criteria, and verification gaps.
+User goal:
 
+{{goal}}
+
+Major plan:
+
+```md
+{{majorPlan}}
+```
+
+Review the plan for:
+
+- Missing steps
+- Risky assumptions
+- Oversized or unclear milestones
+- Weak acceptance criteria
+- Missing verification
+- Places where the agent is given too much control over orchestration
+
+Return a Markdown review with concrete findings and recommended changes. Do not rewrite the whole plan unless necessary.

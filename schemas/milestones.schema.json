@@ -30,6 +30,7 @@
       "enum": [
         "pending",
         "planned",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -87,4 +88,3 @@
     }
   }
 }
-

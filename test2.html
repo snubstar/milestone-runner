@@ -26,11 +26,11 @@
             -webkit-font-smoothing: antialiased;
         }
 
-        /* Large Fluid Typography */
+        /* Main Typography */
         h1 {
-            font-size: 14vw; /* Scales with screen width */
+            font-size: 7rem;
             font-weight: 600;
-            letter-spacing: -0.05em;
+            letter-spacing: 0;
             line-height: 0.85;
             text-transform: uppercase;
             margin-bottom: 5vw;
@@ -39,22 +39,21 @@
 
         .content-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 4vw;
             margin-top: 10vh;
         }
 
         .thought-block {
-            border-top: 2px solid var(--fg);
-            padding-top: 1.5vw;
+            padding-top: 0;
         }
 
-        .label {
-            font-size: 0.8rem;
+        h2 {
+            font-size: 1.25rem;
             text-transform: uppercase;
-            margin-bottom: 2vw;
-            display: block;
+            margin-bottom: 1rem;
             font-weight: 700;
+            letter-spacing: 0;
         }
 
         p {
@@ -74,7 +73,7 @@
 
         /* Mobile Adjustments */
         @media (max-width: 768px) {
-            h1 { font-size: 18vw; }
+            h1 { font-size: 4rem; }
             .content-grid { grid-template-columns: 1fr; }
             p { font-size: 1.5rem; }
             footer { flex-direction: column; gap: 10px; }
@@ -87,16 +86,19 @@
         <h1>The Coming<br>Era.</h1>
     </header>
 
-    <main class="content-grid">
-        <div class="thought-block">
-            <span class="label">01 / Synthesis</span>
-            <p>We are transitioning from the age of information to the age of agency. Tools will no longer just inform us; they will act on our behalf.</p>
-        </div>
+    <p>The intelligence era is coming. There is no way to stop it. It will be the greatest revolution humanity has seen.</p>
 
-        <div class="thought-block">
-            <span class="label">02 / Value</span>
+
+    <main class="content-grid">
+        <section class="thought-block">
+            <h2>Synthesis</h2>
+            <p>We are transitioning from the age of information to the age of agency. Tools will no longer just inform us; they will act on our behalf.</p>
+        </section>
+
+        <section class="thought-block">
+            <h2>Value</h2>
             <p>As synthetic content approaches infinite abundance, the value of the unoptimized, the physical, and the human-error will skyrocket.</p>
-        </div>
+        </section>
     </main>
 
     <footer>

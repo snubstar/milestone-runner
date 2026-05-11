@@ -154,6 +154,7 @@
         "planning",
         "plan_reviewing",
         "ready_for_milestone",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -170,6 +171,7 @@
         "planning",
         "plan_reviewing",
         "ready_for_milestone",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -184,6 +186,7 @@
       "enum": [
         "pending",
         "planned",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -228,6 +231,9 @@
         "milestonePlans": {
           "$ref": "#/$defs/artifactMap"
         },
+        "implementations": {
+          "$ref": "#/$defs/artifactMap"
+        },
         "diffs": {
           "$ref": "#/$defs/artifactMap"
         },
@@ -250,4 +256,3 @@
     }
   }
 }
-
