@@ -56,7 +56,7 @@ goal
 -> final goal summary
 ```
 
-The fake runner path can complete all generated fake milestones offline. Real implementation and review execution through `codex-exec` is still intentionally gated; Milestone 8 owns the user-facing resume and execution ergonomics.
+The fake runner path can complete all generated fake milestones offline. Real implementation and review execution through `codex-exec` is still intentionally gated; Milestone 8 owns the user-facing resume, dry-run, safety override, and execution ergonomics.
 
 ## Git Safety
 
@@ -64,12 +64,12 @@ Implementation-capable runs require a Git repository because the tool depends on
 
 The intended safety model is strict by default:
 
-- Planning-only phases may eventually support non-Git directories.
+- Planning-only phases can run outside Git only with `--allow-non-git-planning`.
 - Implementation, diff capture, and fix loops require Git.
 - Implementation-capable phases require a clean working tree by default.
 - The orchestrator records the starting commit SHA when available.
 - Diff capture uses `git diff`.
-- Overrides for dirty trees or non-Git operation must be explicit and visible in run state.
+- Overrides for dirty trees or non-Git planning must be explicit and visible in output and run state where applicable.
 
 Implementation-capable phases must run these preflight checks before an agent can edit files:
 
@@ -81,9 +81,9 @@ git status --porcelain
 
 Expected behavior:
 
-- If `git rev-parse --show-toplevel` fails, the run may continue only in planning-only mode.
-- If `git status --porcelain` returns any tracked or untracked changes, implementation must stop unless a future explicit dirty-tree override is enabled.
-- If a dirty-tree override is enabled, the run state must record that override and the dirty status observed at startup.
+- If `git rev-parse --show-toplevel` fails, the run may continue only in planning-only mode with `--allow-non-git-planning`.
+- If `git status --porcelain` returns any tracked or untracked changes, implementation must stop unless `--allow-dirty` is set.
+- If `--allow-dirty` is set, the run state records that override and the dirty status observed at startup.
 - If `git rev-parse HEAD` fails because the repository has no commits, implementation must stop until an initial commit exists.
 - Diffs for review and summaries must be captured from Git, not inferred from agent output.
 
@@ -400,7 +400,7 @@ Current templates are placeholders. Later milestones will replace them with exec
 
 The project plan is tracked in [general_plan.md](./general_plan.md).
 
-Current milestone detail is tracked in [milestone7_plan.md](./milestone7_plan.md).
+Current milestone detail is tracked in [milestone8_plan.md](./milestone8_plan.md).
 
 High-level sequence:
 
@@ -440,6 +440,38 @@ Run the current CLI after building:
 node dist/cli/main.js --runner fake "example goal"
 ```
 
+CLI usage:
+
+```bash
+node dist/cli/main.js [options] "goal"
+node dist/cli/main.js --resume <run-dir-or-id> [options]
+```
+
+Common options:
+
+- `--config <path>`: load a config file for a new run.
+- `--artifact-root <path>`: set the generated artifact root.
+- `--runner fake|codex-exec`: override the configured runner for a new run.
+- `--planning-only`: stop after planning and milestone metadata generation.
+- `--dry-run`: validate and report the next action without writing workflow artifacts or calling runners.
+- `--resume <run-dir-or-id>`: resume from an existing `state.json` by run directory, `state.json` path, or run id under the artifact root.
+- `--milestone <id>`: run only one runnable milestone and stop before advancing to remaining pending milestones.
+- `--max-fix-attempts <n>`: override fix attempts for this invocation.
+- `--allow-dirty`: allow implementation-capable runs or resumes from a dirty working tree.
+- `--allow-non-git-planning`: allow planning-only operation outside a Git repository.
+
+Inspect a full fake run without creating `.agent-work/`:
+
+```bash
+node dist/cli/main.js --dry-run --runner fake "example goal"
+```
+
+Start a full fake run:
+
+```bash
+node dist/cli/main.js --runner fake "example goal"
+```
+
 The full fake path plans, implements, checks, reviews, and advances through every generated fake milestone. It prints the final state, sorted milestone statuses, and the final goal summary artifact when one is available:
 
 ```text
@@ -456,6 +488,43 @@ Planning-only operation remains available:
 ```bash
 node dist/cli/main.js --planning-only --runner fake "example goal"
 ```
+
+Planning-only outside Git requires an explicit override:
+
+```bash
+node dist/cli/main.js --planning-only --allow-non-git-planning --runner fake "example goal"
+```
+
+Resume an existing run:
+
+```bash
+node dist/cli/main.js --resume .agent-work/<run-id>
+node dist/cli/main.js --resume <run-id> --dry-run
+```
+
+Run exactly one runnable milestone:
+
+```bash
+node dist/cli/main.js --runner fake --milestone 1 "example goal"
+```
+
+Override fix attempts for the current invocation:
+
+```bash
+node dist/cli/main.js --runner fake --max-fix-attempts 1 "example goal"
+```
+
+Allow a dirty working tree only when that starting state is deliberate:
+
+```bash
+node dist/cli/main.js --allow-dirty --runner fake "example goal"
+```
+
+Interpret final states:
+
+- `passed`: the current requested workflow completed. If `--milestone` was used, remaining milestones may still be pending and the next action will say to resume without `--milestone`.
+- `failed`: deterministic checks, runner execution, or orchestration validation failed. Inspect `Last error`, milestone statuses, and generated artifacts.
+- `needs_human_review`: the workflow stopped conservatively because review or resume safety requires human input.
 
 ## Testing
 
@@ -484,3 +553,9 @@ Test helpers live under `tests/helpers`:
 - `assertions.ts`: generated `state.json` shape checks plus milestone metadata and review verdict validator helpers.
 
 Default tests are deterministic and offline. `FakeRunner` covers the CLI happy path, while `ScenarioRunner` is used by workflow tests for precise success and failure cases. No `codex-exec` smoke test is currently enabled; if one is added later, it should be skipped by default and kept out of `npm test`.
+
+## CI Provider Integrations
+
+Optional GitHub Actions integrations for agent PR review and guarded CI-failure autofix are documented in `docs/ci-provider-integrations.md`.
+
+These workflows are not required for local CLI usage. Configure provider secrets only when maintainers want GitHub-hosted agent review or manual autofix branches.

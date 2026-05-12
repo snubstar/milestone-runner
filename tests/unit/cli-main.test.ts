@@ -28,7 +28,10 @@ test("main stops after planning when --planning-only is set", async () => {
     ]);
 
     assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Mode: new/);
     assert.match(result.stdout, /Planning only: true/);
+    assert.match(result.stdout, /Config source: config file/);
+    assert.match(result.stdout, /Effective max fix attempts: 0/);
     assert.match(result.stdout, /State: ready_for_milestone/);
     assert.match(result.stdout, /Current milestone: 1/);
     assert.match(result.stdout, /Milestones:\n  1: pending\n  2: pending/);
@@ -68,6 +71,7 @@ test("main stores max fix attempts CLI override in new run state", async () => {
     ]);
 
     assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Effective max fix attempts: 2/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.config.snapshot?.maxFixAttempts, 2);
@@ -95,6 +99,7 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /Allowed: true/);
     assert.match(result.stdout, /Next action: run_full_goal/);
     assert.match(result.stdout, /runner: fake/);
+    assert.match(result.stdout, /maxFixAttempts: 0/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -244,6 +249,9 @@ test("main resumes an existing fake run from saved state", async () => {
     ]);
 
     assert.equal(resumeResult.exitCode, 0);
+    assert.match(resumeResult.stdout, /Mode: resume/);
+    assert.match(resumeResult.stdout, /Config source: state snapshot/);
+    assert.match(resumeResult.stdout, /State before resume: ready_for_milestone/);
     assert.match(resumeResult.stdout, /State: passed/);
     assert.match(resumeResult.stdout, /Current milestone: none/);
     assert.match(resumeResult.stdout, /Milestones:\n  1: passed\n  2: passed/);
@@ -252,6 +260,43 @@ test("main resumes an existing fake run from saved state", async () => {
     assert.equal(finalState.currentPhase, "passed");
     assert.equal(finalState.currentMilestoneId, null);
     assert.equal(finalState.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main reports resume max fix attempts override without mutating saved snapshot", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const planningResult = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(planningResult.exitCode, 0);
+
+    const plannedState = await readOnlyRunState(repo);
+    assert.equal(plannedState.config.snapshot?.maxFixAttempts, 0);
+
+    const resumeResult = await runMainInRepo(repo, [
+      "--resume",
+      plannedState.runDir,
+      "--max-fix-attempts",
+      "2",
+    ]);
+
+    assert.equal(resumeResult.exitCode, 0);
+    assert.match(resumeResult.stdout, /Mode: resume/);
+    assert.match(resumeResult.stdout, /Effective max fix attempts: 2/);
+    assert.match(resumeResult.stdout, /Saved max fix attempts: 0/);
+
+    const finalState = await readOnlyRunState(repo);
+    assert.equal(finalState.currentPhase, "passed");
+    assert.equal(finalState.config.snapshot?.maxFixAttempts, 0);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -308,6 +353,7 @@ test("main runs all fake milestones through review when planning-only is not set
 
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Planning only: false/);
+    assert.match(result.stdout, /Mode: new/);
     assert.match(result.stdout, /State: passed/);
     assert.match(result.stdout, /Current milestone: none/);
     assert.match(result.stdout, /Milestones:\n  1: passed\n  2: passed/);
@@ -486,6 +532,7 @@ test("main prints final summary artifact when fake workflow fails after writing 
     assert.match(result.stderr, /Checks failed for milestone 1/);
     assert.match(result.stdout, /State: checking/);
     assert.match(result.stdout, /Current milestone: 1/);
+    assert.match(result.stdout, /Last error: Checks failed for milestone 1\./);
     assert.match(result.stdout, /Milestones:\n  1: failed\n  2: pending/);
     assert.match(result.stdout, /Final summary artifact: milestones\/90-goal-summary\.md/);
 
@@ -650,7 +697,7 @@ test("main rejects runner override with resume", async () => {
   }
 });
 
-test("main rejects non-fake runners for Milestone 7 execution", async () => {
+test("main rejects non-fake runners for Milestone 8 execution", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
@@ -670,7 +717,7 @@ test("main rejects non-fake runners for Milestone 7 execution", async () => {
     ]);
 
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /Milestone 7 execution currently requires --runner fake/);
+    assert.match(result.stderr, /Milestone 8 execution currently requires --runner fake/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });

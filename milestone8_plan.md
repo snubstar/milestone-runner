@@ -493,10 +493,10 @@ Add or strengthen tests for:
 6. Completed: Update Git preflight to support dirty implementation overrides and explicit non-Git planning overrides.
 7. Completed: Add environment/tool validation helpers and wire their diagnostics into CLI output.
 8. Completed: Add a workflow execution limit for `--milestone` and enforce it in the goal workflow or selector.
-9. Next: Refactor terminal reporting into a reusable report module.
-10. Pending: Update CLI tests for new options, dry-run behavior, resume behavior, and safety gates.
-11. Pending: Update README usage and current milestone references.
-12. Pending: Run the full verification sequence and fix regressions.
+9. Completed: Refactor terminal reporting into a reusable report module.
+10. Completed: Update CLI tests for new options, dry-run behavior, resume behavior, and safety gates.
+11. Completed: Update README usage and current milestone references.
+12. Completed: Run the full verification sequence and fix regressions.
 
 ## Acceptance Criteria
 

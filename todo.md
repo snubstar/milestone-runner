@@ -1,3 +1,42 @@
+
+codex resume 019e1cc8-7faa-7e60-ad16-e89e1f63ac20
+
+
+
+
+Visualization of state machines,
+and how state machines evolve... adjust themselves
+modular theory, and visualization.
+
+------------------------------------------------
+
+After plan is finished:
+- Test it.
+- Publish, make website with progress and research.
+
+------------------------------------------------
+
+Make next version,
+Make shared semantics.
+
+How AI and deterministic automation and gates communicate.
+
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+------------------------------------------------
+
+
+
+
+
 Last message:
 
 Implemented Milestone 6 step 4.

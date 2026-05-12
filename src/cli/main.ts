@@ -4,30 +4,28 @@ import { fileURLToPath } from "node:url";
 
 import { buildRunPaths, createRunId } from "../artifacts/paths.js";
 import { createRunDirectory, writeRunLog } from "../artifacts/run-directory.js";
-import {
-  buildNewRunDryRunReport,
-  buildResumeDryRunReport,
-  printDryRunReport,
-} from "./dry-run.js";
+import { buildNewRunDryRunReport, buildResumeDryRunReport } from "./dry-run.js";
 import { loadResumeRun } from "./run-loader.js";
 import { parseArgs, usage, type CliOptions } from "./args.js";
+import {
+  nonGitPlanningOverride,
+  printDryRunReport,
+  printEnvironmentDiagnostics,
+  printGitOverrideWarnings,
+  printRunReport,
+} from "./run-report.js";
 import {
   applyConfigOverrides,
   loadConfig,
   validateConfig,
 } from "../config/config-loader.js";
-import {
-  formatEnvironmentDiagnostics,
-  validateEnvironment,
-  type EnvironmentDiagnostic,
-} from "../diagnostics/environment-validator.js";
+import { validateEnvironment, type EnvironmentDiagnostic } from "../diagnostics/environment-validator.js";
 import type { GitMetadata } from "../git/git-types.js";
 import { runGitPreflight } from "../git/git-preflight.js";
 import { runGoalWorkflow } from "../orchestration/goal-workflow.js";
 import { createAgentRunner } from "../runners/create-runner.js";
 import { nodeCommandRunner } from "../shell/command-runner.js";
 import { createInitialState } from "../state/initial-state.js";
-import type { RunState } from "../state/state-types.js";
 import { writeState } from "../state/state-store.js";
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -195,7 +193,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       return report.exitCode;
     }
 
-    console.error("Milestone 7 execution currently requires --runner fake.");
+    console.error("Milestone 8 execution currently requires --runner fake.");
     return 1;
   }
 
@@ -253,6 +251,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
   if (!workflowResult.ok) {
     console.error(workflowResult.error ?? "Goal workflow failed.");
     printRunReport({
+      mode: "new",
       runId,
       paths,
       goal,
@@ -262,8 +261,10 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       targetMilestone: options.milestone ?? null,
       runnerType: runnerResult.runner.type,
       configPath: loadedConfig.value.path,
+      configSource: loadedConfig.value.path === null ? "default config" : "config file",
       artifactRoot: config.artifactRoot,
       checks: config.checks,
+      maxFixAttempts: config.maxFixAttempts,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -279,6 +280,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
   }
 
   printRunReport({
+    mode: "new",
     runId,
     paths,
     goal,
@@ -288,8 +290,10 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     targetMilestone: options.milestone ?? null,
     runnerType: runnerResult.runner.type,
     configPath: loadedConfig.value.path,
+    configSource: loadedConfig.value.path === null ? "default config" : "config file",
     artifactRoot: config.artifactRoot,
     checks: config.checks,
+    maxFixAttempts: config.maxFixAttempts,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -480,6 +484,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     return report.exitCode;
   }
 
+  const stateBeforeResume = resumeResult.state.currentPhase;
   const workflowResult = await runGoalWorkflow({
     goal: resumeResult.state.goal,
     config,
@@ -497,6 +502,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
   if (!workflowResult.ok) {
     console.error(workflowResult.error ?? "Goal workflow failed.");
     printRunReport({
+      mode: "resume",
       runId: resumeResult.state.runId,
       paths: resumeResult.paths,
       goal: resumeResult.state.goal,
@@ -506,8 +512,11 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       targetMilestone: options.milestone ?? null,
       runnerType: runnerResult.runner.type,
       configPath: resumeResult.state.config.path,
+      configSource: "state snapshot",
       artifactRoot: resumeResult.paths.artifactRoot,
       checks: config.checks,
+      maxFixAttempts: config.maxFixAttempts,
+      savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -516,6 +525,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
         gitPreflight.metadata,
         options.allowNonGitPlanning,
       ),
+      stateBeforeResume,
       nextAction: workflowResult.nextAction,
       finalState,
     });
@@ -523,6 +533,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
   }
 
   printRunReport({
+    mode: "resume",
     runId: resumeResult.state.runId,
     paths: resumeResult.paths,
     goal: resumeResult.state.goal,
@@ -532,8 +543,11 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     targetMilestone: options.milestone ?? null,
     runnerType: runnerResult.runner.type,
     configPath: resumeResult.state.config.path,
+    configSource: "state snapshot",
     artifactRoot: resumeResult.paths.artifactRoot,
     checks: config.checks,
+    maxFixAttempts: config.maxFixAttempts,
+    savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -542,6 +556,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       gitPreflight.metadata,
       options.allowNonGitPlanning,
     ),
+    stateBeforeResume,
     nextAction: workflowResult.nextAction,
     finalState,
   });
@@ -559,64 +574,6 @@ function classifyEnvironmentFailure(diagnostics: EnvironmentDiagnostic[]): strin
   return diagnostics.some((diagnostic) => diagnostic.level === "error")
     ? "blocked_missing_tool"
     : "blocked_environment";
-}
-
-function printRunReport(options: {
-  runId: string;
-  paths: { runDir: string };
-  goal: string;
-  planningOnly: boolean;
-  allowDirty: boolean;
-  allowNonGitPlanning: boolean;
-  targetMilestone: number | null;
-  runnerType: string;
-  configPath: string | null;
-  artifactRoot: string;
-  checks: string[];
-  gitRequired: boolean;
-  gitRoot: string;
-  gitDirty: boolean;
-  gitDirtyOverride: boolean;
-  gitNonGitPlanningOverride: boolean;
-  nextAction?: string;
-  finalState: RunState;
-}): void {
-  console.log("Agent milestone orchestrator");
-  console.log(`Run id: ${options.runId}`);
-  console.log(`Run dir: ${options.paths.runDir}`);
-  console.log(`Goal: ${options.goal}`);
-  console.log(`Planning only: ${options.planningOnly}`);
-  console.log(`Allow dirty: ${options.allowDirty}`);
-  console.log(`Allow non-Git planning: ${options.allowNonGitPlanning}`);
-  console.log(`Target milestone: ${options.targetMilestone ?? "none"}`);
-  console.log(`Runner: ${options.runnerType}`);
-  console.log(`Config: ${options.configPath}`);
-  console.log(`Artifact root: ${options.artifactRoot}`);
-  console.log(`Checks: ${formatChecks(options.checks)}`);
-  console.log(`Git required: ${options.gitRequired}`);
-  console.log(`Git root: ${options.gitRoot}`);
-  console.log(`Git dirty: ${options.gitDirty}`);
-  console.log(`Git dirty override: ${options.gitDirtyOverride}`);
-  console.log(`Non-Git planning override: ${options.gitNonGitPlanningOverride}`);
-  console.log(`State: ${options.finalState.currentPhase}`);
-  console.log(`Current milestone: ${options.finalState.currentMilestoneId ?? "none"}`);
-  if (options.nextAction) {
-    console.log(`Next action: ${options.nextAction}`);
-  }
-  console.log("Milestones:");
-  for (const line of formatMilestoneStatuses(options.finalState)) {
-    console.log(line);
-  }
-  const finalSummary = options.finalState.artifacts.summaries?.goal;
-  if (finalSummary) {
-    console.log(`Final summary artifact: ${finalSummary}`);
-  }
-}
-
-function printEnvironmentDiagnostics(diagnostics: EnvironmentDiagnostic[]): void {
-  for (const line of formatEnvironmentDiagnostics(diagnostics)) {
-    console.error(line);
-  }
 }
 
 function shouldRequireGitCommand(options: {
@@ -644,38 +601,6 @@ function emptyGitMetadata(planningOnly: boolean): GitMetadata {
     dirtyOverride: false,
     statusPorcelain: "",
   };
-}
-
-function printGitOverrideWarnings(
-  git: GitMetadata,
-  allowNonGitPlanning: boolean,
-): void {
-  if (git.dirtyOverride) {
-    console.error("Warning: dirty Git working tree allowed by --allow-dirty.");
-  }
-  if (nonGitPlanningOverride(git, allowNonGitPlanning)) {
-    console.error("Warning: planning outside Git allowed by --allow-non-git-planning.");
-  }
-}
-
-function nonGitPlanningOverride(
-  git: GitMetadata,
-  allowNonGitPlanning: boolean,
-): boolean {
-  return allowNonGitPlanning && git.planningOnly && !git.required && git.root === null;
-}
-
-function formatChecks(checks: string[]): string {
-  return checks.length === 0 ? "none" : checks.join(" && ");
-}
-
-function formatMilestoneStatuses(state: RunState): string[] {
-  const entries = Object.entries(state.milestoneStatuses).sort(
-    ([left], [right]) => Number(left) - Number(right),
-  );
-
-  if (entries.length === 0) return ["  none"];
-  return entries.map(([milestoneId, status]) => `  ${milestoneId}: ${status}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

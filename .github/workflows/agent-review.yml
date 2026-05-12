@@ -1,0 +1,261 @@
+name: Agent PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to review. Defaults to the workflow ref."
+        required: false
+        type: string
+      prompt_path:
+        description: "Prompt file to use."
+        required: false
+        default: "ci/prompts/pr-review.md"
+        type: string
+      dry_run:
+        description: "Prepare review context and skip Codex execution."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Agent review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REVIEW_PROMPT_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.prompt_path || 'ci/prompts/pr-review.md' }}
+      REVIEW_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+    steps:
+      - name: Checkout pull request merge
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+
+      - name: Checkout selected ref
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Prepare review context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          prompt_source="$RUNNER_TEMP/agent-review-prompt-source.md"
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            git fetch --no-tags origin "$base_sha" || true
+
+            if ! git show "$base_sha:$REVIEW_PROMPT_PATH" > "$prompt_source" 2>/dev/null; then
+              {
+                echo "## Agent review"
+                echo
+                echo "Required prompt file is missing from the trusted base ref: \`$REVIEW_PROMPT_PATH\`."
+              } > agent-review.md
+              cat agent-review.md >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          elif [ -f "$REVIEW_PROMPT_PATH" ]; then
+            cp "$REVIEW_PROMPT_PATH" "$prompt_source"
+          else
+            {
+              echo "## Agent review"
+              echo
+              echo "Required prompt file is missing: \`$REVIEW_PROMPT_PATH\`."
+            } > agent-review.md
+            cat agent-review.md >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "# Agent review request"
+            echo
+            cat "$prompt_source"
+            echo
+            echo "## Repository context"
+            echo
+            echo "- Repository: $GITHUB_REPOSITORY"
+            echo "- Event: $GITHUB_EVENT_NAME"
+            echo "- SHA: $GITHUB_SHA"
+          } > agent-review-prompt.md
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            pr_number="${{ github.event.pull_request.number }}"
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_ref="refs/remotes/origin/pr-${pr_number}-head"
+
+            git fetch --no-tags origin "$base_sha" || true
+            git fetch --no-tags origin "+refs/pull/${pr_number}/head:${head_ref}" || true
+
+            if git rev-parse --verify "$base_sha^{commit}" >/dev/null 2>&1 && git rev-parse --verify "$head_ref^{commit}" >/dev/null 2>&1; then
+              diff_base="$base_sha"
+              diff_head="$head_ref"
+            elif git rev-parse --verify "HEAD^1" >/dev/null 2>&1; then
+              diff_base="HEAD^1"
+              diff_head="HEAD"
+            else
+              diff_base=""
+              diff_head=""
+            fi
+
+            {
+              echo "- Pull request: #${pr_number}"
+              echo "- Base SHA: ${base_sha}"
+              echo "- Head SHA: ${{ github.event.pull_request.head.sha }}"
+              echo
+              echo "## Pull request diff"
+              echo
+            } >> agent-review-prompt.md
+
+            if [ -n "$diff_base" ] && [ -n "$diff_head" ]; then
+              git diff --stat "$diff_base" "$diff_head" > pr-diff-stat.txt
+              git diff --no-ext-diff --find-renames "$diff_base" "$diff_head" > pr-diff.patch
+
+              {
+                echo "### Diff stat"
+                echo
+                echo '```text'
+                cat pr-diff-stat.txt
+                echo '```'
+                echo
+                echo "### Diff patch"
+                echo
+                echo '```diff'
+              } >> agent-review-prompt.md
+
+              patch_lines="$(wc -l < pr-diff.patch | tr -d ' ')"
+              sed -n '1,2000p' pr-diff.patch >> agent-review-prompt.md
+
+              {
+                if [ "$patch_lines" -gt 2000 ]; then
+                  echo
+                  echo "... diff truncated after 2000 lines ..."
+                fi
+                echo '```'
+              } >> agent-review-prompt.md
+            else
+              echo "Unable to compute a pull request diff. Review the checked-out repository state and report this limitation." >> agent-review-prompt.md
+            fi
+          else
+            {
+              echo
+              echo "## Manual review context"
+              echo
+              echo "This workflow was started manually. Review the checked-out ref and recent history."
+              echo
+              echo "### Recent commits"
+              echo
+              echo '```text'
+              git log --oneline -20
+              echo '```'
+            } >> agent-review-prompt.md
+          fi
+
+      - name: Check provider availability
+        id: provider
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REVIEW_DRY_RUN" = "true" ]; then
+            {
+              echo "## Agent review"
+              echo
+              echo "Dry run requested. Codex execution was skipped."
+              echo
+              echo "The review prompt and repository context were prepared successfully."
+            } > agent-review.md
+            echo "run_codex=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "${CODEX_API_KEY:-}" ]; then
+            {
+              echo "## Agent review"
+              echo
+              echo "Codex execution was skipped because no provider credential was available."
+              echo
+              echo "Configure a repository secret named \`CODEX_API_KEY\` or \`OPENAI_API_KEY\` to enable agent review in trusted workflow contexts."
+            } > agent-review.md
+            echo "run_codex=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_codex=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Codex CLI
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        run: npm install -g @openai/codex
+
+      - name: Confirm Codex CLI
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        run: codex --version
+
+      - name: Run Codex review
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          codex exec \
+            --ephemeral \
+            --sandbox read-only \
+            --ignore-user-config \
+            --ignore-rules \
+            -o agent-review.md \
+            - < agent-review-prompt.md
+
+          if [ ! -s agent-review.md ]; then
+            echo "Codex completed but did not produce agent-review.md." >&2
+            exit 1
+          fi
+
+      - name: Publish review summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s agent-review.md ]; then
+            {
+              echo "## Agent review"
+              echo
+              echo "Agent review did not produce \`agent-review.md\`."
+            } > agent-review.md
+            cat agent-review.md >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          cat agent-review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload review artifact
+        if: ${{ always() && hashFiles('agent-review.md') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-review
+          path: agent-review.md
+          if-no-files-found: error

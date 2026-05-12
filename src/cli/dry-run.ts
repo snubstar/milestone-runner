@@ -3,14 +3,20 @@ import { readFile } from "node:fs/promises";
 import { buildPlanningArtifactPaths } from "../artifacts/planning-artifacts.js";
 import type { RunPaths } from "../artifacts/paths.js";
 import type { OrchestratorConfig } from "../config/config-types.js";
-import {
-  formatEnvironmentDiagnostics,
-  type EnvironmentDiagnostic,
-} from "../diagnostics/environment-validator.js";
+import type { EnvironmentDiagnostic } from "../diagnostics/environment-validator.js";
 import type { GitMetadata } from "../git/git-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
 import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
 import type { RunState } from "../state/state-types.js";
+import {
+  formatChecks,
+  formatDiagnostics,
+  formatMilestoneStatusesCompact,
+  nonGitPlanningOverride,
+  warningsForGitOverrides,
+} from "./run-report.js";
+
+export { printDryRunReport } from "./run-report.js";
 
 export interface DryRunReport {
   mode: "new" | "resume";
@@ -76,7 +82,7 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       config: options.configPath,
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
-      checks: formatChecks(options.config),
+      checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,
       gitRoot: options.git.root ?? "unavailable",
@@ -122,7 +128,7 @@ export async function buildResumeDryRunReport(
       goal: options.state.goal,
       currentPhase: options.state.currentPhase,
       currentMilestone: options.state.currentMilestoneId ?? "none",
-      milestones: formatMilestoneStatuses(options.state),
+      milestones: formatMilestoneStatusesCompact(options.state),
       planningOnly: options.planningOnly,
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,
@@ -130,7 +136,7 @@ export async function buildResumeDryRunReport(
       runner: options.runnerType,
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
-      checks: formatChecks(options.config),
+      checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,
       gitRoot: options.git.root ?? "unavailable",
@@ -143,26 +149,6 @@ export async function buildResumeDryRunReport(
       lastError: options.state.lastError?.message ?? null,
     },
   };
-}
-
-export function printDryRunReport(report: DryRunReport): void {
-  console.log("Agent milestone orchestrator dry run");
-  console.log(`Mode: ${report.mode}`);
-  console.log(`Allowed: ${report.allowed}`);
-  console.log(`Exit code: ${report.exitCode}`);
-  console.log(`Next action: ${report.nextAction}`);
-  console.log("Warnings:");
-  if (report.warnings.length === 0) {
-    console.log("  none");
-  } else {
-    for (const warning of report.warnings) {
-      console.log(`  ${warning}`);
-    }
-  }
-  console.log("Details:");
-  for (const [key, value] of Object.entries(report.details)) {
-    console.log(`  ${key}: ${value ?? "null"}`);
-  }
 }
 
 async function resumeNextAction(
@@ -286,44 +272,6 @@ function diagnosticWarnings(diagnostics: EnvironmentDiagnostic[]): string[] {
   return diagnostics
     .filter((diagnostic) => diagnostic.level === "warning")
     .map((diagnostic) => diagnostic.message);
-}
-
-function formatDiagnostics(diagnostics: EnvironmentDiagnostic[]): string {
-  if (diagnostics.length === 0) return "none";
-  return formatEnvironmentDiagnostics(diagnostics).join(" | ");
-}
-
-function warningsForGitOverrides(
-  git: GitMetadata,
-  allowNonGitPlanning: boolean,
-): string[] {
-  const warnings: string[] = [];
-  if (git.dirtyOverride) {
-    warnings.push("Dirty Git working tree allowed by --allow-dirty.");
-  }
-  if (nonGitPlanningOverride(git, allowNonGitPlanning)) {
-    warnings.push("Planning outside Git allowed by --allow-non-git-planning.");
-  }
-  return warnings;
-}
-
-function nonGitPlanningOverride(
-  git: GitMetadata,
-  allowNonGitPlanning: boolean,
-): boolean {
-  return allowNonGitPlanning && git.planningOnly && !git.required && git.root === null;
-}
-
-function formatChecks(config: OrchestratorConfig): string {
-  return config.checks.length === 0 ? "none" : config.checks.join(" && ");
-}
-
-function formatMilestoneStatuses(state: RunState): string {
-  const entries = Object.entries(state.milestoneStatuses).sort(
-    ([left], [right]) => Number(left) - Number(right),
-  );
-  if (entries.length === 0) return "none";
-  return entries.map(([id, status]) => `${id}:${status}`).join(", ");
 }
 
 function formatError(error: unknown): string {
