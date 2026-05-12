@@ -184,11 +184,13 @@ export function applyConfigOverrides(
   overrides: {
     artifactRoot?: string;
     runnerType?: string;
+    maxFixAttempts?: number;
   },
 ): OrchestratorConfig {
   return {
     ...config,
     artifactRoot: overrides.artifactRoot ?? config.artifactRoot,
+    maxFixAttempts: overrides.maxFixAttempts ?? config.maxFixAttempts,
     runner: {
       ...config.runner,
       type: (overrides.runnerType ?? config.runner.type) as OrchestratorConfig["runner"]["type"],

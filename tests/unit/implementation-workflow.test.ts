@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -97,6 +97,36 @@ test("runImplementationWorkflow excludes run artifacts from unignored implementa
     assert.doesNotMatch(diff, /\.agent-work\/run-1/);
     assert.doesNotMatch(diff, /10-milestone-1-plan\.md/);
     assert.doesNotMatch(diff, /state\.json/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow allows an explicitly approved dirty baseline", async () => {
+  const context = await createImplementationContext();
+  try {
+    await writeFile(path.join(context.repo, "README.md"), "# Dirty Fixture\n", "utf8");
+
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: {
+        ...context.workflowOptions.initialState,
+        git: {
+          ...context.workflowOptions.initialState.git,
+          dirtyAtStart: true,
+          dirtyOverride: true,
+          statusPorcelain: " M README.md\n",
+        },
+      },
+      runner: new FakeRunner(),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const diff = await readFile(path.join(context.paths.dirs.diffs, "12-milestone-1.diff"), "utf8");
+    assert.match(diff, /diff --git a\/fake-milestone-1-implementation\.txt b\/fake-milestone-1-implementation\.txt/);
+    assert.doesNotMatch(diff, /README\.md/);
   } finally {
     await context.cleanup();
   }

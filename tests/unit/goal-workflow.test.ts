@@ -127,6 +127,124 @@ test("runGoalWorkflow stops after planning when planningOnly is true", async () 
   }
 });
 
+test("runGoalWorkflow stops after a constrained target milestone passes", async () => {
+  const context = await createGoalContext();
+  try {
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.nextAction, "resume without --milestone to continue remaining milestones");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.status, "passed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.deepEqual(result.state.milestoneStatuses, {
+      "1": "passed",
+      "2": "pending",
+    });
+    assert.equal(result.state.artifacts.summaries?.goal, undefined);
+    assert.deepEqual(
+      runner.requests.map(({ phase, milestoneId }) => ({
+        phase,
+        milestoneId: milestoneId ?? null,
+      })),
+      [
+        { phase: "major_plan", milestoneId: null },
+        { phase: "major_plan_review", milestoneId: null },
+        { phase: "final_major_plan", milestoneId: null },
+        { phase: "final_plan_json", milestoneId: null },
+        { phase: "milestone_plan", milestoneId: 1 },
+        { phase: "implement_milestone", milestoneId: 1 },
+        { phase: "review_milestone", milestoneId: 1 },
+      ],
+    );
+
+    await access(path.join(context.repo, "fake-milestone-1-implementation.txt"));
+    await assert.rejects(
+      access(path.join(context.repo, "fake-milestone-2-implementation.txt")),
+    );
+    await assert.rejects(
+      access(path.join(context.paths.dirs.milestones, "90-goal-summary.md")),
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow rejects a constrained target with unmet dependencies", async () => {
+  const context = await createGoalContext();
+  try {
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+      executionLimits: {
+        targetMilestoneId: 2,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /Target milestone 2 cannot run/);
+    assert.match(result.error ?? "", /dependencies are not passed: 1/);
+    assert.equal(result.state.currentPhase, "ready_for_milestone");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.deepEqual(result.state.milestoneStatuses, {
+      "1": "pending",
+      "2": "pending",
+    });
+    assert.equal(
+      runner.requests.some((request) => request.milestoneId !== undefined),
+      false,
+    );
+    await assert.rejects(
+      access(path.join(context.repo, "fake-milestone-1-implementation.txt")),
+    );
+    await assert.rejects(
+      access(path.join(context.paths.dirs.milestones, "90-goal-summary.md")),
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow rejects a constrained target missing from metadata", async () => {
+  const context = await createGoalContext();
+  try {
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+      executionLimits: {
+        targetMilestoneId: 99,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /Target milestone 99 was not found/);
+    assert.equal(result.state.currentPhase, "ready_for_milestone");
+    assert.equal(
+      runner.requests.some((request) => request.milestoneId !== undefined),
+      false,
+    );
+    await assert.rejects(
+      access(path.join(context.paths.dirs.milestones, "90-goal-summary.md")),
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runGoalWorkflow resumes a passed milestone by advancing to the next pending milestone", async () => {
   const fixtureRepo = await createFixtureRepo({
     prefix: "agent-orchestrator-goal-workflow-resume-",

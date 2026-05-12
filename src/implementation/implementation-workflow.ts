@@ -394,7 +394,7 @@ function validateReadyState(
     return { ok: false, error: "Implementation requires a committed Git baseline." };
   }
 
-  if (state.git.dirtyAtStart) {
+  if (state.git.dirtyAtStart && !state.git.dirtyOverride) {
     return { ok: false, error: "Implementation requires a clean Git baseline." };
   }
 

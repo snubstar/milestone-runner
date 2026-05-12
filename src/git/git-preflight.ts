@@ -5,6 +5,7 @@ export interface GitPreflightOptions {
   cwd: string;
   planningOnly: boolean;
   allowDirty: boolean;
+  allowNonGitPlanning: boolean;
   commandRunner: CommandRunner;
 }
 
@@ -29,7 +30,16 @@ export async function runGitPreflight(
 
   if (rootResult.exitCode !== 0) {
     if (options.planningOnly) {
-      return { ok: true, metadata };
+      if (options.allowNonGitPlanning) {
+        return { ok: true, metadata };
+      }
+
+      return {
+        ok: false,
+        error:
+          "Not inside a Git repository. Rerun planning-only with --allow-non-git-planning to continue without Git metadata.",
+        metadata,
+      };
     }
 
     return {
@@ -94,4 +104,3 @@ export async function runGitPreflight(
 
   return { ok: true, metadata };
 }
-

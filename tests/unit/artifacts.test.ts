@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   buildRunPaths,
+  buildRunPathsFromRunDir,
   createRunId,
   toRunRelativePath,
 } from "../../src/artifacts/paths.js";
@@ -33,6 +34,21 @@ test("buildRunPaths creates expected run paths", () => {
   assert.equal(paths.files.state, path.resolve("/repo", ".agent-work", "run-1", "state.json"));
   assert.equal(paths.files.runLog, path.resolve("/repo", ".agent-work", "run-1", "logs", "run.log"));
   assert.equal(paths.dirs.fixes, path.resolve("/repo", ".agent-work", "run-1", "fixes"));
+});
+
+test("buildRunPathsFromRunDir creates expected resume paths", () => {
+  const paths = buildRunPathsFromRunDir({
+    runDir: "/repo/.agent-work/run-1",
+    runId: "run-1",
+  });
+
+  assert.equal(paths.artifactRoot, path.resolve("/repo", ".agent-work"));
+  assert.equal(paths.runId, "run-1");
+  assert.equal(paths.runDir, path.resolve("/repo", ".agent-work", "run-1"));
+  assert.equal(paths.files.goal, path.resolve("/repo", ".agent-work", "run-1", "00-goal.txt"));
+  assert.equal(paths.files.state, path.resolve("/repo", ".agent-work", "run-1", "state.json"));
+  assert.equal(paths.files.runLog, path.resolve("/repo", ".agent-work", "run-1", "logs", "run.log"));
+  assert.equal(paths.dirs.reviews, path.resolve("/repo", ".agent-work", "run-1", "reviews"));
 });
 
 test("toRunRelativePath returns path relative to run directory", () => {

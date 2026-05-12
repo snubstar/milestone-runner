@@ -31,6 +31,8 @@ import type {
 } from "./goal-workflow-types.js";
 
 const emptyMetadata: MilestoneMetadata = { milestones: [] };
+const resumeWithoutMilestoneNextAction =
+  "resume without --milestone to continue remaining milestones";
 
 export async function runGoalWorkflow(
   options: GoalWorkflowOptions,
@@ -86,6 +88,15 @@ export async function runGoalWorkflow(
           return { ok: true, state };
         }
 
+        const metadataResult = await ensureMetadata(metadata);
+        if (!metadataResult.ok) {
+          return stopForHumanReview(metadataResult.error, undefined, state.currentMilestoneId);
+        }
+        metadata = metadataResult.metadata;
+
+        const executionLimitResult = validateExecutionLimitBeforeWork(metadata);
+        if (executionLimitResult) return executionLimitResult;
+
         const result = await runImplementationWorkflow({
           goal: options.goal,
           config: options.config,
@@ -116,6 +127,15 @@ export async function runGoalWorkflow(
         if (options.planningOnly) {
           return { ok: true, state };
         }
+
+        const metadataResult = await ensureMetadata(metadata);
+        if (!metadataResult.ok) {
+          return stopForHumanReview(metadataResult.error, undefined, state.currentMilestoneId);
+        }
+        metadata = metadataResult.metadata;
+
+        const executionLimitResult = validateExecutionLimitBeforeWork(metadata);
+        if (executionLimitResult) return executionLimitResult;
 
         const result = await runReviewWorkflow({
           goal: options.goal,
@@ -159,6 +179,9 @@ export async function runGoalWorkflow(
         }
         metadata = metadataResult.metadata;
 
+        const constrainedStop = handlePassedExecutionLimit(metadata);
+        if (constrainedStop) return constrainedStop;
+
         const decision = selectNextRunnableMilestone(metadata, state);
         const handledDecision = await handleSelectionDecision(decision, metadata);
         if (handledDecision) return handledDecision;
@@ -201,6 +224,12 @@ export async function runGoalWorkflow(
     selectedMetadata: MilestoneMetadata,
   ): Promise<GoalWorkflowResult | null> {
     if (decision.kind === "runnable") {
+      const executionLimitResult = validateExecutionLimitBeforeAdvance(
+        selectedMetadata,
+        decision.milestone.id,
+      );
+      if (executionLimitResult) return executionLimitResult;
+
       state = await persist(
         advanceToMilestoneState(state, decision.milestone.id, clock()),
       );
@@ -256,6 +285,9 @@ export async function runGoalWorkflow(
     }
 
     metadata = metadataResult.metadata;
+    const targetExistsResult = validateTargetMilestoneExists(metadata);
+    if (targetExistsResult) return targetExistsResult;
+
     return handleResumeDecision(
       normalizeStateForGoalResume(state, metadata),
       metadata,
@@ -272,6 +304,12 @@ export async function runGoalWorkflow(
     }
 
     if (decision.kind === "advance") {
+      const executionLimitResult = validateExecutionLimitBeforeAdvance(
+        selectedMetadata,
+        decision.milestoneId,
+      );
+      if (executionLimitResult) return executionLimitResult;
+
       state = await persist(
         advanceToMilestoneState(state, decision.milestoneId, clock()),
       );
@@ -384,6 +422,169 @@ export async function runGoalWorkflow(
     });
   }
 
+  function handlePassedExecutionLimit(
+    selectedMetadata: MilestoneMetadata,
+  ): GoalWorkflowResult | null {
+    const targetMilestoneId = options.executionLimits?.targetMilestoneId;
+    if (
+      targetMilestoneId === undefined ||
+      !options.executionLimits?.stopAfterTargetMilestone ||
+      state.currentMilestoneId !== targetMilestoneId ||
+      state.milestoneStatuses[String(targetMilestoneId)] !== "passed"
+    ) {
+      return null;
+    }
+
+    const decision = selectNextRunnableMilestone(selectedMetadata, state);
+    if (decision.kind === "complete") {
+      return null;
+    }
+
+    if (
+      decision.kind === "runnable" &&
+      hasPendingMilestones(selectedMetadata, state)
+    ) {
+      return {
+        ok: true,
+        state,
+        nextAction: resumeWithoutMilestoneNextAction,
+      };
+    }
+
+    return null;
+  }
+
+  function validateExecutionLimitBeforeWork(
+    selectedMetadata: MilestoneMetadata,
+  ): GoalWorkflowResult | null {
+    const targetMilestoneId = options.executionLimits?.targetMilestoneId;
+    if (targetMilestoneId === undefined) return null;
+
+    const targetExists = validateTargetMilestoneExists(selectedMetadata);
+    if (targetExists) return targetExists;
+
+    const target = selectedMetadata.milestones.find(
+      (milestone) => milestone.id === targetMilestoneId,
+    );
+    if (!target) {
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} was not found in milestone metadata.`,
+      );
+    }
+
+    const targetStatus = state.milestoneStatuses[String(targetMilestoneId)];
+    const unmetDependencies = target.dependencies.filter(
+      (dependencyId) => state.milestoneStatuses[String(dependencyId)] !== "passed",
+    );
+    if (unmetDependencies.length > 0) {
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} cannot run because dependencies are not passed: ${unmetDependencies.join(", ")}.`,
+        { targetMilestoneId, unmetDependencies },
+      );
+    }
+
+    if (state.currentMilestoneId === targetMilestoneId) {
+      const expectedStatus =
+        state.currentPhase === "ready_for_review" ? "ready_for_review" : "pending";
+      if (targetStatus !== expectedStatus) {
+        return executionLimitBlocked(
+          `Target milestone ${targetMilestoneId} cannot run because its current status is ${targetStatus ?? "missing"}. Choose a pending or currently active milestone, or resume without --milestone.`,
+        );
+      }
+      return null;
+    }
+
+    if (targetStatus !== "pending") {
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} cannot run because its current status is ${targetStatus ?? "missing"}. Choose a pending or currently active milestone, or resume without --milestone.`,
+      );
+    }
+
+    const decision = selectNextRunnableMilestone(selectedMetadata, state);
+    if (decision.kind !== "runnable") {
+      if (decision.kind === "complete") {
+        return executionLimitBlocked(
+          `Target milestone ${targetMilestoneId} cannot run because the goal is already complete.`,
+          { targetMilestoneId },
+        );
+      }
+
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} cannot run because no matching milestone is currently runnable. ${decision.message}`,
+        decision.details,
+      );
+    }
+
+    if (decision.milestone.id !== targetMilestoneId) {
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} cannot run because next runnable milestone is ${decision.milestone.id}. Run without --milestone to continue in dependency order or choose --milestone ${decision.milestone.id}.`,
+        {
+          targetMilestoneId,
+          nextRunnableMilestoneId: decision.milestone.id,
+        },
+      );
+    }
+
+    return null;
+  }
+
+  function validateExecutionLimitBeforeAdvance(
+    selectedMetadata: MilestoneMetadata,
+    nextMilestoneId: number,
+  ): GoalWorkflowResult | null {
+    const targetMilestoneId = options.executionLimits?.targetMilestoneId;
+    if (targetMilestoneId === undefined) return null;
+
+    const targetExists = validateTargetMilestoneExists(selectedMetadata);
+    if (targetExists) return targetExists;
+
+    if (nextMilestoneId !== targetMilestoneId) {
+      return executionLimitBlocked(
+        `Target milestone ${targetMilestoneId} cannot run because next runnable milestone is ${nextMilestoneId}. Run without --milestone to continue in dependency order or choose --milestone ${nextMilestoneId}.`,
+        {
+          targetMilestoneId,
+          nextRunnableMilestoneId: nextMilestoneId,
+        },
+      );
+    }
+
+    return null;
+  }
+
+  function validateTargetMilestoneExists(
+    selectedMetadata: MilestoneMetadata,
+  ): GoalWorkflowResult | null {
+    const targetMilestoneId = options.executionLimits?.targetMilestoneId;
+    if (targetMilestoneId === undefined) return null;
+
+    if (
+      selectedMetadata.milestones.some(
+        (milestone) => milestone.id === targetMilestoneId,
+      )
+    ) {
+      return null;
+    }
+
+    return executionLimitBlocked(
+      `Target milestone ${targetMilestoneId} was not found in milestone metadata.`,
+      { targetMilestoneId },
+    );
+  }
+
+  function executionLimitBlocked(
+    message: string,
+    details?: unknown,
+  ): GoalWorkflowResult {
+    return {
+      ok: false,
+      state,
+      error:
+        details === undefined
+          ? message
+          : `${message} Details: ${JSON.stringify(normalizeDetails(details))}`,
+    };
+  }
+
   async function finishTerminal(options: {
     state: RunState;
     metadata: MilestoneMetadata;
@@ -481,6 +682,15 @@ function isPlanningResumePhase(phase: RunState["currentPhase"]): boolean {
     phase === "initialized" ||
     phase === "planning" ||
     phase === "plan_reviewing"
+  );
+}
+
+function hasPendingMilestones(
+  metadata: MilestoneMetadata,
+  state: RunState,
+): boolean {
+  return metadata.milestones.some(
+    (milestone) => state.milestoneStatuses[String(milestone.id)] === "pending",
   );
 }
 

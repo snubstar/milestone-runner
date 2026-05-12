@@ -53,6 +53,248 @@ test("main stops after planning when --planning-only is set", async () => {
   }
 });
 
+test("main stores max fix attempts CLI override in new run state", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--max-fix-attempts",
+      "2",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.config.snapshot?.maxFixAttempts, 2);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs a new fake run without creating a run directory", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Agent milestone orchestrator dry run/);
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Allowed: true/);
+    assert.match(result.stdout, /Next action: run_full_goal/);
+    assert.match(result.stdout, /runner: fake/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs blocked non-fake execution without creating a run directory", async () => {
+  const repo = await createCliFixtureRepo({
+    runner: {
+      type: "codex-exec",
+      command: process.execPath,
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "never",
+      },
+    },
+  });
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Allowed: false/);
+    assert.match(result.stdout, /Next action: blocked_runner_not_supported/);
+    assert.match(result.stdout, /runner: codex-exec/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs missing codex-exec runner command as an environment block", async () => {
+  const repo = await createCliFixtureRepo({
+    runner: {
+      type: "codex-exec",
+      command: "agent-orchestrator-missing-codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "never",
+      },
+    },
+  });
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--planning-only",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Next action: blocked_missing_tool/);
+    assert.match(result.stdout, /runner\.command/);
+    assert.match(result.stdout, /agent-orchestrator-missing-codex --version/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects missing codex-exec runner command before creating a run directory", async () => {
+  const repo = await createCliFixtureRepo({
+    runner: {
+      type: "codex-exec",
+      command: "agent-orchestrator-missing-codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "never",
+      },
+    },
+  });
+  try {
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Error: Configured codex-exec runner command/);
+    assert.match(result.stderr, /runner\.command/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs blocked dirty execution without creating a run directory", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    await writeFile(path.join(repo, "README.md"), "# Dirty CLI Fixture\n", "utf8");
+
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Allowed: false/);
+    assert.match(result.stdout, /Next action: blocked_dirty_tree/);
+    assert.match(result.stdout, /gitDirty: true/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main resumes an existing fake run from saved state", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const planningResult = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(planningResult.exitCode, 0);
+
+    const plannedState = await readOnlyRunState(repo);
+    assert.equal(plannedState.currentPhase, "ready_for_milestone");
+
+    const resumeResult = await runMainInRepo(repo, [
+      "--resume",
+      plannedState.runDir,
+    ]);
+
+    assert.equal(resumeResult.exitCode, 0);
+    assert.match(resumeResult.stdout, /State: passed/);
+    assert.match(resumeResult.stdout, /Current milestone: none/);
+    assert.match(resumeResult.stdout, /Milestones:\n  1: passed\n  2: passed/);
+
+    const finalState = await readOnlyRunState(repo);
+    assert.equal(finalState.currentPhase, "passed");
+    assert.equal(finalState.currentMilestoneId, null);
+    assert.equal(finalState.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs resume without writing state changes", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const planningResult = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(planningResult.exitCode, 0);
+
+    const plannedState = await readOnlyRunState(repo);
+    const statePath = path.join(plannedState.runDir, "state.json");
+    const rawStateBefore = await readFile(statePath, "utf8");
+
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--resume",
+      plannedState.runDir,
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Agent milestone orchestrator dry run/);
+    assert.match(result.stdout, /Mode: resume/);
+    assert.match(result.stdout, /Allowed: true/);
+    assert.match(result.stdout, /Next action: continue_milestone/);
+
+    const rawStateAfter = await readFile(statePath, "utf8");
+    assert.equal(rawStateAfter, rawStateBefore);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("main runs all fake milestones through review when planning-only is not set", async () => {
   const repo = await createCliFixtureRepo();
   try {
@@ -151,6 +393,80 @@ test("main runs all fake milestones through review when planning-only is not set
   }
 });
 
+test("main runs one constrained milestone and leaves remaining milestones resumable", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--milestone",
+      "1",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Target milestone: 1/);
+    assert.match(result.stdout, /State: passed/);
+    assert.match(result.stdout, /Current milestone: 1/);
+    assert.match(result.stdout, /Next action: resume without --milestone to continue remaining milestones/);
+    assert.match(result.stdout, /Milestones:\n  1: passed\n  2: pending/);
+    assert.doesNotMatch(result.stdout, /Final summary artifact:/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "passed");
+    assert.equal(state.status, "passed");
+    assert.equal(state.currentMilestoneId, 1);
+    assert.deepEqual(state.milestoneStatuses, {
+      "1": "passed",
+      "2": "pending",
+    });
+    assert.equal(state.artifacts.summaries?.goal, undefined);
+
+    await readFile(path.join(repo, "fake-milestone-1-implementation.txt"), "utf8");
+    await assert.rejects(
+      () => readFile(path.join(repo, "fake-milestone-2-implementation.txt"), "utf8"),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects a constrained milestone with unmet dependencies before implementation", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--milestone",
+      "2",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Target milestone 2 cannot run/);
+    assert.match(result.stderr, /dependencies are not passed: 1/);
+    assert.match(result.stdout, /Target milestone: 2/);
+    assert.match(result.stdout, /State: ready_for_milestone/);
+    assert.match(result.stdout, /Milestones:\n  1: pending\n  2: pending/);
+    assert.doesNotMatch(result.stdout, /Final summary artifact:/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "ready_for_milestone");
+    assert.equal(state.currentMilestoneId, 1);
+    await assert.rejects(
+      () => readFile(path.join(repo, "fake-milestone-1-implementation.txt"), "utf8"),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("main prints final summary artifact when fake workflow fails after writing summary", async () => {
   const repo = await createCliFixtureRepo({
     checks: [
@@ -212,9 +528,11 @@ test("main rejects dirty implementation runs before creating a run directory", a
   }
 });
 
-test("main rejects --allow-dirty outside planning-only mode", async () => {
+test("main allows dirty implementation runs with explicit override", async () => {
   const repo = await createCliFixtureRepo();
   try {
+    await writeFile(path.join(repo, "README.md"), "# Dirty CLI Fixture\n", "utf8");
+
     const result = await runMainInRepo(repo, [
       "--allow-dirty",
       "--runner",
@@ -224,8 +542,108 @@ test("main rejects --allow-dirty outside planning-only mode", async () => {
       "Add feature X",
     ]);
 
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stderr, /Warning: dirty Git working tree allowed by --allow-dirty/);
+    assert.match(result.stdout, /Git dirty: true/);
+    assert.match(result.stdout, /Git dirty override: true/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.git.dirtyAtStart, true);
+    assert.equal(state.git.dirtyOverride, true);
+    assert.match(state.git.statusPorcelain, /README\.md/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects non-Git planning-only without explicit override", async () => {
+  const repo = await createCliFixtureProject();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /--allow-dirty is only supported with --planning-only/);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /--allow-non-git-planning/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main allows non-Git planning-only with explicit override", async () => {
+  const repo = await createCliFixtureProject();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--allow-non-git-planning",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stderr, /Warning: planning outside Git allowed by --allow-non-git-planning/);
+    assert.match(result.stdout, /Git required: false/);
+    assert.match(result.stdout, /Git root: unavailable/);
+    assert.match(result.stdout, /Non-Git planning override: true/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.git.required, false);
+    assert.equal(state.git.root, null);
+    assert.equal(state.git.startSha, null);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs non-Git planning-only with explicit override", async () => {
+  const repo = await createCliFixtureProject();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--planning-only",
+      "--allow-non-git-planning",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Allowed: true/);
+    assert.match(result.stdout, /Next action: run_planning_only/);
+    assert.match(result.stdout, /Planning outside Git allowed by --allow-non-git-planning/);
+    assert.match(result.stdout, /gitNonGitPlanningOverride: true/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects runner override with resume", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--resume",
+      "run-1",
+      "--runner",
+      "fake",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /--runner cannot be combined with --resume/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -236,7 +654,7 @@ test("main rejects non-fake runners for Milestone 7 execution", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
-      command: "codex",
+      command: process.execPath,
       options: {
         sandboxForPlanning: "read-only",
         sandboxForImplementation: "workspace-write",
@@ -263,7 +681,7 @@ test("main allows non-fake runners in planning-only mode", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
-      command: "codex",
+      command: process.execPath,
       options: {
         sandboxForPlanning: "read-only",
         sandboxForImplementation: "workspace-write",
@@ -342,6 +760,26 @@ type CliFixtureRunnerConfig =
 async function createCliFixtureRepo(
   options: { runner?: CliFixtureRunnerConfig; checks?: string[] } = {},
 ): Promise<string> {
+  const repo = await createCliFixtureProject(options);
+
+  await git(repo, ["init"]);
+  await git(repo, ["add", "."]);
+  await git(repo, [
+    "-c",
+    "user.name=Agent Orchestrator Test",
+    "-c",
+    "user.email=agent-orchestrator@example.invalid",
+    "commit",
+    "-m",
+    "initial",
+  ]);
+
+  return repo;
+}
+
+async function createCliFixtureProject(
+  options: { runner?: CliFixtureRunnerConfig; checks?: string[] } = {},
+): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-cli-"));
   await writeFile(path.join(repo, ".gitignore"), ".agent-work/\n", "utf8");
   await writeFile(path.join(repo, "README.md"), "# CLI Fixture\n", "utf8");
@@ -368,18 +806,6 @@ async function createCliFixtureRepo(
   await cp(path.join(projectRoot, "schemas"), path.join(repo, "schemas"), {
     recursive: true,
   });
-
-  await git(repo, ["init"]);
-  await git(repo, ["add", "."]);
-  await git(repo, [
-    "-c",
-    "user.name=Agent Orchestrator Test",
-    "-c",
-    "user.email=agent-orchestrator@example.invalid",
-    "commit",
-    "-m",
-    "initial",
-  ]);
 
   return repo;
 }

@@ -1,11 +1,16 @@
 import type { RunnerType } from "../runners/runner-types.js";
 
 export interface CliOptions {
-  goal: string;
+  goal: string | null;
   configPath?: string;
   artifactRoot?: string;
   planningOnly: boolean;
   allowDirty: boolean;
+  allowNonGitPlanning: boolean;
+  dryRun: boolean;
+  resume?: string;
+  maxFixAttempts?: number;
+  milestone?: number;
   runner?: RunnerType;
 }
 
@@ -20,6 +25,8 @@ export function parseArgs(argv: string[]): ParseArgsResult {
   const options: Omit<CliOptions, "goal"> = {
     planningOnly: false,
     allowDirty: false,
+    allowNonGitPlanning: false,
+    dryRun: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -37,6 +44,49 @@ export function parseArgs(argv: string[]): ParseArgsResult {
 
     if (arg === "--allow-dirty") {
       options.allowDirty = true;
+      continue;
+    }
+
+    if (arg === "--allow-non-git-planning") {
+      options.allowNonGitPlanning = true;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--resume") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      options.resume = value.value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--max-fix-attempts") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      const parsed = parseIntegerOption(
+        value.value,
+        arg,
+        0,
+        "a non-negative integer",
+      );
+      if (!parsed.ok) return parsed;
+      options.maxFixAttempts = parsed.value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--milestone") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      const parsed = parseIntegerOption(value.value, arg, 1, "a positive integer");
+      if (!parsed.ok) return parsed;
+      options.milestone = parsed.value;
+      index += 1;
       continue;
     }
 
@@ -78,6 +128,30 @@ export function parseArgs(argv: string[]): ParseArgsResult {
   }
 
   const goal = goalParts.join(" ").trim();
+  if (options.resume) {
+    if (goal) {
+      return {
+        ok: false,
+        error: "Cannot provide a goal when --resume is set. The saved state provides the goal.",
+      };
+    }
+
+    if (options.configPath) {
+      return {
+        ok: false,
+        error: "--config cannot be combined with --resume in Milestone 8.",
+      };
+    }
+
+    return {
+      ok: true,
+      options: {
+        ...options,
+        goal: null,
+      },
+    };
+  }
+
   if (!goal) {
     return { ok: false, error: "Missing goal." };
   }
@@ -104,15 +178,46 @@ function readOptionValue(
   return { ok: true, value };
 }
 
+function parseIntegerOption(
+  value: string,
+  optionName: string,
+  minimum: number,
+  description: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (!/^\d+$/.test(value)) {
+    return {
+      ok: false,
+      error: `Invalid ${optionName} value "${value}". Expected ${description}.`,
+    };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    return {
+      ok: false,
+      error: `Invalid ${optionName} value "${value}". Expected ${description}.`,
+    };
+  }
+
+  return { ok: true, value: parsed };
+}
+
 export function usage(): string {
   return [
     "Usage: agent-orchestrator [options] <goal>",
+    "       agent-orchestrator --resume <run-dir-or-id> [options]",
     "",
     "Options:",
     "  --config <path>         Path to config file.",
     "  --artifact-root <path>  Override artifact root.",
     "  --planning-only         Allow planning-only operation.",
-    "  --allow-dirty           Allow dirty Git working tree for planning-only runs.",
+    "  --allow-dirty           Allow dirty Git working tree for implementation runs.",
+    "  --allow-non-git-planning",
+    "                          Allow planning-only runs outside a Git repository.",
+    "  --dry-run               Validate and report the next action without writing artifacts.",
+    "  --resume <value>        Resume from a run directory, state.json path, or run id.",
+    "  --max-fix-attempts <n>  Override the configured max fix attempts.",
+    "  --milestone <id>        Constrain execution to one milestone.",
     "  --runner <type>         Runner type: fake or codex-exec.",
   ].join("\n");
 }

@@ -13,6 +13,7 @@ test("runGitPreflight succeeds for a clean Git repository", async () => {
     cwd: "/repo",
     planningOnly: false,
     allowDirty: false,
+    allowNonGitPlanning: false,
     commandRunner: fakeGitRunner({
       root: "/repo\n",
       head: "abc123\n",
@@ -32,6 +33,7 @@ test("runGitPreflight fails outside Git for implementation-capable mode", async 
     cwd: "/repo",
     planningOnly: false,
     allowDirty: false,
+    allowNonGitPlanning: false,
     commandRunner: fakeGitRunner({ rootExitCode: 128 }),
   });
 
@@ -42,11 +44,30 @@ test("runGitPreflight fails outside Git for implementation-capable mode", async 
   assert.equal(result.metadata.root, null);
 });
 
-test("runGitPreflight allows non-Git directories in planning-only mode", async () => {
+test("runGitPreflight rejects non-Git planning-only mode without explicit override", async () => {
   const result = await runGitPreflight({
     cwd: "/repo",
     planningOnly: true,
     allowDirty: false,
+    allowNonGitPlanning: false,
+    commandRunner: fakeGitRunner({ rootExitCode: 128 }),
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /--allow-non-git-planning/);
+  }
+  assert.equal(result.metadata.required, false);
+  assert.equal(result.metadata.planningOnly, true);
+  assert.equal(result.metadata.root, null);
+});
+
+test("runGitPreflight allows non-Git planning-only mode with explicit override", async () => {
+  const result = await runGitPreflight({
+    cwd: "/repo",
+    planningOnly: true,
+    allowDirty: false,
+    allowNonGitPlanning: true,
     commandRunner: fakeGitRunner({ rootExitCode: 128 }),
   });
 
@@ -54,6 +75,7 @@ test("runGitPreflight allows non-Git directories in planning-only mode", async (
   assert.equal(result.metadata.required, false);
   assert.equal(result.metadata.planningOnly, true);
   assert.equal(result.metadata.root, null);
+  assert.equal(result.metadata.startSha, null);
 });
 
 test("runGitPreflight fails when repository has no commits", async () => {
@@ -61,6 +83,7 @@ test("runGitPreflight fails when repository has no commits", async () => {
     cwd: "/repo",
     planningOnly: false,
     allowDirty: false,
+    allowNonGitPlanning: false,
     commandRunner: fakeGitRunner({
       root: "/repo\n",
       headExitCode: 128,
@@ -78,6 +101,7 @@ test("runGitPreflight fails on dirty tree without override", async () => {
     cwd: "/repo",
     planningOnly: false,
     allowDirty: false,
+    allowNonGitPlanning: false,
     commandRunner: fakeGitRunner({
       root: "/repo\n",
       head: "abc123\n",
@@ -100,6 +124,7 @@ test("runGitPreflight allows dirty tree with override", async () => {
     cwd: "/repo",
     planningOnly: false,
     allowDirty: true,
+    allowNonGitPlanning: false,
     commandRunner: fakeGitRunner({
       root: "/repo\n",
       head: "abc123\n",
@@ -110,6 +135,7 @@ test("runGitPreflight allows dirty tree with override", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.metadata.dirtyAtStart, true);
   assert.equal(result.metadata.dirtyOverride, true);
+  assert.equal(result.metadata.statusPorcelain, " M src/file.ts\n");
 });
 
 interface FakeGitRunnerOptions {
@@ -155,4 +181,3 @@ function commandResult(
     stderr,
   };
 }
-

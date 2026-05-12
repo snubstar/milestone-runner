@@ -48,6 +48,7 @@ test("runGitPreflight succeeds against the current repository with dirty overrid
     cwd,
     planningOnly: false,
     allowDirty: true,
+    allowNonGitPlanning: false,
     commandRunner: nodeCommandRunner,
   });
 

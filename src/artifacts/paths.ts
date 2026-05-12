@@ -7,6 +7,11 @@ export interface RunPathOptions {
   runId: string;
 }
 
+export interface RunDirPathOptions {
+  runDir: string;
+  runId: string;
+}
+
 export interface RunPaths {
   artifactRoot: string;
   runId: string;
@@ -34,24 +39,45 @@ export function createRunId(date = new Date(), entropy = randomBytes(4).toString
 export function buildRunPaths(options: RunPathOptions): RunPaths {
   const artifactRoot = path.resolve(options.cwd, options.artifactRoot);
   const runDir = path.join(artifactRoot, options.runId);
+  return buildRunPathsFromResolvedParts({
+    artifactRoot,
+    runDir,
+    runId: options.runId,
+  });
+}
+
+export function buildRunPathsFromRunDir(options: RunDirPathOptions): RunPaths {
+  const runDir = path.resolve(options.runDir);
+  return buildRunPathsFromResolvedParts({
+    artifactRoot: path.dirname(runDir),
+    runDir,
+    runId: options.runId,
+  });
+}
+
+function buildRunPathsFromResolvedParts(options: {
+  artifactRoot: string;
+  runDir: string;
+  runId: string;
+}): RunPaths {
   const dirs = {
-    logs: path.join(runDir, "logs"),
-    plans: path.join(runDir, "plans"),
-    milestones: path.join(runDir, "milestones"),
-    reviews: path.join(runDir, "reviews"),
-    checks: path.join(runDir, "checks"),
-    diffs: path.join(runDir, "diffs"),
-    fixes: path.join(runDir, "fixes"),
+    logs: path.join(options.runDir, "logs"),
+    plans: path.join(options.runDir, "plans"),
+    milestones: path.join(options.runDir, "milestones"),
+    reviews: path.join(options.runDir, "reviews"),
+    checks: path.join(options.runDir, "checks"),
+    diffs: path.join(options.runDir, "diffs"),
+    fixes: path.join(options.runDir, "fixes"),
   };
 
   return {
-    artifactRoot,
+    artifactRoot: options.artifactRoot,
     runId: options.runId,
-    runDir,
+    runDir: options.runDir,
     dirs,
     files: {
-      goal: path.join(runDir, "00-goal.txt"),
-      state: path.join(runDir, "state.json"),
+      goal: path.join(options.runDir, "00-goal.txt"),
+      state: path.join(options.runDir, "state.json"),
       runLog: path.join(dirs.logs, "run.log"),
     },
   };

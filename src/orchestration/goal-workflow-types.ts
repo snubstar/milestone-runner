@@ -15,11 +15,18 @@ export interface GoalWorkflowOptions {
   planningOnly?: boolean;
   promptDir?: string;
   milestonesSchema?: string | object;
+  executionLimits?: GoalWorkflowExecutionLimits;
   now?: () => Date;
+}
+
+export interface GoalWorkflowExecutionLimits {
+  targetMilestoneId?: number;
+  stopAfterTargetMilestone?: boolean;
 }
 
 export interface GoalWorkflowResult {
   ok: boolean;
   state: RunState;
   error?: string;
+  nextAction?: string;
 }

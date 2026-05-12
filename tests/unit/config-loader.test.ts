@@ -92,7 +92,7 @@ test("validateConfig accepts fake runner without command", () => {
   }
 });
 
-test("applyConfigOverrides applies artifact root and runner type", () => {
+test("applyConfigOverrides applies artifact root, runner type, and max fix attempts", () => {
   const result = validateConfig({
     checks: [],
     runner: {
@@ -107,10 +107,11 @@ test("applyConfigOverrides applies artifact root and runner type", () => {
     const config = applyConfigOverrides(result.value, {
       artifactRoot: ".runs",
       runnerType: "codex-exec",
+      maxFixAttempts: 3,
     });
 
     assert.equal(config.artifactRoot, ".runs");
     assert.equal(config.runner.type, "codex-exec");
+    assert.equal(config.maxFixAttempts, 3);
   }
 });
-
