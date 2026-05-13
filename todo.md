@@ -2,6 +2,13 @@
 codex resume 019e1cc8-7faa-7e60-ad16-e89e1f63ac20
 
 
+Test, if works, test with actual plan with real goals.
+If works, write documentation, make it open-source.
+
+-------------------------------------------------
+-------------------------------------------------
+-------------------------------------------------
+
 
 
 Visualization of state machines,
