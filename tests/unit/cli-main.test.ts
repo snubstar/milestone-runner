@@ -12,6 +12,7 @@ import {
   assertReviewVerdictArtifact,
   assertRunStateShape,
 } from "../helpers/assertions.js";
+import { createReadyForMilestoneRunFixture } from "../helpers/run-fixture.js";
 
 const projectRoot = process.cwd();
 
@@ -106,7 +107,7 @@ test("main dry-runs a new fake run without creating a run directory", async () =
   }
 });
 
-test("main dry-runs blocked non-fake execution without creating a run directory", async () => {
+test("main dry-runs codex-exec execution without creating a run directory", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
@@ -126,11 +127,44 @@ test("main dry-runs blocked non-fake execution without creating a run directory"
       "Add feature X",
     ]);
 
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Allowed: true/);
+    assert.match(result.stdout, /Next action: run_full_goal/);
+    assert.match(result.stdout, /runner: codex-exec/);
+    assert.match(result.stdout, /runnerExecution: codex exec via /);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs blocked codex-exec execution without creating a run directory", async () => {
+  const repo = await createCliFixtureRepo({
+    runner: {
+      type: "codex-exec",
+      command: "agent-orchestrator-missing-codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "never",
+      },
+    },
+  });
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
     assert.equal(result.exitCode, 1);
     assert.equal(result.stderr, "");
     assert.match(result.stdout, /Mode: new/);
     assert.match(result.stdout, /Allowed: false/);
-    assert.match(result.stdout, /Next action: blocked_runner_not_supported/);
+    assert.match(result.stdout, /Next action: blocked_missing_tool/);
     assert.match(result.stdout, /runner: codex-exec/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
@@ -697,7 +731,7 @@ test("main rejects runner override with resume", async () => {
   }
 });
 
-test("main rejects non-fake runners for Milestone 8 execution", async () => {
+test("main reaches codex-exec runner for implementation-capable execution", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
@@ -717,8 +751,69 @@ test("main rejects non-fake runners for Milestone 8 execution", async () => {
     ]);
 
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /Milestone 8 execution currently requires --runner fake/);
-    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+    assert.doesNotMatch(result.stderr, /requires --runner fake/);
+    assert.match(result.stderr, /Runner phase major_plan failed with exit code 1/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "planning");
+    assert.equal(state.status, "failed");
+    assert.match(state.lastError?.message ?? "", /Runner phase major_plan failed/);
+    assert.equal(state.artifacts.logs?.run, path.join("logs", "run.log"));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main resumes codex-exec implementation-capable runs through the adapter", async () => {
+  const runner: CliFixtureRunnerConfig = {
+    type: "codex-exec",
+    command: process.execPath,
+    options: {
+      sandboxForPlanning: "read-only",
+      sandboxForImplementation: "workspace-write",
+      approvalPolicy: "never",
+    },
+  };
+  const repo = await createCliFixtureRepo({ runner });
+  try {
+    await createReadyForMilestoneRunFixture({
+      cwd: repo,
+      startSha: await gitOutput(repo, ["rev-parse", "HEAD"]),
+      config: {
+        checks: [`${JSON.stringify(process.execPath)} -e "process.stdout.write('cli check ok')"`],
+        runner,
+        maxFixAttempts: 0,
+        artifactRoot: ".agent-work",
+      },
+      configPath: path.join(repo, "orchestrator.config.json"),
+    });
+
+    const dryRun = await runMainInRepo(repo, [
+      "--dry-run",
+      "--resume",
+      "run-1",
+    ]);
+    assert.equal(dryRun.exitCode, 0);
+    assert.equal(dryRun.stderr, "");
+    assert.match(dryRun.stdout, /Allowed: true/);
+    assert.match(dryRun.stdout, /Next action: continue_milestone/);
+    assert.match(dryRun.stdout, /runnerExecution: codex exec via /);
+
+    const result = await runMainInRepo(repo, [
+      "--resume",
+      "run-1",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.doesNotMatch(result.stderr, /requires a fake runner/);
+    assert.match(result.stderr, /Runner phase milestone_plan failed with exit code 1/);
+    assert.match(result.stdout, /Mode: resume/);
+    assert.match(result.stdout, /State before resume: ready_for_milestone/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "implementing");
+    assert.equal(state.status, "failed");
+    assert.match(state.lastError?.message ?? "", /milestone_plan failed/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -800,7 +895,7 @@ type CliFixtureRunnerConfig =
       options: {
         sandboxForPlanning: "read-only" | "workspace-write" | "danger-full-access";
         sandboxForImplementation: "read-only" | "workspace-write" | "danger-full-access";
-        approvalPolicy: "never" | "on-request" | "on-failure" | "untrusted";
+        approvalPolicy: "never" | "on-request" | "untrusted";
       };
     };
 
@@ -879,4 +974,19 @@ async function git(repo: string, args: string[]): Promise<void> {
     0,
     `git ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
+}
+
+async function gitOutput(repo: string, args: string[]): Promise<string> {
+  const result = await nodeCommandRunner.run({
+    command: "git",
+    args,
+    cwd: repo,
+  });
+
+  assert.equal(
+    result.exitCode,
+    0,
+    `git ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+  return result.stdout.trim();
 }

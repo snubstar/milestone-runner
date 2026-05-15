@@ -17,6 +17,13 @@ test("loadConfig reads the example config", async () => {
   if (result.ok) {
     assert.equal(path.basename(result.value.path), "orchestrator.config.example.json");
     assert.equal(result.value.config.runner.type, "codex-exec");
+    assert.deepEqual(result.value.config.runner.options, {
+      sandboxForPlanning: "read-only",
+      sandboxForImplementation: "workspace-write",
+      approvalPolicy: "never",
+      timeoutMs: 1800000,
+      jsonEvents: false,
+    });
     assert.equal(result.value.config.artifactRoot, ".agent-work");
   }
 });
@@ -74,6 +81,140 @@ test("validateConfig rejects missing codex runner options", () => {
     ok: false,
     error: "`runner.options` is required for codex-exec.",
   });
+});
+
+test("validateConfig accepts extended codex runner options", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "codex-exec",
+      command: "codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "on-request",
+        timeoutMs: 120000,
+        model: "gpt-5.5",
+        profile: "automation",
+        jsonEvents: true,
+      },
+    },
+    maxFixAttempts: 2,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.value.runner.options, {
+      sandboxForPlanning: "read-only",
+      sandboxForImplementation: "workspace-write",
+      approvalPolicy: "on-request",
+      timeoutMs: 120000,
+      model: "gpt-5.5",
+      profile: "automation",
+      jsonEvents: true,
+    });
+  }
+});
+
+test("validateConfig rejects deprecated codex approval policy", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "codex-exec",
+      command: "codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "on-failure",
+      },
+    },
+    maxFixAttempts: 2,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /"on-failure" is deprecated/);
+    assert.match(result.error, /Use "on-request"/);
+  }
+});
+
+test("validateConfig rejects invalid extended codex runner options", () => {
+  const base = {
+    checks: [],
+    runner: {
+      type: "codex-exec",
+      command: "codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "never",
+      },
+    },
+    maxFixAttempts: 2,
+    artifactRoot: ".agent-work",
+  };
+
+  const invalidTimeout = validateConfig({
+    ...base,
+    runner: {
+      ...base.runner,
+      options: {
+        ...base.runner.options,
+        timeoutMs: 0,
+      },
+    },
+  });
+  assert.equal(invalidTimeout.ok, false);
+  if (!invalidTimeout.ok) {
+    assert.match(invalidTimeout.error, /timeoutMs/);
+  }
+
+  const invalidModel = validateConfig({
+    ...base,
+    runner: {
+      ...base.runner,
+      options: {
+        ...base.runner.options,
+        model: "",
+      },
+    },
+  });
+  assert.equal(invalidModel.ok, false);
+  if (!invalidModel.ok) {
+    assert.match(invalidModel.error, /model/);
+  }
+
+  const invalidJsonEvents = validateConfig({
+    ...base,
+    runner: {
+      ...base.runner,
+      options: {
+        ...base.runner.options,
+        jsonEvents: "true",
+      },
+    },
+  });
+  assert.equal(invalidJsonEvents.ok, false);
+  if (!invalidJsonEvents.ok) {
+    assert.match(invalidJsonEvents.error, /jsonEvents/);
+  }
+
+  const unsupportedOption = validateConfig({
+    ...base,
+    runner: {
+      ...base.runner,
+      options: {
+        ...base.runner.options,
+        unsupported: true,
+      },
+    },
+  });
+  assert.equal(unsupportedOption.ok, false);
+  if (!unsupportedOption.ok) {
+    assert.match(unsupportedOption.error, /Unsupported codex-exec runner option/);
+  }
 });
 
 test("validateConfig accepts fake runner without command", () => {

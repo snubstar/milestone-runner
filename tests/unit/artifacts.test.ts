@@ -34,6 +34,7 @@ test("buildRunPaths creates expected run paths", () => {
   assert.equal(paths.files.state, path.resolve("/repo", ".agent-work", "run-1", "state.json"));
   assert.equal(paths.files.runLog, path.resolve("/repo", ".agent-work", "run-1", "logs", "run.log"));
   assert.equal(paths.dirs.fixes, path.resolve("/repo", ".agent-work", "run-1", "fixes"));
+  assert.equal(paths.dirs.runner, path.resolve("/repo", ".agent-work", "run-1", "runner"));
 });
 
 test("buildRunPathsFromRunDir creates expected resume paths", () => {

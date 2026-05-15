@@ -10,6 +10,8 @@ import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js
 import { loadPrompt } from "../prompts/prompt-loader.js";
 import { renderPrompt, type PromptVariables } from "../prompts/prompt-renderer.js";
 import type { AgentRunResult } from "../runners/agent-runner.js";
+import { resolveOutputSchemaPathForPhase } from "../runners/output-schema.js";
+import { runAgentPhaseWithDiagnostics } from "../runners/runner-diagnostics.js";
 import { writeState } from "../state/state-store.js";
 import {
   failState,
@@ -301,14 +303,39 @@ export async function runImplementationWorkflow(
     | { ok: false; error: string; details?: AgentRunResult | { message: string } }
   > {
     let result: AgentRunResult;
+    let diagnosticArtifact: string | undefined;
     try {
-      result = await options.runner.run({
-        phase,
-        prompt,
-        artifacts,
-        milestoneId: activeMilestoneId ?? undefined,
-        ...runnerContext,
+      const outputSchema = await outputSchemaPathForRunnerPhase(phase);
+      if (!outputSchema.ok) return outputSchema;
+
+      const execution = await runAgentPhaseWithDiagnostics({
+        runner: options.runner,
+        paths: options.paths,
+        request: {
+          phase,
+          prompt,
+          artifacts,
+          milestoneId: activeMilestoneId ?? undefined,
+          cwd: runnerContext.cwd ?? options.cwd,
+          ...(outputSchema.path === undefined
+            ? {}
+            : { outputSchemaPath: outputSchema.path }),
+        },
       });
+
+      if (!execution.ok) {
+        return {
+          ok: false,
+          error: `Runner phase ${phase} threw an error: ${execution.error}`,
+          details: withDiagnosticArtifact(
+            { message: execution.error },
+            execution.diagnosticArtifact,
+          ),
+        };
+      }
+
+      result = execution.result;
+      diagnosticArtifact = execution.diagnosticArtifact;
     } catch (error) {
       return {
         ok: false,
@@ -321,7 +348,7 @@ export async function runImplementationWorkflow(
       return {
         ok: false,
         error: `Runner phase ${phase} failed with exit code ${result.exitCode}.`,
-        details: result,
+        details: withDiagnosticArtifact(result, diagnosticArtifact),
       };
     }
 
@@ -329,11 +356,22 @@ export async function runImplementationWorkflow(
       return {
         ok: false,
         error: `Runner phase ${phase} returned empty output.`,
-        details: result,
+        details: withDiagnosticArtifact(result, diagnosticArtifact),
       };
     }
 
     return { ok: true, value: result.text };
+  }
+
+  async function outputSchemaPathForRunnerPhase(
+    phase: ImplementationRunnerPhase,
+  ): Promise<{ ok: true; path?: string } | { ok: false; error: string }> {
+    if (options.runner.type !== "codex-exec") return { ok: true };
+
+    return resolveOutputSchemaPathForPhase({
+      phase,
+      cwd: options.cwd,
+    });
   }
 
   async function writeTextArtifactOrFail(
@@ -458,4 +496,13 @@ function resolveRunArtifactPath(runDir: string, artifactPath: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withDiagnosticArtifact<T extends object>(
+  details: T,
+  diagnosticArtifact: string | undefined,
+): T & { diagnosticArtifact?: string } {
+  return diagnosticArtifact === undefined
+    ? details
+    : { ...details, diagnosticArtifact };
 }

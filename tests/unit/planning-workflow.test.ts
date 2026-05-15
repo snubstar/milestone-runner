@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -71,6 +71,203 @@ test("runPlanningWorkflow writes planning artifacts and ready state", async () =
     assert.equal(milestones.milestones.length, 2);
 
     assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow passes target cwd to every runner phase", async () => {
+  const context = await createWorkflowContext();
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan",
+      text: "# Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "major_plan_review",
+      text: "# Major Plan Review",
+      exitCode: 0,
+    },
+    {
+      phase: "final_major_plan",
+      text: "# Final Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "final_plan_json",
+      text: JSON.stringify({
+        milestones: [
+          {
+            id: 1,
+            title: "First milestone",
+            summary: "Implement the first milestone.",
+            scope: ["Create a fixture output file"],
+            acceptanceCriteria: ["A fixture output file exists"],
+            verification: ["Configured checks pass"],
+            dependencies: [],
+            status: "pending",
+          },
+        ],
+      }),
+      exitCode: 0,
+    },
+  ], "codex-exec");
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), [
+      "major_plan",
+      "major_plan_review",
+      "final_major_plan",
+      "final_plan_json",
+    ]);
+    assert.deepEqual(
+      runner.requests.map((request) => request.cwd),
+      [
+        context.workflowOptions.cwd,
+        context.workflowOptions.cwd,
+        context.workflowOptions.cwd,
+        context.workflowOptions.cwd,
+      ],
+    );
+    assert.deepEqual(
+      runner.requests.map((request) => request.outputSchemaPath ?? null),
+      [
+        null,
+        null,
+        null,
+        path.resolve(
+          context.workflowOptions.cwd,
+          "schemas",
+          "milestones.schema.json",
+        ),
+      ],
+    );
+
+    assert.deepEqual((await readdir(context.paths.dirs.runner)).sort(), [
+      "final_major_plan-03.json",
+      "final_plan_json-04.json",
+      "major_plan-01.json",
+      "major_plan_review-02.json",
+    ]);
+    const finalPlanDiagnostic = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.runner, "final_plan_json-04.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(finalPlanDiagnostic.phase, "final_plan_json");
+    assert.equal(finalPlanDiagnostic.runner, "codex-exec");
+    assert.equal(finalPlanDiagnostic.exitCode, 0);
+    assert.equal(
+      finalPlanDiagnostic.outputSchemaPath,
+      path.resolve(context.workflowOptions.cwd, "schemas", "milestones.schema.json"),
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow writes diagnostics and references them on codex runner failure", async () => {
+  const context = await createWorkflowContext();
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan",
+      text: "failed",
+      exitCode: 2,
+      metadata: {
+        runner: "codex-exec",
+        command: "codex",
+        args: ["exec", "-"],
+        cwd: context.workflowOptions.cwd,
+        stdout: "",
+        stderr: "runner failed",
+        error: "process exited",
+        env: { SECRET: "SECRET_VALUE" },
+      },
+    },
+  ], "codex-exec");
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /major_plan failed with exit code 2/);
+
+    const diagnosticArtifact = diagnosticArtifactFromDetails(
+      result.state.lastError?.details,
+    );
+    assert.equal(diagnosticArtifact, path.join("runner", "major_plan-01.json"));
+
+    const raw = await readFile(
+      path.join(context.paths.runDir, diagnosticArtifact ?? ""),
+      "utf8",
+    );
+    assert.doesNotMatch(raw, /SECRET_VALUE/);
+    const diagnostic = JSON.parse(raw);
+    assert.equal(diagnostic.phase, "major_plan");
+    assert.equal(diagnostic.runner, "codex-exec");
+    assert.equal(diagnostic.command, "codex");
+    assert.deepEqual(diagnostic.args, ["exec", "-"]);
+    assert.equal(diagnostic.exitCode, 2);
+    assert.equal(diagnostic.stderr, "runner failed");
+    assert.equal(diagnostic.error, "process exited");
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow fails before final_plan_json runner call when codex schema is missing", async () => {
+  const context = await createWorkflowContext();
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan",
+      text: "# Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "major_plan_review",
+      text: "# Major Plan Review",
+      exitCode: 0,
+    },
+    {
+      phase: "final_major_plan",
+      text: "# Final Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "final_plan_json",
+      text: "{}",
+      exitCode: 0,
+    },
+  ], "codex-exec");
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      cwd: context.paths.runDir,
+      promptDir: path.join(process.cwd(), "src", "prompts"),
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Required output schema for phase final_plan_json/);
+    assert.deepEqual(runner.phases(), [
+      "major_plan",
+      "major_plan_review",
+      "final_major_plan",
+    ]);
   } finally {
     await context.cleanup();
   }
@@ -295,4 +492,12 @@ class ScriptedRunner implements AgentRunner {
       }
     );
   }
+}
+
+function diagnosticArtifactFromDetails(details: unknown): string | undefined {
+  if (typeof details !== "object" || details === null) return undefined;
+  if (!("diagnosticArtifact" in details)) return undefined;
+  return typeof details.diagnosticArtifact === "string"
+    ? details.diagnosticArtifact
+    : undefined;
 }

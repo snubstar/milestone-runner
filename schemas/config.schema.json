@@ -30,7 +30,7 @@
         },
         "options": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": [
             "sandboxForPlanning",
             "sandboxForImplementation",
@@ -47,7 +47,22 @@
             },
             "approvalPolicy": {
               "type": "string",
-              "enum": ["never", "on-request", "on-failure", "untrusted"]
+              "enum": ["never", "on-request", "untrusted"]
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "profile": {
+              "type": "string",
+              "minLength": 1
+            },
+            "jsonEvents": {
+              "type": "boolean"
             }
           }
         }

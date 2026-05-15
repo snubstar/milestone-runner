@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -97,6 +97,58 @@ test("runImplementationWorkflow excludes run artifacts from unignored implementa
     assert.doesNotMatch(diff, /\.agent-work\/run-1/);
     assert.doesNotMatch(diff, /10-milestone-1-plan\.md/);
     assert.doesNotMatch(diff, /state\.json/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow passes target cwd to milestone runner phases", async () => {
+  const context = await createImplementationContext();
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Milestone Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ], "codex-exec");
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), ["milestone_plan", "implement_milestone"]);
+    assert.deepEqual(
+      runner.requests.map((request) => request.cwd),
+      [context.repo, context.repo],
+    );
+    assert.deepEqual(
+      runner.requests.map((request) => request.outputSchemaPath),
+      [undefined, undefined],
+    );
+    assert.deepEqual((await readdir(context.paths.dirs.runner)).sort(), [
+      "implement_milestone-02.json",
+      "milestone_plan-01.json",
+    ]);
+    const implementationDiagnostic = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.runner, "implement_milestone-02.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(implementationDiagnostic.phase, "implement_milestone");
+    assert.equal(implementationDiagnostic.milestoneId, 1);
+    assert.equal(implementationDiagnostic.runner, "codex-exec");
+    assert.equal(implementationDiagnostic.cwd, context.repo);
+    assert.equal("prompt" in implementationDiagnostic, false);
   } finally {
     await context.cleanup();
   }

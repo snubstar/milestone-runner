@@ -78,8 +78,7 @@
           "items": {
             "type": "integer",
             "minimum": 1
-          },
-          "uniqueItems": true
+          }
         },
         "status": {
           "$ref": "#/$defs/milestoneStatus"

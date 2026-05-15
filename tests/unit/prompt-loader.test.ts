@@ -260,3 +260,53 @@ test("review prompts render with workflow-shaped values", async () => {
     assert.match(fixPrompt.value, /Missing behavior/);
   }
 });
+
+test("real-run prompts keep orchestration and output contracts explicit", async () => {
+  const prompts = await loadPrompts([
+    "major-plan",
+    "major-plan-review",
+    "final-major-plan",
+    "final-plan-json",
+    "milestone-plan",
+    "implement-milestone",
+    "review-milestone",
+    "fix-review-findings",
+  ], {
+    cwd: process.cwd(),
+  });
+
+  assert.equal(prompts.ok, true);
+  if (!prompts.ok) return;
+
+  const text = (name: keyof typeof prompts.value) => prompts.value[name]?.text ?? "";
+
+  assert.match(text("major-plan"), /orchestrator owns sequencing/i);
+  assert.match(text("major-plan"), /Do not run commands/);
+  assert.match(text("major-plan"), /expected to produce a non-empty Git diff/);
+  assert.match(text("major-plan"), /Do not create standalone inspection/);
+
+  assert.match(text("major-plan-review"), /implementation agent to decide status/);
+  assert.match(text("final-major-plan"), /Git diff capture, checks, review decisions/);
+  assert.match(text("final-major-plan"), /Do not preserve standalone inspection/);
+
+  assert.match(text("final-plan-json"), /This phase is schema-constrained/);
+  assert.match(text("final-plan-json"), /Return only valid JSON matching the schema/);
+  assert.match(text("final-plan-json"), /Do not include Markdown, code fences, comments, or explanatory prose/);
+  assert.match(text("final-plan-json"), /Every milestone must describe concrete file or code changes/);
+
+  assert.match(text("milestone-plan"), /Do not tell the implementation agent to create commits/);
+  assert.match(text("milestone-plan"), /Do not produce an inspection-only or no-op milestone plan/);
+
+  assert.match(text("implement-milestone"), /The orchestrator will capture the Git diff, run final checks/);
+  assert.match(text("implement-milestone"), /Do not change orchestrator artifacts under `\.agent-work\/`/);
+  assert.match(text("implement-milestone"), /Do not decide whether the milestone passed/);
+  assert.match(text("implement-milestone"), /do not stop after context inspection/);
+
+  assert.match(text("review-milestone"), /This phase is schema-constrained/);
+  assert.match(text("review-milestone"), /Return only JSON matching `schemas\/review-verdict\.schema\.json`/);
+  assert.match(text("review-milestone"), /Do not update files, run commands, create commits, or change state/);
+
+  assert.match(text("fix-review-findings"), /The orchestrator will capture the Git diff, rerun checks/);
+  assert.match(text("fix-review-findings"), /Do not fix non-blocking findings/);
+  assert.match(text("fix-review-findings"), /Return a concise Markdown fix report/);
+});

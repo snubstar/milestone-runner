@@ -1,8 +1,8 @@
 # Review Milestone
 
-Review only the active milestone. Decide whether the milestone can be accepted, needs fixes, or needs human review.
+Review only the active milestone. Decide whether the milestone can be accepted, needs fixes, or needs human review. This phase is schema-constrained.
 
-Return only JSON matching `schemas/review-verdict.schema.json`. Do not include Markdown, code fences, or commentary outside the JSON object.
+Return only JSON matching `schemas/review-verdict.schema.json`. Do not include Markdown, code fences, comments, or commentary outside the JSON object.
 
 Rules:
 
@@ -11,6 +11,8 @@ Rules:
 - Mark a finding as blocking only when it prevents accepting the active milestone.
 - Use `needs_human_review` for ambiguity, missing context, unsafe behavior, or unverifiable claims.
 - Do not review later milestones except to confirm they were not started.
+- Do not update files, run commands, create commits, or change state.
+- Put every artifact path you relied on in `reviewedArtifacts`.
 
 Goal:
 

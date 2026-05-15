@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -387,26 +387,35 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       artifactRoot: ".agent-work",
     },
   });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The implementation misses a required behavior.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "pass",
+      summary: "The fix resolves the blocking finding.",
+      findings: [],
+    }),
+  ], "codex-exec");
+
   try {
+    await mkdir(path.join(context.repo, "schemas"), { recursive: true });
+    await writeFile(
+      path.join(context.repo, "schemas", "review-verdict.schema.json"),
+      "{}",
+      "utf8",
+    );
+
     const result = await runReviewWorkflow({
       ...context.workflowOptions,
-      runner: new ScenarioRunner([
-        reviewResponse({
-          verdict: "fail",
-          summary: "The implementation misses a required behavior.",
-          findings: [blockingFinding()],
-        }),
-        fixResponse({
-          text: "# Fix Attempt\n\nUpdated README.md.",
-          relativePath: "README.md",
-          content: "# Fixture\nfixed\n",
-        }),
-        reviewResponse({
-          verdict: "pass",
-          summary: "The fix resolves the blocking finding.",
-          findings: [],
-        }),
-      ]),
+      runner,
     });
 
     assert.equal(result.ok, true);
@@ -450,6 +459,39 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
     );
     assert.match(summary, /Status: pass/);
     assert.deepEqual(await readState(context.paths.files.state), result.state);
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "fix_review_findings",
+      "review_milestone",
+    ]);
+    assert.deepEqual(
+      runner.requests.map((request) => request.cwd),
+      [context.repo, context.repo, context.repo],
+    );
+    assert.deepEqual(
+      runner.requests.map((request) => request.outputSchemaPath ?? null),
+      [
+        path.join(context.repo, "schemas", "review-verdict.schema.json"),
+        null,
+        path.join(context.repo, "schemas", "review-verdict.schema.json"),
+      ],
+    );
+    assert.deepEqual((await readdir(context.paths.dirs.runner)).sort(), [
+      "fix_review_findings-02.json",
+      "review_milestone-01.json",
+      "review_milestone-03.json",
+    ]);
+    const fixDiagnostic = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.runner, "fix_review_findings-02.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(fixDiagnostic.phase, "fix_review_findings");
+    assert.equal(fixDiagnostic.milestoneId, 1);
+    assert.equal(fixDiagnostic.runner, "codex-exec");
+    assert.equal(fixDiagnostic.cwd, context.repo);
+    assert.equal("prompt" in fixDiagnostic, false);
   } finally {
     await context.cleanup();
   }

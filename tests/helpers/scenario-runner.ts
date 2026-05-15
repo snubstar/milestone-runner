@@ -27,13 +27,16 @@ export interface ScenarioRequest {
   artifacts: Record<string, string>;
   cwd?: string;
   milestoneId?: number;
+  outputSchemaPath?: string;
 }
 
 export class ScenarioRunner implements AgentRunner {
-  readonly type = "scenario";
   readonly requests: ScenarioRequest[] = [];
 
-  constructor(private readonly steps: ScenarioStep[]) {}
+  constructor(
+    private readonly steps: ScenarioStep[],
+    readonly type = "scenario",
+  ) {}
 
   phases(): string[] {
     return this.requests.map((request) => request.phase);
@@ -46,6 +49,9 @@ export class ScenarioRunner implements AgentRunner {
       artifacts: { ...(request.artifacts ?? {}) },
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
       ...(request.milestoneId === undefined ? {} : { milestoneId: request.milestoneId }),
+      ...(request.outputSchemaPath === undefined
+        ? {}
+        : { outputSchemaPath: request.outputSchemaPath }),
     });
 
     const stepIndex = this.steps.findIndex((step) => step.phase === request.phase);

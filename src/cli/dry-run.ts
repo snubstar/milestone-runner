@@ -79,6 +79,7 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone ?? null,
       runner: options.runnerType,
+      runnerExecution: runnerExecutionDescription(options.config),
       config: options.configPath,
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
@@ -134,6 +135,7 @@ export async function buildResumeDryRunReport(
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone ?? null,
       runner: options.runnerType,
+      runnerExecution: runnerExecutionDescription(options.config),
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
       checks: formatChecks(options.config.checks),
@@ -272,6 +274,12 @@ function diagnosticWarnings(diagnostics: EnvironmentDiagnostic[]): string[] {
   return diagnostics
     .filter((diagnostic) => diagnostic.level === "warning")
     .map((diagnostic) => diagnostic.message);
+}
+
+function runnerExecutionDescription(config: OrchestratorConfig): string {
+  return config.runner.type === "codex-exec"
+    ? `codex exec via ${config.runner.command ?? "codex"}`
+    : "fake runner";
 }
 
 function formatError(error: unknown): string {

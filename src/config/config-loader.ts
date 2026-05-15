@@ -14,7 +14,16 @@ const exampleConfigName = "orchestrator.config.example.json";
 
 const runnerTypes = new Set(["fake", "codex-exec"]);
 const sandboxModes = new Set(["read-only", "workspace-write", "danger-full-access"]);
-const approvalPolicies = new Set(["never", "on-request", "on-failure", "untrusted"]);
+const approvalPolicies = new Set(["never", "on-request", "untrusted"]);
+const codexExecOptionKeys = new Set([
+  "sandboxForPlanning",
+  "sandboxForImplementation",
+  "approvalPolicy",
+  "timeoutMs",
+  "model",
+  "profile",
+  "jsonEvents",
+]);
 
 export interface LoadConfigOptions {
   cwd: string;
@@ -116,6 +125,16 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
       return { ok: false, error: "`runner.options` is required for codex-exec." };
     }
 
+    const unsupportedOptions = Object.keys(options).filter(
+      (key) => !codexExecOptionKeys.has(key),
+    );
+    if (unsupportedOptions.length > 0) {
+      return {
+        ok: false,
+        error: `Unsupported codex-exec runner option(s): ${unsupportedOptions.join(", ")}.`,
+      };
+    }
+
     const sandboxForPlanning = options.sandboxForPlanning;
     if (!isSandboxMode(sandboxForPlanning)) {
       return {
@@ -133,10 +152,50 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     }
 
     const approvalPolicy = options.approvalPolicy;
+    if (approvalPolicy === "on-failure") {
+      return {
+        ok: false,
+        error:
+          '`runner.options.approvalPolicy` value "on-failure" is deprecated. Use "on-request" for interactive runs or "never" for non-interactive runs.',
+      };
+    }
+
     if (!isApprovalPolicy(approvalPolicy)) {
       return {
         ok: false,
-        error: "`runner.options.approvalPolicy` is required for codex-exec.",
+        error: '`runner.options.approvalPolicy` must be "never", "on-request", or "untrusted".',
+      };
+    }
+
+    const timeoutMs = options.timeoutMs;
+    if (timeoutMs !== undefined && !isPositiveInteger(timeoutMs)) {
+      return {
+        ok: false,
+        error: "`runner.options.timeoutMs` must be a positive integer when provided.",
+      };
+    }
+
+    const model = options.model;
+    if (model !== undefined && !isNonEmptyString(model)) {
+      return {
+        ok: false,
+        error: "`runner.options.model` must be a non-empty string when provided.",
+      };
+    }
+
+    const profile = options.profile;
+    if (profile !== undefined && !isNonEmptyString(profile)) {
+      return {
+        ok: false,
+        error: "`runner.options.profile` must be a non-empty string when provided.",
+      };
+    }
+
+    const jsonEvents = options.jsonEvents;
+    if (jsonEvents !== undefined && typeof jsonEvents !== "boolean") {
+      return {
+        ok: false,
+        error: "`runner.options.jsonEvents` must be a boolean when provided.",
       };
     }
 
@@ -147,6 +206,10 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
         sandboxForPlanning,
         sandboxForImplementation,
         approvalPolicy,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(model === undefined ? {} : { model }),
+        ...(profile === undefined ? {} : { profile }),
+        ...(jsonEvents === undefined ? {} : { jsonEvents }),
       },
     };
   } else {
@@ -221,6 +284,10 @@ function isSandboxMode(value: unknown): value is SandboxMode {
 
 function isApprovalPolicy(value: unknown): value is ApprovalPolicy {
   return typeof value === "string" && approvalPolicies.has(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function formatError(error: unknown): string {

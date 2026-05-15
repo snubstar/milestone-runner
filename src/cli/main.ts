@@ -38,7 +38,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (result.options.resume && result.options.runner) {
-    console.error("--runner cannot be combined with --resume in Milestone 8.");
+    console.error("--runner cannot be combined with --resume.");
     return 1;
   }
 
@@ -171,29 +171,6 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     }
 
     console.error(runnerResult.error);
-    return 1;
-  }
-
-  if (!options.planningOnly && runnerResult.runner.type !== "fake") {
-    if (options.dryRun) {
-      const report = buildNewRunDryRunReport({
-        goal,
-        config,
-        configPath: loadedConfig.value.path,
-        planningOnly: options.planningOnly,
-        allowDirty: options.allowDirty,
-        allowNonGitPlanning: options.allowNonGitPlanning,
-        targetMilestone: options.milestone,
-        git: gitPreflight.metadata,
-        runnerType: runnerResult.runner.type,
-        diagnostics: environment.diagnostics,
-        blockedReason: "blocked_runner_not_supported",
-      });
-      printDryRunReport(report);
-      return report.exitCode;
-    }
-
-    console.error("Milestone 8 execution currently requires --runner fake.");
     return 1;
   }
 
@@ -439,30 +416,6 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     }
 
     console.error(runnerResult.error);
-    return 1;
-  }
-
-  if (!resumePlanningOnly && runnerResult.runner.type !== "fake") {
-    if (options.dryRun) {
-      const report = await buildResumeDryRunReport({
-        state: resumeResult.state,
-        paths: resumeResult.paths,
-        config,
-        planningOnly: resumePlanningOnly,
-        allowDirty: options.allowDirty,
-        allowNonGitPlanning: options.allowNonGitPlanning,
-        targetMilestone: options.milestone,
-        git: gitPreflight.metadata,
-        runnerType: runnerResult.runner.type,
-        diagnostics: environment.diagnostics,
-        warnings: resumeResult.warnings,
-        blockedReason: "blocked_runner_not_supported",
-      });
-      printDryRunReport(report);
-      return report.exitCode;
-    }
-
-    console.error("Milestone 8 resume execution currently requires a fake runner for implementation-capable phases.");
     return 1;
   }
 

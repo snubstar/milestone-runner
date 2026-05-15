@@ -17,6 +17,43 @@ test("nodeCommandRunner executes a command and captures stdout", async () => {
   assert.equal(await realpath(result.stdout), await realpath(process.cwd()));
 });
 
+test("nodeCommandRunner sends stdin to the child process", async () => {
+  const result = await nodeCommandRunner.run({
+    command: process.execPath,
+    args: [
+      "-e",
+      [
+        "process.stdin.setEncoding('utf8');",
+        "let input = '';",
+        "process.stdin.on('data', (chunk) => { input += chunk; });",
+        "process.stdin.on('end', () => { process.stdout.write(input.toUpperCase()); });",
+      ].join(""),
+    ],
+    cwd: process.cwd(),
+    stdin: "hello from stdin",
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, "HELLO FROM STDIN");
+  assert.equal(result.stderr, "");
+});
+
+test("nodeCommandRunner captures stderr and non-zero exit codes", async () => {
+  const result = await nodeCommandRunner.run({
+    command: process.execPath,
+    args: [
+      "-e",
+      "process.stdout.write('out'); process.stderr.write('err'); process.exit(7);",
+    ],
+    cwd: process.cwd(),
+  });
+
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.stdout, "out");
+  assert.equal(result.stderr, "err");
+  assert.equal(result.error, undefined);
+});
+
 test("nodeCommandRunner records spawn failures", async () => {
   const result = await nodeCommandRunner.run({
     command: "agent-orchestrator-command-that-should-not-exist",
@@ -26,6 +63,19 @@ test("nodeCommandRunner records spawn failures", async () => {
 
   assert.notEqual(result.exitCode, 0);
   assert.match(result.error ?? "", /ENOENT/);
+});
+
+test("nodeCommandRunner times out long-running commands", async () => {
+  const result = await nodeCommandRunner.run({
+    command: process.execPath,
+    args: ["-e", "setTimeout(() => process.stdout.write('late'), 10_000);"],
+    cwd: process.cwd(),
+    timeoutMs: 50,
+  });
+
+  assert.equal(result.timedOut, true);
+  assert.match(result.error ?? "", /timed out after 50ms/);
+  assert.equal(result.stdout, "");
 });
 
 test("nodeCommandRunner merges request environment variables", async () => {

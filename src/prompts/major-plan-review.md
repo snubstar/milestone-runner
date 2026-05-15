@@ -20,5 +20,6 @@ Review the plan for:
 - Weak acceptance criteria
 - Missing verification
 - Places where the agent is given too much control over orchestration
+- Any wording that asks an implementation agent to decide status, run completion, commits, or acceptance
 
-Return a Markdown review with concrete findings and recommended changes. Do not rewrite the whole plan unless necessary.
+Return a Markdown review with concrete findings and recommended changes. Do not rewrite the whole plan unless necessary. Do not implement code or mark any milestone complete.

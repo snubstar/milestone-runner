@@ -66,6 +66,12 @@ export function printRunReport(options: RunReportOptions): void {
   console.log(`Current milestone: ${options.finalState.currentMilestoneId ?? "none"}`);
   if (options.finalState.lastError) {
     console.log(`Last error: ${options.finalState.lastError.message}`);
+    const runnerDiagnostic = runnerDiagnosticFromDetails(
+      options.finalState.lastError.details,
+    );
+    if (runnerDiagnostic) {
+      console.log(`Runner diagnostic: ${runnerDiagnostic}`);
+    }
   }
   if (options.nextAction) {
     console.log(`Next action: ${options.nextAction}`);
@@ -166,4 +172,12 @@ function sortedMilestoneStatusEntries(state: RunState) {
   return Object.entries(state.milestoneStatuses).sort(
     ([left], [right]) => Number(left) - Number(right),
   );
+}
+
+function runnerDiagnosticFromDetails(details: unknown): string | null {
+  if (typeof details !== "object" || details === null) return null;
+  if (!("diagnosticArtifact" in details)) return null;
+
+  const value = details.diagnosticArtifact;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }

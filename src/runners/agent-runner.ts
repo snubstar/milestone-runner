@@ -4,6 +4,7 @@ export interface AgentRunRequest {
   artifacts?: Record<string, string>;
   cwd?: string;
   milestoneId?: number;
+  outputSchemaPath?: string;
 }
 
 export interface AgentRunResult {

@@ -2,7 +2,7 @@
 
 Agent Milestone Orchestrator is a local TypeScript CLI prototype for automating a structured agent-assisted development loop.
 
-The first real runner adapter will use Codex Exec, but the orchestration core is intended to stay runner-agnostic. Codex, fake test runners, and future agent providers should all plug into the same workflow through a shared runner interface.
+The first real runner adapter uses Codex Exec, but the orchestration core is intended to stay runner-agnostic. Codex, fake test runners, and future agent providers should all plug into the same workflow through a shared runner interface.
 
 ## Problem
 
@@ -56,7 +56,7 @@ goal
 -> final goal summary
 ```
 
-The fake runner path can complete all generated fake milestones offline. Real implementation and review execution through `codex-exec` is still intentionally gated; Milestone 8 owns the user-facing resume, dry-run, safety override, and execution ergonomics.
+The fake runner path can complete all generated fake milestones offline. The `codex-exec` runner path can now execute real planning, implementation, review, and fix phases through `codex exec` when the Codex CLI is installed and authenticated.
 
 ## Git Safety
 
@@ -348,7 +348,9 @@ Initial config shape:
     "options": {
       "sandboxForPlanning": "read-only",
       "sandboxForImplementation": "workspace-write",
-      "approvalPolicy": "never"
+      "approvalPolicy": "never",
+      "timeoutMs": 1800000,
+      "jsonEvents": false
     }
   },
   "maxFixAttempts": 2,
@@ -361,7 +363,7 @@ Config fields:
 - `checks`: deterministic shell commands to run during verification phases. An empty array is valid for early prototypes, but later workflow output must report that no checks were configured.
 - `runner.type`: selected agent runner adapter. Initial supported values are `codex-exec` and `fake`.
 - `runner.command`: executable command for real subprocess-backed runners. For `codex-exec`, this defaults to `codex`.
-- `runner.options`: adapter-specific options. Codex-specific sandbox and approval settings belong here rather than at the top level.
+- `runner.options`: adapter-specific options. Codex-specific sandbox, approval, timeout, model/profile, and JSON event settings belong here rather than at the top level.
 - `maxFixAttempts`: maximum number of review/fix retries before stopping.
 - `artifactRoot`: root directory for generated run artifacts.
 
@@ -371,12 +373,12 @@ The config schema lives in [schemas/config.schema.json](./schemas/config.schema.
 
 The core abstraction is an `AgentRunner`.
 
-Planned runner adapters:
+Available runner adapters:
 
 - `FakeRunner`: deterministic test runner for unit and fixture tests.
-- `CodexExecRunner`: first real runner adapter, implemented by shelling out to `codex exec`.
+- `CodexExecRunner`: real runner adapter implemented by shelling out to `codex exec`.
 
-The fake runner should be usable before any real agent calls are wired in. This keeps the state machine, artifact handling, and review gates testable without model calls.
+The fake runner keeps the state machine, artifact handling, and review gates testable without model calls. The `codex-exec` runner passes rendered prompts to Codex through stdin, sets the target repository with `--cd`, applies read-only or workspace-write sandboxing by phase, uses schema-constrained output for JSON phases, and persists runner diagnostics under each run directory.
 
 ## Prompt Templates
 
@@ -394,13 +396,13 @@ src/prompts/review-milestone.md
 src/prompts/fix-review-findings.md
 ```
 
-Current templates are placeholders. Later milestones will replace them with executable prompt templates that declare required inputs, expected outputs, and referenced schemas.
+Current templates declare required inputs, expected outputs, orchestration boundaries, and referenced schemas. Planning and review prompts keep the agent read-only by default, while implementation and fix prompts scope edits to the active milestone.
 
 ## Milestone Sequence
 
 The project plan is tracked in [general_plan.md](./general_plan.md).
 
-Current milestone detail is tracked in [milestone8_plan.md](./milestone8_plan.md).
+Real runner implementation detail is tracked in [real_run_plan.md](./real_run_plan.md).
 
 High-level sequence:
 
@@ -434,7 +436,7 @@ Build:
 npm run build
 ```
 
-Run the current CLI after building:
+Run the CLI after building:
 
 ```bash
 node dist/cli/main.js --runner fake "example goal"
@@ -459,6 +461,8 @@ Common options:
 - `--max-fix-attempts <n>`: override fix attempts for this invocation.
 - `--allow-dirty`: allow implementation-capable runs or resumes from a dirty working tree.
 - `--allow-non-git-planning`: allow planning-only operation outside a Git repository.
+
+### Deterministic Fake Runs
 
 Inspect a full fake run without creating `.agent-work/`:
 
@@ -520,11 +524,97 @@ Allow a dirty working tree only when that starting state is deliberate:
 node dist/cli/main.js --allow-dirty --runner fake "example goal"
 ```
 
+### Real Codex Runs
+
+Prerequisites for `codex-exec`:
+
+- `codex` is installed and available on `PATH`.
+- The Codex CLI is authenticated in the shell where you run the orchestrator.
+- The target directory is a Git repository.
+- Implementation-capable runs have at least one commit.
+- The working tree is clean unless you pass `--allow-dirty`.
+- `orchestrator.config.json` exists or the example config is acceptable for the run.
+- Configured checks are recommended so acceptance is not based only on review output.
+
+Create a local config when you want to customize checks, timeouts, model/profile, or artifact root:
+
+```bash
+cp orchestrator.config.example.json orchestrator.config.json
+```
+
+Run a read-only real planning pass:
+
+```bash
+npm run build
+
+node dist/cli/main.js --planning-only --runner codex-exec \
+  "Plan a small README documentation update"
+```
+
+Planning-only runs call `codex exec`, but planning and review phases use the read-only sandbox by default and stop after writing plan artifacts and milestone metadata.
+
+Run a real one-milestone task from a clean working tree:
+
+```bash
+npm run build
+git status --short
+
+node dist/cli/main.js --runner codex-exec --milestone 1 \
+  "Add a short manual testing section to README.md"
+```
+
+Expected result:
+
+- Codex actually edits the working tree.
+- The orchestrator captures the real diff under `.agent-work/<run-id>/diffs/`.
+- Configured checks run and write reports under `.agent-work/<run-id>/checks/`.
+- Review verdict JSON is written under `.agent-work/<run-id>/reviews/`.
+- Runner diagnostics are written under `.agent-work/<run-id>/runner/`.
+- `state.json` records final status and every produced artifact path.
+
+If the starting dirty tree is deliberate, make that explicit:
+
+```bash
+node dist/cli/main.js --allow-dirty --runner codex-exec --milestone 1 \
+  "Add a short manual testing section to README.md"
+```
+
+The run state records both `dirtyAtStart` and `dirtyOverride`, and the CLI prints a dirty-tree warning before execution.
+
+Inspect the newest run:
+
+```bash
+RUN_DIR=$(ls -td .agent-work/run-* | head -1)
+
+find "$RUN_DIR" -maxdepth 3 -type f | sort
+cat "$RUN_DIR/state.json"
+ls "$RUN_DIR/runner"
+```
+
+Resume a stopped or constrained run:
+
+```bash
+node dist/cli/main.js --resume "$RUN_DIR" --dry-run
+node dist/cli/main.js --resume "$RUN_DIR"
+```
+
+If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command.
+
 Interpret final states:
 
 - `passed`: the current requested workflow completed. If `--milestone` was used, remaining milestones may still be pending and the next action will say to resume without `--milestone`.
 - `failed`: deterministic checks, runner execution, or orchestration validation failed. Inspect `Last error`, milestone statuses, and generated artifacts.
 - `needs_human_review`: the workflow stopped conservatively because review or resume safety requires human input.
+
+Troubleshooting real runs:
+
+- Missing `codex`: install the Codex CLI or set `runner.command` in `orchestrator.config.json`.
+- Dirty tree: commit or stash changes, or rerun with `--allow-dirty` when the dirty start is intentional.
+- Timeout: increase `runner.options.timeoutMs`.
+- Codex non-zero exit: inspect `Last error` and `.agent-work/<run-id>/runner/*.json`.
+- Malformed milestone JSON: inspect `plans/04-final-major-plan.json` and the `final_plan_json` runner diagnostic.
+- Malformed review JSON: inspect `reviews/20-milestone-<id>-review.json` and the `review_milestone` runner diagnostic.
+- Empty diff: check whether the implementation changed only ignored files, only `.agent-work/`, or made no working-tree changes.
 
 ## Testing
 
@@ -542,6 +632,7 @@ Command matrix:
 - `npm run build`: compiles the CLI and production modules into `dist/`.
 - `npm run test:build`: compiles `src/` and `tests/` into `dist-test/`, then runs every required deterministic test.
 - `npm test`: runs the already-compiled unit test suite from `dist-test/tests/unit/*.test.js`.
+- `npm run test:real-codex`: builds, compiles tests, and runs the opt-in real Codex smoke test file. Without `RUN_REAL_CODEX=1`, the smoke test is skipped.
 
 Required deterministic tests currently live under `tests/unit`, so the default test command intentionally discovers that compiled path. If required tests move under another folder such as `tests/integration`, update `package.json` so `npm run test:build` runs them too.
 
@@ -552,7 +643,24 @@ Test helpers live under `tests/helpers`:
 - `scenario-runner.ts`: scripted runner phases, file mutations, failures, thrown errors, and prompt/artifact capture.
 - `assertions.ts`: generated `state.json` shape checks plus milestone metadata and review verdict validator helpers.
 
-Default tests are deterministic and offline. `FakeRunner` covers the CLI happy path, while `ScenarioRunner` is used by workflow tests for precise success and failure cases. No `codex-exec` smoke test is currently enabled; if one is added later, it should be skipped by default and kept out of `npm test`.
+Default tests are deterministic and offline. `FakeRunner` covers the CLI happy path, `ScenarioRunner` is used by workflow tests for precise success and failure cases, and the deterministic fake-`codex` integration test proves the real adapter command shape without model calls.
+
+Run the live Codex smoke test only when you want to exercise a real authenticated Codex CLI:
+
+```bash
+RUN_REAL_CODEX=1 npm run test:real-codex
+```
+
+The smoke test creates a temporary Git repository, installs a small config and prompt/schema harness, runs the built CLI with `--runner codex-exec --milestone 1`, expects Codex to create one text file, verifies the captured diff/check/review artifacts, and writes runner diagnostics under the fixture `.agent-work/<run-id>/runner/`. It cleans up successful fixtures by default and leaves failed fixtures in place for inspection.
+
+Optional smoke-test environment variables:
+
+- `REAL_CODEX_COMMAND`: override the executable command, default `codex`.
+- `REAL_CODEX_MODEL`: pass a Codex model override.
+- `REAL_CODEX_PROFILE`: pass a Codex profile override.
+- `REAL_CODEX_PHASE_TIMEOUT_MS`: per-phase `codex exec` timeout.
+- `REAL_CODEX_SMOKE_CLI_TIMEOUT_MS`: total CLI command timeout used by the test.
+- `REAL_CODEX_KEEP_SMOKE_FIXTURE=1`: keep successful smoke fixtures for inspection.
 
 ## CI Provider Integrations
 

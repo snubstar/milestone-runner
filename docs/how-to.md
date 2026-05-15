@@ -1,55 +1,86 @@
-codex resume 019e207b-9f9b-7281-929e-7e291a002532
+# Manual Run Guide
 
-Use the fake runner for now. The real codex-exec path is scaffolded but not implemented for actual
-  implementation phases yet.
+Use this guide when you want to exercise the orchestrator from the command line.
 
-  From repo root:
+## Build
 
-  npm run build
-  git status --short
+```bash
+npm run build
+```
 
-  If the tree is clean, run a dry run with a realistic goal:
+## Fake Runner
 
-  node dist/cli/main.js --dry-run --runner fake --milestone 1 \
-    "Add a docs note explaining how to run the orchestrator manually"
+The fake runner is deterministic and offline:
 
-  Expected: Allowed: true, Next action: run_full_goal, Runner: fake. It may warn that no
-  deterministic checks are configured.
+```bash
+node dist/cli/main.js --runner fake --milestone 1 \
+  "Add a docs note explaining how to run the orchestrator manually"
+```
 
-  Then run the actual one-milestone workflow:
+Expected behavior:
 
-  node dist/cli/main.js --runner fake --milestone 1 \
-    "Add a docs note explaining how to run the orchestrator manually"
+- Creates `.agent-work/<run-id>/`.
+- Writes planning, milestone, check, diff, review, summary, and state artifacts.
+- Creates `fake-milestone-1-implementation.txt`.
+- Prints milestone `1: passed`.
+- Leaves later generated milestones resumable when `--milestone 1` is used.
 
-  Expected behavior:
+## Real Codex Runner
 
-  - Creates a new .agent-work/<run-id>/ folder.
-  - Writes planning artifacts, milestone artifacts, checks, diff, review JSON, and state.json.
-  - Creates fake-milestone-1-implementation.txt in the repo root.
-  - Prints milestone 1: passed.
-  - Leaves milestone 2 pending, with a next action saying to resume without --milestone.
+Prerequisites:
 
-  Inspect the run:
+- `codex` is installed and authenticated.
+- The target directory is a Git repository with at least one commit.
+- The working tree is clean unless you pass `--allow-dirty`.
+- `orchestrator.config.json` exists or `orchestrator.config.example.json` is acceptable.
 
-  RUN_DIR=$(ls -td .agent-work/* | head -1)
+Run a real one-milestone task from a clean tree:
 
-  find "$RUN_DIR" -maxdepth 3 -type f | sort
-  cat "$RUN_DIR/state.json"
-  cat "$RUN_DIR/diffs/12-milestone-1.diff"
-  cat "$RUN_DIR/reviews/20-milestone-1-review.json"
-  cat fake-milestone-1-implementation.txt
+```bash
+git status --short
 
-  To test resume through the remaining milestone:
+node dist/cli/main.js --runner codex-exec --milestone 1 \
+  "Add a short manual testing section to README.md"
+```
 
-  node dist/cli/main.js --resume "$RUN_DIR" --dry-run --allow-dirty
-  node dist/cli/main.js --resume "$RUN_DIR" --allow-dirty
+If the starting dirty tree is deliberate:
 
-  Use --allow-dirty because milestone 1 intentionally left a generated file in the working tree.
-  After resume, expected output is State: passed, milestones 1: passed and 2: passed, and a final
-  summary artifact like milestones/90-goal-summary.md.
+```bash
+node dist/cli/main.js --allow-dirty --runner codex-exec --milestone 1 \
+  "Add a short manual testing section to README.md"
+```
 
-  To clean up the fake task files afterward:
+## Inspect A Run
 
-  rm fake-milestone-1-implementation.txt fake-milestone-2-implementation.txt
+```bash
+RUN_DIR=$(ls -td .agent-work/run-* | head -1)
 
-  I also verified npm run build and the dry-run command locally; both succeeded.
+find "$RUN_DIR" -maxdepth 3 -type f | sort
+cat "$RUN_DIR/state.json"
+ls "$RUN_DIR/runner"
+```
+
+Important locations:
+
+- `diffs/`: Git diffs captured by the orchestrator.
+- `checks/`: deterministic check reports.
+- `reviews/`: review verdict JSON.
+- `runner/`: stdout, stderr, args, sandbox, timeout, and schema diagnostics for real runner calls.
+- `state.json`: final status and all artifact paths.
+
+## Resume
+
+```bash
+node dist/cli/main.js --resume "$RUN_DIR" --dry-run
+node dist/cli/main.js --resume "$RUN_DIR"
+```
+
+Use `--allow-dirty` on resume only when the current working tree changes are intentional.
+
+## Opt-In Real Smoke Test
+
+```bash
+RUN_REAL_CODEX=1 npm run test:real-codex
+```
+
+Without `RUN_REAL_CODEX=1`, the smoke test compiles and skips safely.

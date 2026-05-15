@@ -1,12 +1,16 @@
 import type { RunnerType } from "../runners/runner-types.js";
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
-export type ApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
+export type ApprovalPolicy = "never" | "on-request" | "untrusted";
 
 export interface CodexExecRunnerOptions {
   sandboxForPlanning: SandboxMode;
   sandboxForImplementation: SandboxMode;
   approvalPolicy: ApprovalPolicy;
+  timeoutMs?: number;
+  model?: string;
+  profile?: string;
+  jsonEvents?: boolean;
 }
 
 export interface RunnerConfig {
@@ -30,4 +34,3 @@ export interface LoadedConfig {
 export type ConfigResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
-

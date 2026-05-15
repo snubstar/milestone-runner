@@ -26,11 +26,7 @@ export function createAgentRunner(config: RunnerConfig): CreateRunnerResult {
       ok: true,
       runner: new CodexExecRunner({
         command: config.command,
-        options: {
-          sandboxForPlanning: options.sandboxForPlanning,
-          sandboxForImplementation: options.sandboxForImplementation,
-          approvalPolicy: options.approvalPolicy,
-        },
+        options,
       }),
     };
   }
