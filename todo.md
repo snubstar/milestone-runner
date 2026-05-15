@@ -1,6 +1,18 @@
 
-codex resume 019e1cc8-7faa-7e60-ad16-e89e1f63ac20
+Assume you also do the svg automation/lottie maker.
+The way this would work is: svg editor + frames + exporter.
+And this can be a project by itself, used for your other projects and ultimately incorporated in zizzag.
 
+
+- Automation on top of automation. How to scale to enterprise company just paying the computing bills?
+
+- Research and AI across different fields.
+
+- Points of contacts, analogies and origianl research.
+
+---
+
+codex resume 019e1cc8-7faa-7e60-ad16-e89e1f63ac20
 
 Test, if works, test with actual plan with real goals.
 If works, write documentation, make it open-source.
@@ -8,8 +20,6 @@ If works, write documentation, make it open-source.
 -------------------------------------------------
 -------------------------------------------------
 -------------------------------------------------
-
-
 
 Visualization of state machines,
 and how state machines evolve... adjust themselves
@@ -39,10 +49,6 @@ How AI and deterministic automation and gates communicate.
 ------------------------------------------------
 ------------------------------------------------
 ------------------------------------------------
-
-
-
-
 
 Last message:
 
