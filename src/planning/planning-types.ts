@@ -3,6 +3,7 @@ import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import type { AgentRunner } from "../runners/agent-runner.js";
 import type { RunPaths } from "../artifacts/paths.js";
 import type { OrchestratorPhase, RunState } from "../state/state-types.js";
+import type { TimingWarningCollector } from "../timings/timing-types.js";
 
 export type PlanningRunnerPhase =
   | "major_plan"
@@ -19,6 +20,7 @@ export interface PlanningWorkflowOptions {
   cwd?: string;
   promptDir?: string;
   milestonesSchema?: string | object;
+  timingWarnings?: TimingWarningCollector;
   now?: () => Date;
 }
 

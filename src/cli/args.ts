@@ -1,3 +1,4 @@
+import type { MilestonePlanPolicy } from "../config/config-types.js";
 import type { RunnerType } from "../runners/runner-types.js";
 
 export interface CliOptions {
@@ -12,6 +13,7 @@ export interface CliOptions {
   maxFixAttempts?: number;
   milestone?: number;
   runner?: RunnerType;
+  milestonePlanPolicy?: MilestonePlanPolicy;
 }
 
 export type ParseArgsResult =
@@ -19,6 +21,7 @@ export type ParseArgsResult =
   | { ok: false; error: string };
 
 const runnerTypes = new Set<RunnerType>(["fake", "codex-exec"]);
+const milestonePlanPolicies = new Set<MilestonePlanPolicy>(["always", "auto", "light"]);
 
 export function parseArgs(argv: string[]): ParseArgsResult {
   const goalParts: string[] = [];
@@ -86,6 +89,22 @@ export function parseArgs(argv: string[]): ParseArgsResult {
       const parsed = parseIntegerOption(value.value, arg, 1, "a positive integer");
       if (!parsed.ok) return parsed;
       options.milestone = parsed.value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--milestone-plan-policy") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      if (!milestonePlanPolicies.has(value.value as MilestonePlanPolicy)) {
+        return {
+          ok: false,
+          error:
+            `Invalid --milestone-plan-policy value "${value.value}". ` +
+            'Expected "always", "auto", or "light".',
+        };
+      }
+      options.milestonePlanPolicy = value.value as MilestonePlanPolicy;
       index += 1;
       continue;
     }
@@ -218,6 +237,8 @@ export function usage(): string {
     "  --resume <value>        Resume from a run directory, state.json path, or run id.",
     "  --max-fix-attempts <n>  Override the configured max fix attempts.",
     "  --milestone <id>        Constrain execution to one milestone.",
+    "  --milestone-plan-policy <policy>",
+    "                          Per-milestone plan policy: always, auto, or light.",
     "  --runner <type>         Runner type: fake or codex-exec.",
   ].join("\n");
 }

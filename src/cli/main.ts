@@ -27,6 +27,12 @@ import { createAgentRunner } from "../runners/create-runner.js";
 import { nodeCommandRunner } from "../shell/command-runner.js";
 import { createInitialState } from "../state/initial-state.js";
 import { writeState } from "../state/state-store.js";
+import {
+  appendInvocationTimelineEvent,
+  appendStateTimelineEvent,
+  nextTimelineInvocationId,
+} from "../timings/state-timeline.js";
+import { createTimingWarningCollector } from "../timings/timing-types.js";
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const result = parseArgs(argv);
@@ -70,6 +76,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     artifactRoot: options.artifactRoot,
     runnerType: options.runner,
     maxFixAttempts: options.maxFixAttempts,
+    milestonePlanPolicy: options.milestonePlanPolicy,
   });
   const configValidation = validateConfig(configWithOverrides);
   if (!configValidation.ok) {
@@ -210,6 +217,22 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     configSnapshot: config,
   });
   await writeState(paths.files.state, state);
+  const timingWarnings = createTimingWarningCollector();
+  await appendStateTimelineEvent({
+    paths,
+    previousState: null,
+    nextState: state,
+    warnings: timingWarnings,
+  });
+  const invocationId = await nextTimelineInvocationId(paths, timingWarnings);
+  await appendInvocationTimelineEvent({
+    paths,
+    invocationId,
+    event: "invocation_started",
+    timestamp: new Date().toISOString(),
+    state,
+    warnings: timingWarnings,
+  });
 
   const workflowResult = await runGoalWorkflow({
     goal,
@@ -221,6 +244,8 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     cwd: process.cwd(),
     planningOnly: options.planningOnly,
     executionLimits: executionLimitsForOptions(options),
+    invocationId,
+    timingWarnings: timingWarnings.list(),
   });
 
   const finalState = workflowResult.state;
@@ -242,6 +267,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       artifactRoot: config.artifactRoot,
       checks: config.checks,
       maxFixAttempts: config.maxFixAttempts,
+      milestonePlanPolicy: config.milestonePlanPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -252,6 +278,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       ),
       nextAction: workflowResult.nextAction,
       finalState,
+      timingWarnings: workflowResult.timingWarnings,
     });
     return 1;
   }
@@ -271,6 +298,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     artifactRoot: config.artifactRoot,
     checks: config.checks,
     maxFixAttempts: config.maxFixAttempts,
+    milestonePlanPolicy: config.milestonePlanPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -281,6 +309,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     ),
     nextAction: workflowResult.nextAction,
     finalState,
+    timingWarnings: workflowResult.timingWarnings,
   });
   return 0;
 }
@@ -312,6 +341,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
   const resumePlanningOnly = options.planningOnly || resumeResult.state.git.root === null;
   const configWithOverrides = applyConfigOverrides(resumeResult.config, {
     maxFixAttempts: options.maxFixAttempts,
+    milestonePlanPolicy: options.milestonePlanPolicy,
   });
   const configValidation = validateConfig(configWithOverrides);
   if (!configValidation.ok) {
@@ -438,6 +468,19 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
   }
 
   const stateBeforeResume = resumeResult.state.currentPhase;
+  const timingWarnings = createTimingWarningCollector();
+  const invocationId = await nextTimelineInvocationId(
+    resumeResult.paths,
+    timingWarnings,
+  );
+  await appendInvocationTimelineEvent({
+    paths: resumeResult.paths,
+    invocationId,
+    event: "invocation_started",
+    timestamp: new Date().toISOString(),
+    state: resumeResult.state,
+    warnings: timingWarnings,
+  });
   const workflowResult = await runGoalWorkflow({
     goal: resumeResult.state.goal,
     config,
@@ -448,6 +491,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     cwd: resumeResult.targetCwd,
     planningOnly: resumePlanningOnly,
     executionLimits: executionLimitsForOptions(options),
+    invocationId,
+    timingWarnings: timingWarnings.list(),
   });
 
   const finalState = workflowResult.state;
@@ -470,6 +515,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       checks: config.checks,
       maxFixAttempts: config.maxFixAttempts,
       savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
+      milestonePlanPolicy: config.milestonePlanPolicy,
+      savedMilestonePlanPolicy: resumeResult.config.milestonePlanPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -481,6 +528,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       stateBeforeResume,
       nextAction: workflowResult.nextAction,
       finalState,
+      timingWarnings: workflowResult.timingWarnings,
     });
     return 1;
   }
@@ -501,6 +549,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     checks: config.checks,
     maxFixAttempts: config.maxFixAttempts,
     savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
+    milestonePlanPolicy: config.milestonePlanPolicy,
+    savedMilestonePlanPolicy: resumeResult.config.milestonePlanPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -512,6 +562,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     stateBeforeResume,
     nextAction: workflowResult.nextAction,
     finalState,
+    timingWarnings: workflowResult.timingWarnings,
   });
   return 0;
 }

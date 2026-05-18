@@ -58,6 +58,8 @@ goal
 
 The fake runner path can complete all generated fake milestones offline. The `codex-exec` runner path can now execute real planning, implementation, review, and fix phases through `codex exec` when the Codex CLI is installed and authenticated.
 
+Goal-level planning is always produced. The major plan, plan review, final major plan, and milestone metadata remain the source of truth for the workflow. `milestonePlanPolicy` only controls the per-milestone implementation plan created immediately before a milestone is implemented.
+
 ## Git Safety
 
 Implementation-capable runs require a Git repository because the tool depends on Git for diff capture and safety checks.
@@ -119,6 +121,9 @@ Initial run layout:
   state.json
   logs/
     run.log
+    timeline.jsonl
+    80-timings.json
+    81-timings.md
   plans/
     01-major-plan.md
     02-major-plan-review.md
@@ -148,6 +153,10 @@ Initial run layout:
 
 Human-readable Markdown artifacts are for review. Machine-readable JSON artifacts are for orchestration decisions.
 
+Timing artifacts live under `logs/`. `timeline.jsonl` is an append-only timeline of workflow state transitions and invocation boundaries. `80-timings.json` is the machine-readable timing summary, and `81-timings.md` is the human-readable summary. Runner and check durations are nested inside workflow phase duration, so they should not be added to lifecycle or active workflow duration as if they were separate runtime.
+
+Milestone plan artifacts always use `milestones/10-milestone-<id>-plan.md` and are recorded under `state.artifacts.milestonePlans`. Depending on `milestonePlanPolicy`, that file may contain either a full runner-generated milestone plan or a deterministic lightweight plan. Plans produced by `light` and `auto` include a metadata block showing the configured policy, selected mode, and decision reason. The default `always` policy preserves the raw runner-generated artifact for backward compatibility.
+
 Artifact filenames should keep their numeric prefixes stable so a run can be inspected in workflow order. When the same phase repeats, such as fix attempts, use `<n>` starting at `1`.
 
 The `state.json` schema tracks artifact paths as relative paths from the run directory. The shape is equivalent to:
@@ -161,6 +170,11 @@ The `state.json` schema tracks artifact paths as relative paths from the run dir
     "finalMajorPlanMarkdown": "plans/03-final-major-plan.md",
     "finalMajorPlanJson": "plans/04-final-major-plan.json",
     "milestones": "milestones/05-milestones.json",
+    "logs": {
+      "run": "logs/run.log",
+      "timingsJson": "logs/80-timings.json",
+      "timingsMarkdown": "logs/81-timings.md"
+    },
     "milestonePlans": {
       "1": "milestones/10-milestone-1-plan.md"
     },
@@ -354,7 +368,8 @@ Initial config shape:
     }
   },
   "maxFixAttempts": 2,
-  "artifactRoot": ".agent-work"
+  "artifactRoot": ".agent-work",
+  "milestonePlanPolicy": "always"
 }
 ```
 
@@ -366,8 +381,17 @@ Config fields:
 - `runner.options`: adapter-specific options. Codex-specific sandbox, approval, timeout, model/profile, and JSON event settings belong here rather than at the top level.
 - `maxFixAttempts`: maximum number of review/fix retries before stopping.
 - `artifactRoot`: root directory for generated run artifacts.
+- `milestonePlanPolicy`: per-milestone implementation plan policy. Missing values default to `always`.
 
 The config schema lives in [schemas/config.schema.json](./schemas/config.schema.json).
+
+Milestone plan policies:
+
+- `always`: default and safest behavior. Every milestone calls the runner-backed `milestone_plan` phase before implementation and writes the raw runner-generated plan.
+- `auto`: conservative local selection per milestone. Simple, self-contained milestones use a lightweight plan; milestones with dependencies, broad scope, risky terms, or vague verification use a full runner-backed plan.
+- `light`: always skip the runner-backed `milestone_plan` phase and write a deterministic lightweight milestone plan from milestone metadata.
+
+The policy does not skip major planning, plan review, final plan generation, implementation, checks, review, fix attempts, summaries, or artifact writing. It only controls the plan artifact created for each individual milestone.
 
 ## Runners
 
@@ -459,6 +483,7 @@ Common options:
 - `--resume <run-dir-or-id>`: resume from an existing `state.json` by run directory, `state.json` path, or run id under the artifact root.
 - `--milestone <id>`: run only one runnable milestone and stop before advancing to remaining pending milestones.
 - `--max-fix-attempts <n>`: override fix attempts for this invocation.
+- `--milestone-plan-policy always|auto|light`: override the per-milestone implementation plan policy for this invocation.
 - `--allow-dirty`: allow implementation-capable runs or resumes from a dirty working tree.
 - `--allow-non-git-planning`: allow planning-only operation outside a Git repository.
 
@@ -518,6 +543,13 @@ Override fix attempts for the current invocation:
 node dist/cli/main.js --runner fake --max-fix-attempts 1 "example goal"
 ```
 
+Choose a milestone plan policy:
+
+```bash
+node dist/cli/main.js --runner fake --milestone-plan-policy light "example goal"
+node dist/cli/main.js --runner fake --milestone-plan-policy auto "example goal"
+```
+
 Allow a dirty working tree only when that starting state is deliberate:
 
 ```bash
@@ -563,6 +595,14 @@ node dist/cli/main.js --runner codex-exec --milestone 1 \
   "Add a short manual testing section to README.md"
 ```
 
+Use a lightweight per-milestone plan when the task is simple and the general plan is already clear:
+
+```bash
+node dist/cli/main.js --runner codex-exec --milestone 1 \
+  --milestone-plan-policy light \
+  "Add a short manual testing section to README.md"
+```
+
 Expected result:
 
 - Codex actually edits the working tree.
@@ -588,6 +628,7 @@ RUN_DIR=$(ls -td .agent-work/run-* | head -1)
 
 find "$RUN_DIR" -maxdepth 3 -type f | sort
 cat "$RUN_DIR/state.json"
+cat "$RUN_DIR/logs/81-timings.md"
 ls "$RUN_DIR/runner"
 ```
 
@@ -596,9 +637,10 @@ Resume a stopped or constrained run:
 ```bash
 node dist/cli/main.js --resume "$RUN_DIR" --dry-run
 node dist/cli/main.js --resume "$RUN_DIR"
+node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
 ```
 
-If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command.
+If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command. A resume policy override affects only milestones that have not already produced a milestone plan artifact.
 
 Interpret final states:
 
@@ -615,6 +657,7 @@ Troubleshooting real runs:
 - Malformed milestone JSON: inspect `plans/04-final-major-plan.json` and the `final_plan_json` runner diagnostic.
 - Malformed review JSON: inspect `reviews/20-milestone-<id>-review.json` and the `review_milestone` runner diagnostic.
 - Empty diff: check whether the implementation changed only ignored files, only `.agent-work/`, or made no working-tree changes.
+- Lightweight plan too thin: resume remaining work with `--milestone-plan-policy always` so future milestones use full runner-backed milestone plans.
 
 ## Testing
 

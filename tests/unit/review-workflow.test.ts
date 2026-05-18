@@ -11,6 +11,7 @@ import { nodeCommandRunner } from "../../src/shell/command-runner.js";
 import { readState } from "../../src/state/state-store.js";
 import { setStatePhase } from "../../src/state/state-transitions.js";
 import type { RunState } from "../../src/state/state-types.js";
+import { createCheckTimingCollector } from "../../src/timings/check-timing-collector.js";
 import { createFixtureRepo } from "../helpers/fixture-repo.js";
 import {
   createReadyForReviewRunFixture,
@@ -385,6 +386,7 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       runner: { type: "fake" },
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
   });
   const runner = new ScenarioRunner([
@@ -404,6 +406,7 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       findings: [],
     }),
   ], "codex-exec");
+  const checkTimingCollector = createCheckTimingCollector();
 
   try {
     await mkdir(path.join(context.repo, "schemas"), { recursive: true });
@@ -416,6 +419,7 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
     const result = await runReviewWorkflow({
       ...context.workflowOptions,
       runner,
+      checkTimingCollector,
     });
 
     assert.equal(result.ok, true);
@@ -491,7 +495,16 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
     assert.equal(fixDiagnostic.milestoneId, 1);
     assert.equal(fixDiagnostic.runner, "codex-exec");
     assert.equal(fixDiagnostic.cwd, context.repo);
+    assert.equal(fixDiagnostic.startedAt, "2026-05-10T12:01:07.000Z");
+    assert.equal(fixDiagnostic.endedAt, "2026-05-10T12:01:08.000Z");
+    assert.equal(fixDiagnostic.durationMs, 1000);
     assert.equal("prompt" in fixDiagnostic, false);
+    const checkTimings = checkTimingCollector.list();
+    assert.equal(checkTimings.length, 1);
+    assert.equal(checkTimings[0]?.stateKey, "1-fix-1");
+    assert.equal(checkTimings[0]?.milestoneId, 1);
+    assert.equal(checkTimings[0]?.attempt, 1);
+    assert.equal(checkTimings[0]?.source, "structured");
   } finally {
     await context.cleanup();
   }
@@ -504,6 +517,7 @@ test("runReviewWorkflow persists failed state when the fix runner fails", async 
       runner: { type: "fake" },
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
   });
   try {
@@ -544,6 +558,7 @@ test("runReviewWorkflow stops as needs human review when max fix attempts are ex
       runner: { type: "fake" },
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
   });
   try {
@@ -592,6 +607,7 @@ test("runReviewWorkflow does not pass after a fix when post-fix checks fail", as
       runner: { type: "fake" },
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
   });
   try {

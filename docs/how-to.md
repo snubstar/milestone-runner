@@ -17,6 +17,14 @@ node dist/cli/main.js --runner fake --milestone 1 \
   "Add a docs note explaining how to run the orchestrator manually"
 ```
 
+The general plan is always produced. To skip only the runner-backed per-milestone plan for simple tasks, add a milestone plan policy:
+
+```bash
+node dist/cli/main.js --runner fake --milestone 1 \
+  --milestone-plan-policy light \
+  "Add a docs note explaining how to run the orchestrator manually"
+```
+
 Expected behavior:
 
 - Creates `.agent-work/<run-id>/`.
@@ -43,6 +51,14 @@ node dist/cli/main.js --runner codex-exec --milestone 1 \
   "Add a short manual testing section to README.md"
 ```
 
+For a simple real task where the general plan is enough, use a lightweight per-milestone plan:
+
+```bash
+node dist/cli/main.js --runner codex-exec --milestone 1 \
+  --milestone-plan-policy light \
+  "Add a short manual testing section to README.md"
+```
+
 If the starting dirty tree is deliberate:
 
 ```bash
@@ -62,20 +78,39 @@ ls "$RUN_DIR/runner"
 
 Important locations:
 
+- `milestones/10-milestone-<id>-plan.md`: per-milestone plan artifact. It may be full or lightweight depending on `milestonePlanPolicy`.
 - `diffs/`: Git diffs captured by the orchestrator.
 - `checks/`: deterministic check reports.
 - `reviews/`: review verdict JSON.
 - `runner/`: stdout, stderr, args, sandbox, timeout, and schema diagnostics for real runner calls.
 - `state.json`: final status and all artifact paths.
 
+## Inspect Timing
+
+Each non-dry run writes timing artifacts under `logs/`:
+
+- `logs/timeline.jsonl`: append-only state transition and invocation timeline.
+- `logs/80-timings.json`: machine-readable timing document.
+- `logs/81-timings.md`: human-readable timing summary.
+
+```bash
+cat "$RUN_DIR/logs/81-timings.md"
+cat "$RUN_DIR/logs/80-timings.json"
+```
+
+`lifecycleDurationMs` spans the original run creation through the latest measured run end, so it includes idle time between stopped and resumed invocations. `activeWorkflowDurationMs` sums workflow invocation spans and excludes that idle time. `latestInvocationDurationMs` covers only the invocation that just finalized the timing artifacts.
+
+Runner and check durations are nested inside workflow phase duration. Use them to identify slow model calls or verification commands, but do not add runner/check totals to workflow duration as total runtime.
+
 ## Resume
 
 ```bash
 node dist/cli/main.js --resume "$RUN_DIR" --dry-run
 node dist/cli/main.js --resume "$RUN_DIR"
+node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
 ```
 
-Use `--allow-dirty` on resume only when the current working tree changes are intentional.
+Use `--allow-dirty` on resume only when the current working tree changes are intentional. A resume policy override affects only milestones that have not already written a milestone plan artifact.
 
 ## Opt-In Real Smoke Test
 

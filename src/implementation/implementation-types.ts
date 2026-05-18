@@ -4,6 +4,8 @@ import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import type { AgentRunner } from "../runners/agent-runner.js";
 import type { RunPaths } from "../artifacts/paths.js";
 import type { RunState } from "../state/state-types.js";
+import type { CheckTimingCollector } from "../timings/check-timing-collector.js";
+import type { TimingWarningCollector } from "../timings/timing-types.js";
 
 export type ImplementationRunnerPhase = "milestone_plan" | "implement_milestone";
 
@@ -16,6 +18,8 @@ export interface ImplementationWorkflowOptions {
   commandRunner: CommandRunner;
   cwd: string;
   promptDir?: string;
+  checkTimingCollector?: CheckTimingCollector;
+  timingWarnings?: TimingWarningCollector;
   now?: () => Date;
 }
 

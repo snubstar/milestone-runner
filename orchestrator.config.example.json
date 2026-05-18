@@ -12,5 +12,6 @@
     }
   },
   "maxFixAttempts": 2,
-  "artifactRoot": ".agent-work"
+  "artifactRoot": ".agent-work",
+  "milestonePlanPolicy": "always"
 }

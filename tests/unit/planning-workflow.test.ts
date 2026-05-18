@@ -222,6 +222,9 @@ test("runPlanningWorkflow writes diagnostics and references them on codex runner
     assert.equal(diagnostic.exitCode, 2);
     assert.equal(diagnostic.stderr, "runner failed");
     assert.equal(diagnostic.error, "process exited");
+    assert.equal(diagnostic.startedAt, "2026-05-10T12:00:02.000Z");
+    assert.equal(diagnostic.endedAt, "2026-05-10T12:00:03.000Z");
+    assert.equal(diagnostic.durationMs, 1000);
   } finally {
     await context.cleanup();
   }
@@ -432,6 +435,7 @@ async function createWorkflowContext(): Promise<WorkflowContext> {
     runner: { type: "fake" },
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
   };
 
   await createRunDirectory(paths, goal);

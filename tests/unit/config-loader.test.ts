@@ -25,6 +25,7 @@ test("loadConfig reads the example config", async () => {
       jsonEvents: false,
     });
     assert.equal(result.value.config.artifactRoot, ".agent-work");
+    assert.equal(result.value.config.milestonePlanPolicy, "always");
   }
 });
 
@@ -114,7 +115,41 @@ test("validateConfig accepts extended codex runner options", () => {
       profile: "automation",
       jsonEvents: true,
     });
+    assert.equal(result.value.milestonePlanPolicy, "always");
   }
+});
+
+test("validateConfig defaults missing milestone plan policy to always", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.milestonePlanPolicy, "always");
+  }
+});
+
+test("validateConfig rejects invalid milestone plan policy", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanPolicy: "sometimes",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: '`milestonePlanPolicy` must be "always", "auto", or "light".',
+  });
 });
 
 test("validateConfig rejects deprecated codex approval policy", () => {
@@ -233,7 +268,7 @@ test("validateConfig accepts fake runner without command", () => {
   }
 });
 
-test("applyConfigOverrides applies artifact root, runner type, and max fix attempts", () => {
+test("applyConfigOverrides applies artifact root, runner type, max fix attempts, and milestone plan policy", () => {
   const result = validateConfig({
     checks: [],
     runner: {
@@ -241,6 +276,7 @@ test("applyConfigOverrides applies artifact root, runner type, and max fix attem
     },
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
   });
 
   assert.equal(result.ok, true);
@@ -249,10 +285,12 @@ test("applyConfigOverrides applies artifact root, runner type, and max fix attem
       artifactRoot: ".runs",
       runnerType: "codex-exec",
       maxFixAttempts: 3,
+      milestonePlanPolicy: "light",
     });
 
     assert.equal(config.artifactRoot, ".runs");
     assert.equal(config.runner.type, "codex-exec");
     assert.equal(config.maxFixAttempts, 3);
+    assert.equal(config.milestonePlanPolicy, "light");
   }
 });

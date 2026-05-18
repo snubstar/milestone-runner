@@ -16,6 +16,17 @@ import {
   stopGoalForHumanReviewState,
 } from "../state/state-transitions.js";
 import type { RunState } from "../state/state-types.js";
+import { createCheckTimingCollector } from "../timings/check-timing-collector.js";
+import { writeRunTimings } from "../timings/run-timings.js";
+import {
+  appendInvocationTimelineEvent,
+  appendStateTimelineEvent,
+  nextTimelineInvocationId,
+} from "../timings/state-timeline.js";
+import {
+  createTimingWarningCollector,
+  type TimingWarning,
+} from "../timings/timing-types.js";
 import { writeGoalSummary, type GoalSummaryDiagnostic } from "./goal-summary.js";
 import {
   selectNextRunnableMilestone,
@@ -40,14 +51,24 @@ export async function runGoalWorkflow(
   const clock = options.now ?? (() => new Date());
   let state = options.initialState;
   let metadata: MilestoneMetadata | null = null;
+  const checkTimingCollector = createCheckTimingCollector();
+  const timingWarnings = createTimingWarningCollector(options.timingWarnings);
+  const invocationId = options.invocationId ?? (await startWorkflowInvocation());
 
   async function persist(nextState: RunState): Promise<RunState> {
+    const previousState = state;
     await writeState(options.paths.files.state, nextState);
+    await appendStateTimelineEvent({
+      paths: options.paths,
+      previousState,
+      nextState,
+      warnings: timingWarnings,
+    });
     return nextState;
   }
 
   const resumeResult = await applyResumeNormalization();
-  if (resumeResult) return resumeResult;
+  if (resumeResult) return finalizeWorkflowResult(resumeResult);
 
   for (let iteration = 0; iteration < 1000; iteration += 1) {
     switch (state.currentPhase) {
@@ -63,39 +84,44 @@ export async function runGoalWorkflow(
           cwd: options.cwd,
           promptDir: options.promptDir,
           milestonesSchema: options.milestonesSchema,
+          timingWarnings,
           now: clock,
         });
 
         state = result.state;
         if (!result.ok) {
-          return finishTerminal({
+          return finalizeWorkflowResult(await finishTerminal({
             state,
             metadata: await readMetadataOrEmpty(),
             ok: false,
             originalError: result.error,
-          });
+          }));
         }
 
         metadata = result.metadata;
         if (options.planningOnly) {
-          return { ok: true, state };
+          return finalizeWorkflowResult({ ok: true, state });
         }
         break;
       }
 
       case "ready_for_milestone": {
         if (options.planningOnly) {
-          return { ok: true, state };
+          return finalizeWorkflowResult({ ok: true, state });
         }
 
         const metadataResult = await ensureMetadata(metadata);
         if (!metadataResult.ok) {
-          return stopForHumanReview(metadataResult.error, undefined, state.currentMilestoneId);
+          return finalizeWorkflowResult(await stopForHumanReview(
+            metadataResult.error,
+            undefined,
+            state.currentMilestoneId,
+          ));
         }
         metadata = metadataResult.metadata;
 
         const executionLimitResult = validateExecutionLimitBeforeWork(metadata);
-        if (executionLimitResult) return executionLimitResult;
+        if (executionLimitResult) return finalizeWorkflowResult(executionLimitResult);
 
         const result = await runImplementationWorkflow({
           goal: options.goal,
@@ -106,17 +132,19 @@ export async function runGoalWorkflow(
           commandRunner: options.commandRunner,
           cwd: options.cwd,
           promptDir: options.promptDir,
+          checkTimingCollector,
+          timingWarnings,
           now: clock,
         });
 
         state = result.state;
         if (!result.ok) {
-          return finishTerminal({
+          return finalizeWorkflowResult(await finishTerminal({
             state,
             metadata: await readMetadataOrEmpty(),
             ok: false,
             originalError: result.error,
-          });
+          }));
         }
 
         metadata = result.metadata;
@@ -125,17 +153,21 @@ export async function runGoalWorkflow(
 
       case "ready_for_review": {
         if (options.planningOnly) {
-          return { ok: true, state };
+          return finalizeWorkflowResult({ ok: true, state });
         }
 
         const metadataResult = await ensureMetadata(metadata);
         if (!metadataResult.ok) {
-          return stopForHumanReview(metadataResult.error, undefined, state.currentMilestoneId);
+          return finalizeWorkflowResult(await stopForHumanReview(
+            metadataResult.error,
+            undefined,
+            state.currentMilestoneId,
+          ));
         }
         metadata = metadataResult.metadata;
 
         const executionLimitResult = validateExecutionLimitBeforeWork(metadata);
-        if (executionLimitResult) return executionLimitResult;
+        if (executionLimitResult) return finalizeWorkflowResult(executionLimitResult);
 
         const result = await runReviewWorkflow({
           goal: options.goal,
@@ -146,27 +178,29 @@ export async function runGoalWorkflow(
           commandRunner: options.commandRunner,
           cwd: options.cwd,
           promptDir: options.promptDir,
+          checkTimingCollector,
+          timingWarnings,
           now: clock,
         });
 
         state = result.state;
         if (!result.ok) {
-          return finishTerminal({
+          return finalizeWorkflowResult(await finishTerminal({
             state,
             metadata: await readMetadataOrEmpty(),
             ok: false,
             originalError: result.error,
-          });
+          }));
         }
 
         metadata = result.metadata;
         if (result.verdict === "needs_human_review") {
-          return finishTerminal({
+          return finalizeWorkflowResult(await finishTerminal({
             state,
             metadata,
             ok: true,
             originalError: terminalReason(state),
-          });
+          }));
         }
 
         break;
@@ -175,49 +209,124 @@ export async function runGoalWorkflow(
       case "passed": {
         const metadataResult = await ensureMetadata(metadata);
         if (!metadataResult.ok) {
-          return stopForHumanReview(metadataResult.error, undefined, null);
+          return finalizeWorkflowResult(await stopForHumanReview(
+            metadataResult.error,
+            undefined,
+            null,
+          ));
         }
         metadata = metadataResult.metadata;
 
         const constrainedStop = handlePassedExecutionLimit(metadata);
-        if (constrainedStop) return constrainedStop;
+        if (constrainedStop) return finalizeWorkflowResult(constrainedStop);
 
         const decision = selectNextRunnableMilestone(metadata, state);
         const handledDecision = await handleSelectionDecision(decision, metadata);
-        if (handledDecision) return handledDecision;
+        if (handledDecision) return finalizeWorkflowResult(handledDecision);
         break;
       }
 
       case "failed": {
-        return finishTerminal({
+        return finalizeWorkflowResult(await finishTerminal({
           state,
           metadata: await readMetadataOrEmpty(),
           ok: false,
           originalError: terminalReason(state),
-        });
+        }));
       }
 
       case "needs_human_review": {
-        return finishTerminal({
+        return finalizeWorkflowResult(await finishTerminal({
           state,
           metadata: await readMetadataOrEmpty(),
           ok: true,
           originalError: terminalReason(state),
-        });
+        }));
       }
 
       default:
-        return stopForHumanReview(
+        return finalizeWorkflowResult(await stopForHumanReview(
           `Goal workflow cannot continue from phase ${state.currentPhase}.`,
           { currentPhase: state.currentPhase },
-        );
+        ));
     }
   }
 
-  return stopForHumanReview(
+  return finalizeWorkflowResult(await stopForHumanReview(
     "Goal workflow exceeded the maximum iteration limit.",
     { maxIterations: 1000 },
-  );
+  ));
+
+  async function startWorkflowInvocation(): Promise<string> {
+    const nextInvocationId = await nextTimelineInvocationId(
+      options.paths,
+      timingWarnings,
+    );
+    await appendInvocationTimelineEvent({
+      paths: options.paths,
+      invocationId: nextInvocationId,
+      event: "invocation_started",
+      timestamp: clock().toISOString(),
+      state,
+      warnings: timingWarnings,
+    });
+    return nextInvocationId;
+  }
+
+  async function finalizeWorkflowResult(
+    primaryResult: GoalWorkflowResult,
+  ): Promise<GoalWorkflowResult> {
+    const runEndedAt = clock().toISOString();
+    await appendInvocationTimelineEvent({
+      paths: options.paths,
+      invocationId,
+      event: "invocation_ended",
+      timestamp: runEndedAt,
+      state: primaryResult.state,
+      warnings: timingWarnings,
+    });
+
+    try {
+      const generatedAt = clock().toISOString();
+      const timingResult = await writeRunTimings({
+        paths: options.paths,
+        state: primaryResult.state,
+        runEndedAt,
+        generatedAt,
+        finalizedAt: generatedAt,
+        checkTimingCollector,
+        warnings: timingWarnings.list(),
+      });
+      state = primaryResult.state;
+      let finalizedState = recordArtifactByKey(
+        primaryResult.state,
+        "logs",
+        "timingsJson",
+        timingResult.statePaths.timingsJson,
+        clock(),
+      );
+      finalizedState = recordArtifactByKey(
+        finalizedState,
+        "logs",
+        "timingsMarkdown",
+        timingResult.statePaths.timingsMarkdown,
+        clock(),
+      );
+      state = await persist(finalizedState);
+
+      return {
+        ...primaryResult,
+        state,
+        timingWarnings: timingResult.warnings,
+      };
+    } catch (error) {
+      timingWarnings.add(finalizationWarning(error));
+      return {
+        ...primaryResult,
+        timingWarnings: timingWarnings.list(),
+      };
+    }
+  }
 
   async function handleSelectionDecision(
     decision: MilestoneSelectionDecision,
@@ -701,6 +810,14 @@ function combineTerminalErrors(
   return originalError
     ? `${originalError} Additionally, ${summaryError}`
     : summaryError;
+}
+
+function finalizationWarning(error: unknown): TimingWarning {
+  return {
+    code: "timing_finalization_failed",
+    message: `Failed to finalize timing artifacts: ${formatError(error)}`,
+    source: "finalization",
+  };
 }
 
 function normalizeDetails(

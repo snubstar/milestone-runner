@@ -50,6 +50,7 @@ export function defaultTestConfig(
     runner: { type: "fake" },
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
     ...overrides,
   };
 }

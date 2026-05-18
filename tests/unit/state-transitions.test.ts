@@ -321,6 +321,7 @@ function initialState(): RunState {
       runner: { type: "fake" },
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
     now: new Date("2026-05-10T12:00:00.000Z"),
   });

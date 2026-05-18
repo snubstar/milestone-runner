@@ -56,7 +56,36 @@ test("runAgentPhaseWithDiagnostics writes sanitized diagnostics for real runner 
       outputLastMessageCaptured: true,
       startedAt: "2026-05-10T12:00:00.000Z",
       endedAt: "2026-05-10T12:00:01.000Z",
+      durationMs: 1000,
     });
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runAgentPhaseWithDiagnostics writes duration for non-zero real runner results", async () => {
+  const context = await createDiagnosticContext();
+  try {
+    const result = await runAgentPhaseWithDiagnostics({
+      runner: new MetadataRunner({ exitCode: 2, stderr: "runner failed", error: "process exited" }),
+      paths: context.paths,
+      request: {
+        phase: "major_plan",
+        prompt: "full secret prompt",
+        cwd: context.repo,
+      },
+      now: sequenceClock("2026-05-10T12:00:00.000Z"),
+    });
+
+    assert.equal(result.ok, true);
+
+    const diagnostic = JSON.parse(
+      await readFile(path.join(context.paths.runDir, result.diagnosticArtifact ?? ""), "utf8"),
+    );
+    assert.equal(diagnostic.exitCode, 2);
+    assert.equal(diagnostic.stderr, "runner failed");
+    assert.equal(diagnostic.error, "process exited");
+    assert.equal(diagnostic.durationMs, 1000);
   } finally {
     await context.cleanup();
   }
@@ -95,7 +124,38 @@ test("runAgentPhaseWithDiagnostics writes diagnostics when a real runner throws"
     assert.equal(diagnostic.error, "codex crashed");
     assert.equal(diagnostic.startedAt, "2026-05-10T12:00:00.000Z");
     assert.equal(diagnostic.endedAt, "2026-05-10T12:00:01.000Z");
+    assert.equal(diagnostic.durationMs, 1000);
     assert.equal("prompt" in diagnostic, false);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runAgentPhaseWithDiagnostics omits duration when timestamps are inverted", async () => {
+  const context = await createDiagnosticContext();
+  try {
+    const result = await runAgentPhaseWithDiagnostics({
+      runner: new MetadataRunner(),
+      paths: context.paths,
+      request: {
+        phase: "major_plan",
+        prompt: "full secret prompt",
+        cwd: context.repo,
+      },
+      now: datesClock([
+        "2026-05-10T12:00:01.000Z",
+        "2026-05-10T12:00:00.000Z",
+      ]),
+    });
+
+    assert.equal(result.ok, true);
+
+    const diagnostic = JSON.parse(
+      await readFile(path.join(context.paths.runDir, result.diagnosticArtifact ?? ""), "utf8"),
+    );
+    assert.equal(diagnostic.startedAt, "2026-05-10T12:00:01.000Z");
+    assert.equal(diagnostic.endedAt, "2026-05-10T12:00:00.000Z");
+    assert.equal("durationMs" in diagnostic, false);
   } finally {
     await context.cleanup();
   }
@@ -134,13 +194,31 @@ function sequenceClock(startIso: string): () => Date {
   };
 }
 
+function datesClock(isoDates: string[]): () => Date {
+  let index = 0;
+
+  return () => {
+    const value = isoDates[index] ?? isoDates.at(-1);
+    index += 1;
+    return new Date(value ?? "1970-01-01T00:00:00.000Z");
+  };
+}
+
+interface MetadataRunnerOptions {
+  exitCode?: number;
+  stderr?: string;
+  error?: string;
+}
+
 class MetadataRunner implements AgentRunner {
   readonly type = "codex-exec";
+
+  constructor(private readonly options: MetadataRunnerOptions = {}) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     return {
       text: "ok",
-      exitCode: 0,
+      exitCode: this.options.exitCode ?? 0,
       metadata: {
         runner: "codex-exec",
         command: "codex",
@@ -151,7 +229,8 @@ class MetadataRunner implements AgentRunner {
         approvalPolicy: "never",
         timeoutMs: 120000,
         stdout: "stdout text",
-        stderr: "",
+        stderr: this.options.stderr ?? "",
+        ...(this.options.error === undefined ? {} : { error: this.options.error }),
         outputLastMessageCaptured: true,
         env: { SECRET: "SECRET_VALUE" },
         prompt: request.prompt,

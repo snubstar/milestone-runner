@@ -101,6 +101,7 @@ function buildRunnerDiagnostic(options: {
   endedAt: string;
 }): Record<string, unknown> {
   const metadata = options.result?.metadata ?? {};
+  const durationMs = durationBetweenIsoTimestamps(options.startedAt, options.endedAt);
 
   return omitUndefined({
     phase: options.request.phase,
@@ -121,6 +122,7 @@ function buildRunnerDiagnostic(options: {
     outputSchemaPath: options.request.outputSchemaPath,
     startedAt: options.startedAt,
     endedAt: options.endedAt,
+    durationMs,
   });
 }
 
@@ -147,6 +149,19 @@ function booleanField(value: unknown): boolean | undefined {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function durationBetweenIsoTimestamps(
+  startedAt: string,
+  endedAt: string,
+): number | undefined {
+  const start = Date.parse(startedAt);
+  const end = Date.parse(endedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return undefined;
+  }
+
+  return end - start;
 }
 
 function formatError(error: unknown): string {

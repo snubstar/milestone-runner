@@ -83,6 +83,7 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       config: options.configPath,
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
+      milestonePlanPolicy: options.config.milestonePlanPolicy,
       checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,
@@ -138,6 +139,11 @@ export async function buildResumeDryRunReport(
       runnerExecution: runnerExecutionDescription(options.config),
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
+      milestonePlanPolicy: options.config.milestonePlanPolicy,
+      ...(options.state.config.snapshot?.milestonePlanPolicy !== undefined &&
+      options.state.config.snapshot.milestonePlanPolicy !== options.config.milestonePlanPolicy
+        ? { savedMilestonePlanPolicy: options.state.config.snapshot.milestonePlanPolicy }
+        : {}),
       checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,

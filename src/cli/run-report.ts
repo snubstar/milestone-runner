@@ -1,9 +1,14 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+
 import {
   formatEnvironmentDiagnostics,
   type EnvironmentDiagnostic,
 } from "../diagnostics/environment-validator.js";
+import type { MilestonePlanPolicy } from "../config/config-types.js";
 import type { GitMetadata } from "../git/git-types.js";
 import type { RunState } from "../state/state-types.js";
+import type { TimingWarning } from "../timings/timing-types.js";
 import type { DryRunReport } from "./dry-run.js";
 
 export interface RunReportOptions {
@@ -22,6 +27,8 @@ export interface RunReportOptions {
   checks: string[];
   maxFixAttempts: number;
   savedMaxFixAttempts?: number;
+  milestonePlanPolicy: MilestonePlanPolicy;
+  savedMilestonePlanPolicy?: MilestonePlanPolicy;
   gitRequired: boolean;
   gitRoot: string;
   gitDirty: boolean;
@@ -30,6 +37,7 @@ export interface RunReportOptions {
   stateBeforeResume?: RunState["currentPhase"];
   nextAction?: string;
   finalState: RunState;
+  timingWarnings?: TimingWarning[];
 }
 
 export function printRunReport(options: RunReportOptions): void {
@@ -53,6 +61,13 @@ export function printRunReport(options: RunReportOptions): void {
     options.savedMaxFixAttempts !== options.maxFixAttempts
   ) {
     console.log(`Saved max fix attempts: ${options.savedMaxFixAttempts}`);
+  }
+  console.log(`Milestone plan policy: ${options.milestonePlanPolicy}`);
+  if (
+    options.savedMilestonePlanPolicy !== undefined &&
+    options.savedMilestonePlanPolicy !== options.milestonePlanPolicy
+  ) {
+    console.log(`Saved milestone plan policy: ${options.savedMilestonePlanPolicy}`);
   }
   console.log(`Git required: ${options.gitRequired}`);
   console.log(`Git root: ${options.gitRoot}`);
@@ -83,6 +98,13 @@ export function printRunReport(options: RunReportOptions): void {
   const finalSummary = options.finalState.artifacts.summaries?.goal;
   if (finalSummary) {
     console.log(`Final summary artifact: ${finalSummary}`);
+  }
+  printTimingReport(options);
+  if (options.timingWarnings && options.timingWarnings.length > 0) {
+    console.log("Timing warnings:");
+    for (const warning of options.timingWarnings) {
+      console.log(`  [${warning.code}] ${warning.source}: ${warning.message}`);
+    }
   }
 }
 
@@ -180,4 +202,146 @@ function runnerDiagnosticFromDetails(details: unknown): string | null {
 
   const value = details.diagnosticArtifact;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+interface TimingReportDurations {
+  lifecycleDurationMs?: number;
+  activeWorkflowDurationMs?: number;
+  latestInvocationDurationMs?: number;
+  runnerDurationMs?: number;
+  checkDurationMs?: number;
+}
+
+function printTimingReport(options: RunReportOptions): void {
+  const timingArtifacts = timingArtifactsFromState(options);
+  if (
+    timingArtifacts.timeline === null &&
+    timingArtifacts.timingsJson === null &&
+    timingArtifacts.timingsMarkdown === null
+  ) {
+    return;
+  }
+
+  if (timingArtifacts.timeline) {
+    console.log(`Timing timeline artifact: ${timingArtifacts.timeline}`);
+  }
+  if (timingArtifacts.timingsJson) {
+    console.log(`Timing JSON artifact: ${timingArtifacts.timingsJson}`);
+  }
+  if (timingArtifacts.timingsMarkdown) {
+    console.log(`Timing Markdown artifact: ${timingArtifacts.timingsMarkdown}`);
+  }
+
+  const durations = timingArtifacts.timingsJson
+    ? readTimingReportDurations(options.paths.runDir, timingArtifacts.timingsJson)
+    : null;
+  if (durations === null) return;
+
+  console.log(
+    `Lifecycle duration: ${formatReportDurationMs(durations.lifecycleDurationMs)}`,
+  );
+  console.log(
+    `Active workflow duration: ${formatReportDurationMs(durations.activeWorkflowDurationMs)}`,
+  );
+  console.log(
+    `Latest invocation duration: ${formatReportDurationMs(
+      durations.latestInvocationDurationMs,
+    )}`,
+  );
+  console.log(`Runner duration: ${formatReportDurationMs(durations.runnerDurationMs)}`);
+  console.log(`Check duration: ${formatReportDurationMs(durations.checkDurationMs)}`);
+}
+
+function timingArtifactsFromState(options: RunReportOptions): {
+  timeline: string | null;
+  timingsJson: string | null;
+  timingsMarkdown: string | null;
+} {
+  const logs = options.finalState.artifacts.logs ?? {};
+  const timeline = stringField(logs.timeline) ?? existingTimelinePath(options.paths.runDir);
+
+  return {
+    timeline,
+    timingsJson: stringField(logs.timingsJson),
+    timingsMarkdown: stringField(logs.timingsMarkdown),
+  };
+}
+
+function existingTimelinePath(runDir: string): string | null {
+  const timelinePath = path.join("logs", "timeline.jsonl");
+  return existsSync(path.join(runDir, timelinePath)) ? timelinePath : null;
+}
+
+function readTimingReportDurations(
+  runDir: string,
+  artifactPath: string,
+): TimingReportDurations | null {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(path.join(runDir, artifactPath), "utf8"),
+    ) as unknown;
+    if (!isRecord(parsed)) return null;
+
+    const aggregates = isRecord(parsed.aggregates) ? parsed.aggregates : {};
+    return {
+      lifecycleDurationMs: numberField(parsed.lifecycleDurationMs),
+      activeWorkflowDurationMs: numberField(parsed.activeWorkflowDurationMs),
+      latestInvocationDurationMs: numberField(parsed.latestInvocationDurationMs),
+      runnerDurationMs: numberField(aggregates.runnerDurationMs),
+      checkDurationMs: numberField(aggregates.checkDurationMs),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatReportDurationMs(durationMs: number | undefined): string {
+  if (
+    durationMs === undefined ||
+    !Number.isFinite(durationMs) ||
+    durationMs < 0
+  ) {
+    return "unknown";
+  }
+
+  const totalMs = Math.trunc(durationMs);
+  if (totalMs === 0) return "0ms";
+  if (totalMs < 1_000) return `${totalMs}ms`;
+
+  let remainingMs = totalMs;
+  const hours = Math.floor(remainingMs / 3_600_000);
+  remainingMs -= hours * 3_600_000;
+  const minutes = Math.floor(remainingMs / 60_000);
+  remainingMs -= minutes * 60_000;
+  const seconds = Math.floor(remainingMs / 1_000);
+
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${padDurationPart(minutes)}m`);
+    if (seconds > 0) parts.push(`${padDurationPart(seconds)}s`);
+  } else if (minutes > 0) {
+    parts.push(`${minutes}m`);
+    if (seconds > 0) parts.push(`${padDurationPart(seconds)}s`);
+  } else if (seconds > 0) {
+    parts.push(`${seconds}s`);
+  }
+
+  return parts.length === 0 ? `${totalMs}ms` : parts.join("");
+}
+
+function padDurationPart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

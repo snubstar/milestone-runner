@@ -35,6 +35,8 @@ test("parseArgs accepts supported options", () => {
     "1",
     "--milestone",
     "2",
+    "--milestone-plan-policy",
+    "auto",
     "--runner",
     "fake",
     "--config",
@@ -53,6 +55,7 @@ test("parseArgs accepts supported options", () => {
     assert.equal(result.options.dryRun, true);
     assert.equal(result.options.maxFixAttempts, 1);
     assert.equal(result.options.milestone, 2);
+    assert.equal(result.options.milestonePlanPolicy, "auto");
     assert.equal(result.options.runner, "fake");
     assert.equal(result.options.configPath, "custom.json");
     assert.equal(result.options.artifactRoot, ".runs");
@@ -77,6 +80,22 @@ test("parseArgs accepts resume by run id with artifact root", () => {
     assert.equal(result.options.goal, null);
     assert.equal(result.options.artifactRoot, ".runs");
     assert.equal(result.options.resume, "run-1");
+  }
+});
+
+test("parseArgs accepts milestone plan policy with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    ".agent-work/run-1",
+    "--milestone-plan-policy",
+    "light",
+  ]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.options.goal, null);
+    assert.equal(result.options.resume, ".agent-work/run-1");
+    assert.equal(result.options.milestonePlanPolicy, "light");
   }
 });
 
@@ -150,5 +169,19 @@ test("parseArgs rejects invalid runner", () => {
   assert.deepEqual(result, {
     ok: false,
     error: 'Invalid --runner value "other". Expected "fake" or "codex-exec".',
+  });
+});
+
+test("parseArgs rejects invalid milestone plan policy", () => {
+  const result = parseArgs([
+    "--milestone-plan-policy",
+    "sometimes",
+    "Add feature X",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error:
+      'Invalid --milestone-plan-policy value "sometimes". Expected "always", "auto", or "light".',
   });
 });

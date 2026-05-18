@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildRunPaths, type RunPaths } from "../../src/artifacts/paths.js";
+import { buildTimingArtifactPaths } from "../../src/artifacts/timing-artifacts.js";
 import { createRunDirectory } from "../../src/artifacts/run-directory.js";
 import type { OrchestratorConfig } from "../../src/config/config-types.js";
 import { runGoalWorkflow } from "../../src/orchestration/goal-workflow.js";
@@ -48,6 +49,7 @@ test("runGoalWorkflow completes the full fake multi-milestone path", async () =>
       result.state.artifacts.summaries?.goal,
       path.join("milestones", "90-goal-summary.md"),
     );
+    await assertTimingArtifacts(context.paths, result.state);
     assert.deepEqual(
       runner.requests.map(({ phase, milestoneId }) => ({
         phase,
@@ -117,10 +119,69 @@ test("runGoalWorkflow stops after planning when planningOnly is true", async () 
       "2": "pending",
     });
     assert.equal(result.state.artifacts.summaries?.goal, undefined);
+    await assertTimingArtifacts(context.paths, result.state);
 
     await assert.rejects(
       access(path.join(context.repo, "fake-milestone-1-implementation.txt")),
     );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow preserves primary outcome when timing finalization fails", async () => {
+  const context = await createGoalContext();
+  try {
+    const timingPaths = buildTimingArtifactPaths(context.paths);
+    await mkdir(timingPaths.files.timingsMarkdown);
+
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      planningOnly: true,
+      runner: new FakeRunner(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.state.currentPhase, "ready_for_milestone");
+    assert.equal(result.state.status, "ready_for_milestone");
+    assert.equal(result.state.artifacts.logs?.timingsJson, undefined);
+    assert.equal(result.state.artifacts.logs?.timingsMarkdown, undefined);
+    assert.equal(
+      result.timingWarnings?.some(
+        (warning) => warning.code === "timing_finalization_failed",
+      ),
+      true,
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow surfaces nested workflow timeline append warnings", async () => {
+  const context = await createGoalContext();
+  try {
+    const timingPaths = buildTimingArtifactPaths(context.paths);
+    await mkdir(timingPaths.files.timeline);
+
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      planningOnly: true,
+      runner: new FakeRunner(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.state.currentPhase, "ready_for_milestone");
+    assert.equal(
+      result.timingWarnings?.some(
+        (warning) =>
+          warning.code === "timeline_incomplete" &&
+          warning.message.includes("phase_changed"),
+      ),
+      true,
+    );
+    assert.equal(result.state.artifacts.logs?.timingsJson, path.join("logs", "80-timings.json"));
     assert.deepEqual(await readState(context.paths.files.state), result.state);
   } finally {
     await context.cleanup();
@@ -150,6 +211,7 @@ test("runGoalWorkflow stops after a constrained target milestone passes", async 
       "2": "pending",
     });
     assert.equal(result.state.artifacts.summaries?.goal, undefined);
+    await assertTimingArtifacts(context.paths, result.state);
     assert.deepEqual(
       runner.requests.map(({ phase, milestoneId }) => ({
         phase,
@@ -1174,12 +1236,40 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     runner: { type: "fake" },
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
     ...overrides,
   };
 }
 
 function promptDir(): string {
   return path.join(process.cwd(), "src", "prompts");
+}
+
+async function assertTimingArtifacts(paths: RunPaths, state: RunState): Promise<void> {
+  const timingPaths = buildTimingArtifactPaths(paths);
+  assert.equal(state.artifacts.logs?.timingsJson, timingPaths.statePaths.timingsJson);
+  assert.equal(
+    state.artifacts.logs?.timingsMarkdown,
+    timingPaths.statePaths.timingsMarkdown,
+  );
+
+  const document = JSON.parse(
+    await readFile(timingPaths.files.timingsJson, "utf8"),
+  ) as {
+    runId?: string;
+    runEndedAt?: string;
+    lifecycleDurationMs?: number;
+  };
+  const markdown = await readFile(timingPaths.files.timingsMarkdown, "utf8");
+
+  assert.equal(document.runId, state.runId);
+  assert.equal(typeof document.lifecycleDurationMs, "number");
+  assert.equal(typeof document.runEndedAt, "string");
+  assert.ok(
+    Date.parse(state.updatedAt) > Date.parse(document.runEndedAt ?? ""),
+    "timing artifact state recording must not move runEndedAt",
+  );
+  assert.match(markdown, /^# Timing Summary/);
 }
 
 function assertNoMilestone2Requests(requests: readonly RecordedAgentRequest[]): void {

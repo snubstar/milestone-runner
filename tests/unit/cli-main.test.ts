@@ -33,9 +33,18 @@ test("main stops after planning when --planning-only is set", async () => {
     assert.match(result.stdout, /Planning only: true/);
     assert.match(result.stdout, /Config source: config file/);
     assert.match(result.stdout, /Effective max fix attempts: 0/);
+    assert.match(result.stdout, /Milestone plan policy: always/);
     assert.match(result.stdout, /State: ready_for_milestone/);
     assert.match(result.stdout, /Current milestone: 1/);
     assert.match(result.stdout, /Milestones:\n  1: pending\n  2: pending/);
+    assert.match(result.stdout, /Timing timeline artifact: logs\/timeline\.jsonl/);
+    assert.match(result.stdout, /Timing JSON artifact: logs\/80-timings\.json/);
+    assert.match(result.stdout, /Timing Markdown artifact: logs\/81-timings\.md/);
+    assert.match(result.stdout, /Lifecycle duration: /);
+    assert.match(result.stdout, /Active workflow duration: /);
+    assert.match(result.stdout, /Latest invocation duration: /);
+    assert.match(result.stdout, /Runner duration: /);
+    assert.match(result.stdout, /Check duration: /);
     assert.doesNotMatch(result.stdout, /Final summary artifact:/);
 
     const state = await readOnlyRunState(repo);
@@ -57,7 +66,7 @@ test("main stops after planning when --planning-only is set", async () => {
   }
 });
 
-test("main stores max fix attempts CLI override in new run state", async () => {
+test("main stores config CLI overrides in new run state", async () => {
   const repo = await createCliFixtureRepo();
   try {
     const result = await runMainInRepo(repo, [
@@ -68,14 +77,18 @@ test("main stores max fix attempts CLI override in new run state", async () => {
       "orchestrator.config.json",
       "--max-fix-attempts",
       "2",
+      "--milestone-plan-policy",
+      "light",
       "Add feature X",
     ]);
 
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Effective max fix attempts: 2/);
+    assert.match(result.stdout, /Milestone plan policy: light/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.config.snapshot?.maxFixAttempts, 2);
+    assert.equal(state.config.snapshot?.milestonePlanPolicy, "light");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -101,9 +114,35 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /Next action: run_full_goal/);
     assert.match(result.stdout, /runner: fake/);
     assert.match(result.stdout, /maxFixAttempts: 0/);
+    assert.match(result.stdout, /milestonePlanPolicy: always/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main dry-runs explicit milestone plan policies", async () => {
+  for (const policy of ["light", "auto"] as const) {
+    const repo = await createCliFixtureRepo();
+    try {
+      const result = await runMainInRepo(repo, [
+        "--dry-run",
+        "--runner",
+        "fake",
+        "--config",
+        "orchestrator.config.json",
+        "--milestone-plan-policy",
+        policy,
+        "Add feature X",
+      ]);
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, new RegExp(`milestonePlanPolicy: ${policy}`));
+      await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   }
 });
 
@@ -276,6 +315,9 @@ test("main resumes an existing fake run from saved state", async () => {
 
     const plannedState = await readOnlyRunState(repo);
     assert.equal(plannedState.currentPhase, "ready_for_milestone");
+    assert.equal(plannedState.artifacts.logs?.timingsJson, path.join("logs", "80-timings.json"));
+    const plannedTimings = await readTimingJson(plannedState);
+    assert.equal(plannedTimings.invocations.length, 1);
 
     const resumeResult = await runMainInRepo(repo, [
       "--resume",
@@ -294,6 +336,11 @@ test("main resumes an existing fake run from saved state", async () => {
     assert.equal(finalState.currentPhase, "passed");
     assert.equal(finalState.currentMilestoneId, null);
     assert.equal(finalState.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+    assert.equal(finalState.artifacts.logs?.timingsJson, plannedState.artifacts.logs?.timingsJson);
+    assert.equal(finalState.artifacts.logs?.timingsMarkdown, path.join("logs", "81-timings.md"));
+    const finalTimings = await readTimingJson(finalState);
+    assert.equal(finalTimings.runId, plannedState.runId);
+    assert.equal(finalTimings.invocations.length, 2);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -315,22 +362,28 @@ test("main reports resume max fix attempts override without mutating saved snaps
 
     const plannedState = await readOnlyRunState(repo);
     assert.equal(plannedState.config.snapshot?.maxFixAttempts, 0);
+    assert.equal(plannedState.config.snapshot?.milestonePlanPolicy, "always");
 
     const resumeResult = await runMainInRepo(repo, [
       "--resume",
       plannedState.runDir,
       "--max-fix-attempts",
       "2",
+      "--milestone-plan-policy",
+      "auto",
     ]);
 
     assert.equal(resumeResult.exitCode, 0);
     assert.match(resumeResult.stdout, /Mode: resume/);
     assert.match(resumeResult.stdout, /Effective max fix attempts: 2/);
     assert.match(resumeResult.stdout, /Saved max fix attempts: 0/);
+    assert.match(resumeResult.stdout, /Milestone plan policy: auto/);
+    assert.match(resumeResult.stdout, /Saved milestone plan policy: always/);
 
     const finalState = await readOnlyRunState(repo);
     assert.equal(finalState.currentPhase, "passed");
     assert.equal(finalState.config.snapshot?.maxFixAttempts, 0);
+    assert.equal(finalState.config.snapshot?.milestonePlanPolicy, "always");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -358,6 +411,8 @@ test("main dry-runs resume without writing state changes", async () => {
       "--dry-run",
       "--resume",
       plannedState.runDir,
+      "--milestone-plan-policy",
+      "auto",
     ]);
 
     assert.equal(result.exitCode, 0);
@@ -366,6 +421,8 @@ test("main dry-runs resume without writing state changes", async () => {
     assert.match(result.stdout, /Mode: resume/);
     assert.match(result.stdout, /Allowed: true/);
     assert.match(result.stdout, /Next action: continue_milestone/);
+    assert.match(result.stdout, /milestonePlanPolicy: auto/);
+    assert.match(result.stdout, /savedMilestonePlanPolicy: always/);
 
     const rawStateAfter = await readFile(statePath, "utf8");
     assert.equal(rawStateAfter, rawStateBefore);
@@ -784,6 +841,7 @@ test("main resumes codex-exec implementation-capable runs through the adapter", 
         runner,
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
+        milestonePlanPolicy: "always",
       },
       configPath: path.join(repo, "orchestrator.config.json"),
     });
@@ -960,6 +1018,26 @@ async function readOnlyRunState(repo: string): Promise<RunState> {
   const state: unknown = JSON.parse(raw);
   assertRunStateShape(state);
   return state;
+}
+
+async function readTimingJson(state: RunState): Promise<{
+  runId?: string;
+  invocations: unknown[];
+}> {
+  const timingPath = state.artifacts.logs?.timingsJson;
+  assert.equal(typeof timingPath, "string");
+  const parsed = JSON.parse(
+    await readFile(path.join(state.runDir, timingPath ?? ""), "utf8"),
+  ) as {
+    runId?: string;
+    invocations?: unknown;
+  };
+
+  assert.ok(Array.isArray(parsed.invocations));
+  return {
+    runId: parsed.runId,
+    invocations: parsed.invocations,
+  };
 }
 
 async function git(repo: string, args: string[]): Promise<void> {

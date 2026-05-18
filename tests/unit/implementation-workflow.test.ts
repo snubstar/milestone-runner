@@ -12,6 +12,7 @@ import { nodeCommandRunner } from "../../src/shell/command-runner.js";
 import { readState } from "../../src/state/state-store.js";
 import { setStatePhase } from "../../src/state/state-transitions.js";
 import type { RunState } from "../../src/state/state-types.js";
+import { createCheckTimingCollector } from "../../src/timings/check-timing-collector.js";
 import { createFixtureRepo } from "../helpers/fixture-repo.js";
 import {
   createReadyForMilestoneRunFixture,
@@ -21,10 +22,12 @@ import { ScenarioRunner } from "../helpers/scenario-runner.js";
 
 test("runImplementationWorkflow implements one fake milestone and stops ready for review", async () => {
   const context = await createImplementationContext();
+  const checkTimingCollector = createCheckTimingCollector();
   try {
     const result = await runImplementationWorkflow({
       ...context.workflowOptions,
       runner: new FakeRunner(),
+      checkTimingCollector,
     });
 
     assert.equal(result.ok, true);
@@ -76,6 +79,12 @@ test("runImplementationWorkflow implements one fake milestone and stops ready fo
     assert.match(summary, /Milestone 5 must review/);
 
     assert.deepEqual(await readState(context.paths.files.state), result.state);
+    const checkTimings = checkTimingCollector.list();
+    assert.equal(checkTimings.length, 1);
+    assert.equal(checkTimings[0]?.stateKey, "1");
+    assert.equal(checkTimings[0]?.milestoneId, 1);
+    assert.equal(checkTimings[0]?.attempt, null);
+    assert.equal(checkTimings[0]?.source, "structured");
   } finally {
     await context.cleanup();
   }
@@ -148,7 +157,232 @@ test("runImplementationWorkflow passes target cwd to milestone runner phases", a
     assert.equal(implementationDiagnostic.milestoneId, 1);
     assert.equal(implementationDiagnostic.runner, "codex-exec");
     assert.equal(implementationDiagnostic.cwd, context.repo);
+    assert.equal(implementationDiagnostic.startedAt, "2026-05-10T12:01:06.000Z");
+    assert.equal(implementationDiagnostic.endedAt, "2026-05-10T12:01:07.000Z");
+    assert.equal(implementationDiagnostic.durationMs, 1000);
     assert.equal("prompt" in implementationDiagnostic, false);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow uses runner-backed milestone plans for always policy", async () => {
+  const context = await createImplementationContext();
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Runner Milestone Plan\n\nUse the full planning result.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), ["milestone_plan", "implement_milestone"]);
+    assert.match(
+      runner.requests[1]?.prompt ?? "",
+      /# Runner Milestone Plan\n\nUse the full planning result\./,
+    );
+    assert.equal(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan.md"),
+        "utf8",
+      ),
+      "# Runner Milestone Plan\n\nUse the full planning result.\n",
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow skips milestone_plan and writes a light plan for light policy", async () => {
+  const context = await createImplementationContext({
+    config: lightImplementationConfig(),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), ["implement_milestone"]);
+    assert.deepEqual(result.state.artifacts.milestonePlans, {
+      "1": path.join("milestones", "10-milestone-1-plan.md"),
+    });
+    assert.deepEqual(result.state.artifacts.implementations, {
+      "1": path.join("milestones", "11-milestone-1-implementation.md"),
+    });
+    assert.deepEqual(result.state.artifacts.diffs, {
+      "1": path.join("diffs", "12-milestone-1.diff"),
+    });
+    assert.deepEqual(result.state.artifacts.checks, {
+      "1": path.join("checks", "13-milestone-1-checks.txt"),
+    });
+    assert.deepEqual(result.state.artifacts.summaries, {
+      "1": path.join("milestones", "14-milestone-1-summary.md"),
+    });
+
+    const plan = await readFile(
+      path.join(context.paths.dirs.milestones, "10-milestone-1-plan.md"),
+      "utf8",
+    );
+    assert.match(plan, /^# Milestone 1 Plan: First milestone/);
+    assert.match(plan, /- Policy: light/);
+    assert.match(plan, /- Mode: light/);
+    assert.match(plan, /- Decision: policy=light/);
+    assert.match(
+      plan,
+      /Implementation must produce concrete code or file changes for this active milestone\./,
+    );
+    assert.match(runner.requests[0]?.prompt ?? "", /- Mode: light/);
+
+    assert.equal(
+      runner.requests.some((request) => request.phase === "milestone_plan"),
+      false,
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow does not load milestone-plan prompt for light policy", async () => {
+  const context = await createImplementationContext({
+    config: lightImplementationConfig(),
+  });
+  const promptDir = path.join(context.repo, "minimal-prompts");
+  await mkdir(promptDir);
+  await writeFile(
+    path.join(promptDir, "implement-milestone.md"),
+    "# Implement\n\n{{milestonePlan}}\n",
+    "utf8",
+  );
+  const runner = new ScenarioRunner([
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      promptDir,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), ["implement_milestone"]);
+    assert.match(runner.requests[0]?.prompt ?? "", /# Milestone 1 Plan: First milestone/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow auto-selects light for simple milestones", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("auto"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), ["implement_milestone"]);
+
+    const plan = await readFile(
+      path.join(context.paths.dirs.milestones, "10-milestone-1-plan.md"),
+      "utf8",
+    );
+    assert.match(plan, /- Policy: auto/);
+    assert.match(plan, /- Mode: light/);
+    assert.match(plan, /- Decision: auto: no dependencies, small scope, clear verification/);
+    assert.match(runner.requests[0]?.prompt ?? "", /- Mode: light/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow auto-selects full for dependency-bearing milestones", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("auto"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Runner Full Plan\n\nUse the runner-backed plan.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: {
+        ...context.workflowOptions.initialState,
+        currentMilestoneId: 2,
+        milestoneStatuses: {
+          "1": "passed",
+          "2": "pending",
+        },
+      },
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), ["milestone_plan", "implement_milestone"]);
+
+    const plan = await readFile(
+      path.join(context.paths.dirs.milestones, "10-milestone-2-plan.md"),
+      "utf8",
+    );
+    assert.match(plan, /- Policy: auto/);
+    assert.match(plan, /- Mode: full/);
+    assert.match(plan, /- Decision: auto: milestone has dependencies/);
+    assert.match(plan, /## Runner Plan\n\n# Runner Full Plan\n\nUse the runner-backed plan\./);
+    assert.match(runner.requests[1]?.prompt ?? "", /- Mode: full/);
   } finally {
     await context.cleanup();
   }
@@ -317,6 +551,7 @@ test("runImplementationWorkflow persists check output and fails when checks fail
       runner: { type: "fake" },
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
     },
   });
   try {
@@ -400,6 +635,22 @@ async function createImplementationContext(
       now: sequenceClock("2026-05-10T12:01:00.000Z"),
     },
     cleanup: fixtureRepo.cleanup,
+  };
+}
+
+function lightImplementationConfig(): OrchestratorConfig {
+  return implementationConfig("light");
+}
+
+function implementationConfig(
+  milestonePlanPolicy: OrchestratorConfig["milestonePlanPolicy"],
+): OrchestratorConfig {
+  return {
+    checks: [`${JSON.stringify(process.execPath)} -e "process.stdout.write('check ok')" `],
+    runner: { type: "fake" },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanPolicy,
   };
 }
 

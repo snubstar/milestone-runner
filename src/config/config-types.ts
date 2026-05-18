@@ -2,6 +2,7 @@ import type { RunnerType } from "../runners/runner-types.js";
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ApprovalPolicy = "never" | "on-request" | "untrusted";
+export type MilestonePlanPolicy = "always" | "auto" | "light";
 
 export interface CodexExecRunnerOptions {
   sandboxForPlanning: SandboxMode;
@@ -24,6 +25,7 @@ export interface OrchestratorConfig {
   runner: RunnerConfig;
   maxFixAttempts: number;
   artifactRoot: string;
+  milestonePlanPolicy: MilestonePlanPolicy;
 }
 
 export interface LoadedConfig {

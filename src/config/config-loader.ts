@@ -5,6 +5,7 @@ import type {
   ApprovalPolicy,
   ConfigResult,
   LoadedConfig,
+  MilestonePlanPolicy,
   OrchestratorConfig,
   SandboxMode,
 } from "./config-types.js";
@@ -13,6 +14,7 @@ const localConfigName = "orchestrator.config.json";
 const exampleConfigName = "orchestrator.config.example.json";
 
 const runnerTypes = new Set(["fake", "codex-exec"]);
+const milestonePlanPolicies = new Set(["always", "auto", "light"]);
 const sandboxModes = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const approvalPolicies = new Set(["never", "on-request", "untrusted"]);
 const codexExecOptionKeys = new Set([
@@ -231,6 +233,15 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     return { ok: false, error: "`artifactRoot` must be a non-empty string." };
   }
 
+  const milestonePlanPolicy =
+    value.milestonePlanPolicy === undefined ? "always" : value.milestonePlanPolicy;
+  if (!isMilestonePlanPolicy(milestonePlanPolicy)) {
+    return {
+      ok: false,
+      error: '`milestonePlanPolicy` must be "always", "auto", or "light".',
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -238,6 +249,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
       runner: runnerConfig,
       maxFixAttempts,
       artifactRoot: value.artifactRoot,
+      milestonePlanPolicy,
     },
   };
 }
@@ -248,12 +260,14 @@ export function applyConfigOverrides(
     artifactRoot?: string;
     runnerType?: string;
     maxFixAttempts?: number;
+    milestonePlanPolicy?: MilestonePlanPolicy;
   },
 ): OrchestratorConfig {
   return {
     ...config,
     artifactRoot: overrides.artifactRoot ?? config.artifactRoot,
     maxFixAttempts: overrides.maxFixAttempts ?? config.maxFixAttempts,
+    milestonePlanPolicy: overrides.milestonePlanPolicy ?? config.milestonePlanPolicy,
     runner: {
       ...config.runner,
       type: (overrides.runnerType ?? config.runner.type) as OrchestratorConfig["runner"]["type"],
@@ -284,6 +298,10 @@ function isSandboxMode(value: unknown): value is SandboxMode {
 
 function isApprovalPolicy(value: unknown): value is ApprovalPolicy {
   return typeof value === "string" && approvalPolicies.has(value);
+}
+
+function isMilestonePlanPolicy(value: unknown): value is MilestonePlanPolicy {
+  return typeof value === "string" && milestonePlanPolicies.has(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

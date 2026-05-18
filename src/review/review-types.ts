@@ -4,6 +4,8 @@ import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import type { AgentRunner } from "../runners/agent-runner.js";
 import type { CommandRunner } from "../shell/command-runner.js";
 import type { RunState } from "../state/state-types.js";
+import type { CheckTimingCollector } from "../timings/check-timing-collector.js";
+import type { TimingWarningCollector } from "../timings/timing-types.js";
 
 export type ReviewVerdict = "pass" | "fail" | "needs_human_review";
 
@@ -37,6 +39,8 @@ export interface ReviewWorkflowOptions {
   commandRunner: CommandRunner;
   cwd: string;
   promptDir?: string;
+  checkTimingCollector?: CheckTimingCollector;
+  timingWarnings?: TimingWarningCollector;
   now?: () => Date;
 }
 

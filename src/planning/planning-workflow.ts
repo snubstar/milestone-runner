@@ -24,6 +24,7 @@ import {
   setStatePhase,
 } from "../state/state-transitions.js";
 import type { RunState } from "../state/state-types.js";
+import { appendStateTimelineEvent } from "../timings/state-timeline.js";
 import {
   statePhaseForPlanningRunnerPhase,
   type PlanningRunnerPhase,
@@ -39,7 +40,14 @@ export async function runPlanningWorkflow(
   const planningPaths = buildPlanningArtifactPaths(options.paths);
 
   async function persist(nextState: RunState): Promise<RunState> {
+    const previousState = state;
     await writeState(options.paths.files.state, nextState);
+    await appendStateTimelineEvent({
+      paths: options.paths,
+      previousState,
+      nextState,
+      warnings: options.timingWarnings,
+    });
     return nextState;
   }
 
@@ -221,6 +229,7 @@ export async function runPlanningWorkflow(
       const execution = await runAgentPhaseWithDiagnostics({
         runner: options.runner,
         paths: options.paths,
+        now: clock,
         request: {
           phase,
           prompt,
