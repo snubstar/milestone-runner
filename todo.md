@@ -1,6 +1,7 @@
 
 Then check this again:
 - Before use maybe also add possibility for plan-specific review and fix.
+
 - Design principles to be followed in the main prompt? Will the agent remind? Or we need to setup also the agents.md file?
 
 Check for open-source-ability
