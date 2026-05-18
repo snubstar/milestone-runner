@@ -232,6 +232,136 @@ test("normalizeStateForGoalResume refuses unsafe implementation transients", () 
   assertNeedsHumanReview(decision, /transient implementation work/);
 });
 
+test("normalizeStateForGoalResume refuses scrupulous plan-review interruption artifacts", () => {
+  const cases: Array<{
+    name: string;
+    milestoneStatus: MilestoneStatus;
+    artifacts: StateArtifacts;
+  }> = [
+    {
+      name: "draft only",
+      milestoneStatus: "pending",
+      artifacts: {
+        milestonePlanDrafts: {
+          "1": "milestones/10-milestone-1-plan-draft.md",
+        },
+      },
+    },
+    {
+      name: "draft and review only",
+      milestoneStatus: "pending",
+      artifacts: {
+        milestonePlanDrafts: {
+          "1": "milestones/10-milestone-1-plan-draft.md",
+        },
+        milestonePlanReviews: {
+          "1": "milestones/10-milestone-1-plan-review.md",
+        },
+      },
+    },
+    {
+      name: "final plan written before planned status",
+      milestoneStatus: "pending",
+      artifacts: {
+        milestonePlanDrafts: {
+          "1": "milestones/10-milestone-1-plan-draft.md",
+        },
+        milestonePlanReviews: {
+          "1": "milestones/10-milestone-1-plan-review.md",
+        },
+        milestonePlans: {
+          "1": "milestones/10-milestone-1-plan.md",
+        },
+      },
+    },
+    {
+      name: "final plan with planned status",
+      milestoneStatus: "planned",
+      artifacts: {
+        milestonePlans: {
+          "1": "milestones/10-milestone-1-plan.md",
+        },
+      },
+    },
+    {
+      name: "missing implementation",
+      milestoneStatus: "implementing",
+      artifacts: {
+        milestonePlans: {
+          "1": "milestones/10-milestone-1-plan.md",
+        },
+        diffs: {
+          "1": "diffs/12-milestone-1.diff",
+        },
+        checks: {
+          "1": "checks/13-milestone-1-checks.txt",
+        },
+        summaries: {
+          "1": "milestones/14-milestone-1-summary.md",
+        },
+      },
+    },
+    {
+      name: "missing diff",
+      milestoneStatus: "implementing",
+      artifacts: {
+        milestonePlans: {
+          "1": "milestones/10-milestone-1-plan.md",
+        },
+        implementations: {
+          "1": "milestones/11-milestone-1-implementation.md",
+        },
+        checks: {
+          "1": "checks/13-milestone-1-checks.txt",
+        },
+        summaries: {
+          "1": "milestones/14-milestone-1-summary.md",
+        },
+      },
+    },
+    {
+      name: "missing check",
+      milestoneStatus: "implementing",
+      artifacts: {
+        milestonePlans: {
+          "1": "milestones/10-milestone-1-plan.md",
+        },
+        implementations: {
+          "1": "milestones/11-milestone-1-implementation.md",
+        },
+        diffs: {
+          "1": "diffs/12-milestone-1.diff",
+        },
+        summaries: {
+          "1": "milestones/14-milestone-1-summary.md",
+        },
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const decision = normalizeStateForGoalResume(
+      state({
+        currentPhase: "implementing",
+        status: "implementing",
+        currentMilestoneId: 1,
+        milestoneStatuses: {
+          "1": testCase.milestoneStatus,
+          "2": "pending",
+        },
+        artifacts: testCase.artifacts,
+      }),
+      metadata(),
+    );
+
+    assertNeedsHumanReview(
+      decision,
+      /transient implementation work/u,
+      testCase.name,
+    );
+  }
+});
+
 test("normalizeStateForGoalResume recovers review transients with terminal passed proof", () => {
   const decision = normalizeStateForGoalResume(
     state({
@@ -277,10 +407,11 @@ test("normalizeStateForGoalResume refuses ambiguous review transients", () => {
 function assertNeedsHumanReview(
   decision: ResumeDecision,
   messagePattern: RegExp,
+  message?: string,
 ): void {
-  assert.equal(decision.kind, "needs_human_review");
+  assert.equal(decision.kind, "needs_human_review", message);
   if (decision.kind === "needs_human_review") {
-    assert.match(decision.message, messagePattern);
+    assert.match(decision.message, messagePattern, message);
   }
 }
 
@@ -318,6 +449,7 @@ function state(options: {
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
       },
       now: new Date("2026-05-10T12:00:00.000Z"),
     }),

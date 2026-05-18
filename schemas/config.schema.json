@@ -95,6 +95,11 @@
       "type": "string",
       "description": "Controls per-milestone implementation plan generation. Missing values default to always.",
       "enum": ["always", "auto", "light"]
+    },
+    "milestonePlanReviewPolicy": {
+      "type": "string",
+      "description": "Controls whether per-milestone implementation plans are reviewed before implementation. Missing values default to normal.",
+      "enum": ["normal", "scrupulous"]
     }
   }
 }

@@ -43,6 +43,7 @@ test("printRunReport includes runner diagnostic paths from last error details", 
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
       },
     }),
     currentPhase: "planning" as const,
@@ -74,6 +75,7 @@ test("printRunReport includes runner diagnostic paths from last error details", 
       checks: [],
       maxFixAttempts: 0,
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
       gitRequired: true,
       gitRoot: "/repo",
       gitDirty: false,
@@ -92,10 +94,86 @@ test("printRunReport includes runner diagnostic paths from last error details", 
 
   assert.match(lines.join("\n"), /Runner diagnostic: runner\/major_plan-01\.json/);
   assert.match(lines.join("\n"), /Milestone plan policy: always/);
+  assert.match(lines.join("\n"), /Milestone plan review policy: normal/);
+  assert.match(lines.join("\n"), /Scrupulous review for next milestone: no \(policy normal\)/);
   assert.match(
     lines.join("\n"),
     /Timing warnings:\n  \[timing_finalization_failed\] finalization: Failed to finalize timing artifacts: EISDIR\./,
   );
+});
+
+test("printRunReport shows saved resume review policy and next scrupulous status", () => {
+  const paths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const state = {
+    ...createInitialState({
+      runId: "run-1",
+      goal: "Add feature X",
+      paths,
+      git: {
+        required: true,
+        planningOnly: false,
+        root: "/repo",
+        startSha: "abc123",
+        dirtyAtStart: false,
+        dirtyOverride: false,
+        statusPorcelain: "",
+      },
+      configPath: "/repo/orchestrator.config.json",
+      configSnapshot: {
+        checks: [],
+        runner: { type: "fake" },
+        maxFixAttempts: 0,
+        artifactRoot: ".agent-work",
+        milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "scrupulous",
+      },
+    }),
+    currentPhase: "ready_for_milestone" as const,
+    status: "ready_for_milestone" as const,
+    currentMilestoneId: 1,
+    milestoneStatuses: {
+      "1": "pending" as const,
+    },
+  };
+
+  const lines = captureConsoleLog(() => {
+    printRunReport({
+      mode: "resume",
+      runId: "run-1",
+      paths,
+      goal: "Add feature X",
+      planningOnly: false,
+      allowDirty: false,
+      allowNonGitPlanning: false,
+      targetMilestone: null,
+      runnerType: "fake",
+      configPath: "/repo/orchestrator.config.json",
+      configSource: "state snapshot",
+      artifactRoot: ".agent-work",
+      checks: [],
+      maxFixAttempts: 0,
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "scrupulous",
+      savedMilestonePlanReviewPolicy: "scrupulous",
+      gitRequired: true,
+      gitRoot: "/repo",
+      gitDirty: false,
+      gitDirtyOverride: false,
+      gitNonGitPlanningOverride: false,
+      stateBeforeResume: "ready_for_milestone",
+      nextAction: "continue_milestone",
+      finalState: state,
+    });
+  });
+
+  const output = lines.join("\n");
+  assert.match(output, /Milestone plan review policy: scrupulous/);
+  assert.match(output, /Saved milestone plan review policy: scrupulous/);
+  assert.match(output, /Scrupulous review for next milestone: yes/);
 });
 
 test("printRunReport includes timing artifact paths and compact durations", async () => {
@@ -144,6 +222,7 @@ test("printRunReport includes timing artifact paths and compact durations", asyn
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
       },
     });
     const state = {
@@ -175,6 +254,7 @@ test("printRunReport includes timing artifact paths and compact durations", asyn
         checks: [],
         maxFixAttempts: 0,
         milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
         gitRequired: true,
         gitRoot: tempDir,
         gitDirty: false,

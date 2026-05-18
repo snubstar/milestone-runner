@@ -76,6 +76,53 @@ async function fakeMilestoneResponse(
     };
   }
 
+  if (request.phase === "milestone_plan_review") {
+    if (!isPositiveInteger(request.milestoneId)) {
+      return fakeFailure(request, "Fake milestone plan review requires a positive milestoneId.");
+    }
+
+    return {
+      text: [
+        `# Fake Milestone ${request.milestoneId} Plan Review`,
+        "",
+        `The fake milestone plan is acceptable for milestone ${request.milestoneId}.`,
+        "",
+        "Recommended changes:",
+        "",
+        `- Keep implementation scoped to milestone ${request.milestoneId}.`,
+        "- Preserve concrete verification steps.",
+      ].join("\n"),
+      exitCode: 0,
+      metadata: milestoneMetadata(request),
+    };
+  }
+
+  if (request.phase === "final_milestone_plan") {
+    if (!isPositiveInteger(request.milestoneId)) {
+      return fakeFailure(request, "Fake final milestone planning requires a positive milestoneId.");
+    }
+
+    return {
+      text: [
+        `# Fake Final Milestone ${request.milestoneId} Plan`,
+        "",
+        "## Scope",
+        "",
+        `Implement only milestone ${request.milestoneId}.`,
+        "",
+        "## Expected Change",
+        "",
+        `Create fake-milestone-${request.milestoneId}-implementation.txt in the workspace root.`,
+        "",
+        "## Verification",
+        "",
+        "- Inspect the generated file.",
+      ].join("\n"),
+      exitCode: 0,
+      metadata: milestoneMetadata(request),
+    };
+  }
+
   if (request.phase === "implement_milestone") {
     if (!isPositiveInteger(request.milestoneId)) {
       return fakeFailure(request, "Fake milestone implementation requires a positive milestoneId.");

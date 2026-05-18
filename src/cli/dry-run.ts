@@ -9,6 +9,7 @@ import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js
 import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
 import type { RunState } from "../state/state-types.js";
 import {
+  describeScrupulousReviewForNextMilestone,
   formatChecks,
   formatDiagnostics,
   formatMilestoneStatusesCompact,
@@ -84,6 +85,13 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
       milestonePlanPolicy: options.config.milestonePlanPolicy,
+      milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
+      scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
+        policy: options.config.milestonePlanReviewPolicy,
+        planningOnly: options.planningOnly,
+        nextAction,
+        allowed,
+      }),
       checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,
@@ -101,6 +109,8 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
 export async function buildResumeDryRunReport(
   options: ResumeDryRunOptions,
 ): Promise<DryRunReport> {
+  const savedPlanPolicy = savedMilestonePlanPolicy(options.state);
+  const savedReviewPolicy = savedMilestonePlanReviewPolicy(options.state);
   const warnings = [
     ...(options.warnings ?? []),
     ...warningsForChecks(options.config, options.diagnostics ?? []),
@@ -140,10 +150,18 @@ export async function buildResumeDryRunReport(
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
       milestonePlanPolicy: options.config.milestonePlanPolicy,
-      ...(options.state.config.snapshot?.milestonePlanPolicy !== undefined &&
-      options.state.config.snapshot.milestonePlanPolicy !== options.config.milestonePlanPolicy
-        ? { savedMilestonePlanPolicy: options.state.config.snapshot.milestonePlanPolicy }
+      ...(savedPlanPolicy !== options.config.milestonePlanPolicy
+        ? { savedMilestonePlanPolicy: savedPlanPolicy }
         : {}),
+      milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
+      savedMilestonePlanReviewPolicy: savedReviewPolicy,
+      scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
+        policy: options.config.milestonePlanReviewPolicy,
+        planningOnly: options.planningOnly,
+        state: options.state,
+        nextAction,
+        allowed,
+      }),
       checks: formatChecks(options.config.checks),
       environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
       gitRequired: options.git.required,
@@ -157,6 +175,16 @@ export async function buildResumeDryRunReport(
       lastError: options.state.lastError?.message ?? null,
     },
   };
+}
+
+function savedMilestonePlanPolicy(state: RunState): OrchestratorConfig["milestonePlanPolicy"] {
+  return state.config.snapshot?.milestonePlanPolicy ?? "always";
+}
+
+function savedMilestonePlanReviewPolicy(
+  state: RunState,
+): OrchestratorConfig["milestonePlanReviewPolicy"] {
+  return state.config.snapshot?.milestonePlanReviewPolicy ?? "normal";
 }
 
 async function resumeNextAction(

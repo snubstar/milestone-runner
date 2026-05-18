@@ -126,6 +126,49 @@ test("FakeRunner returns deterministic milestone implementation plan", async () 
   });
 });
 
+test("FakeRunner returns deterministic scrupulous milestone planning artifacts", async () => {
+  const runner = new FakeRunner();
+  const review = await runner.run({
+    phase: "milestone_plan_review",
+    prompt: "review draft",
+    milestoneId: 2,
+    artifacts: {
+      milestonePlanDraft: "milestones/10-milestone-2-plan-draft.md",
+    },
+  });
+  const finalPlan = await runner.run({
+    phase: "final_milestone_plan",
+    prompt: "final draft",
+    milestoneId: 2,
+    artifacts: {
+      milestonePlanDraft: "milestones/10-milestone-2-plan-draft.md",
+      milestonePlanReview: "milestones/10-milestone-2-plan-review.md",
+    },
+  });
+
+  assert.equal(review.exitCode, 0);
+  assert.match(review.text, /^# Fake Milestone 2 Plan Review/);
+  assert.match(review.text, /Keep implementation scoped to milestone 2/);
+  assert.deepEqual(review.metadata, {
+    runner: "fake",
+    phase: "milestone_plan_review",
+    promptLength: 12,
+    artifactCount: 1,
+    milestoneId: 2,
+  });
+
+  assert.equal(finalPlan.exitCode, 0);
+  assert.match(finalPlan.text, /^# Fake Final Milestone 2 Plan/);
+  assert.match(finalPlan.text, /fake-milestone-2-implementation\.txt/);
+  assert.deepEqual(finalPlan.metadata, {
+    runner: "fake",
+    phase: "final_milestone_plan",
+    promptLength: 11,
+    artifactCount: 2,
+    milestoneId: 2,
+  });
+});
+
 test("FakeRunner returns milestone-specific outputs for generated fake milestones", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-runner-"));
   try {
@@ -326,6 +369,8 @@ test("CodexExecRunner builds codex exec requests for every phase", async () => {
     ["final_major_plan", "read-only"],
     ["final_plan_json", "read-only"],
     ["milestone_plan", "read-only"],
+    ["milestone_plan_review", "read-only"],
+    ["final_milestone_plan", "read-only"],
     ["implement_milestone", "workspace-write"],
     ["review_milestone", "read-only"],
     ["fix_review_findings", "workspace-write"],

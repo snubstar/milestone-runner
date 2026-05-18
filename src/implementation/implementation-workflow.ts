@@ -38,6 +38,18 @@ interface ProducedMilestonePlan {
   decision: MilestonePlanDecision;
 }
 
+interface MilestonePlanPromptContext {
+  goal: string;
+  finalMajorPlan: string;
+  metadata: MilestoneMetadata;
+  activeMilestone: Milestone;
+  state: RunState;
+}
+
+interface InitialMilestonePlanProductionContext extends MilestonePlanPromptContext {
+  config: ImplementationWorkflowOptions["config"];
+}
+
 export async function runImplementationWorkflow(
   options: ImplementationWorkflowOptions,
 ): Promise<ImplementationWorkflowResult> {
@@ -112,7 +124,7 @@ export async function runImplementationWorkflow(
 
   state = await persist(setStatePhase(state, "implementing", clock()));
 
-  const milestonePlan = await produceMilestonePlan({
+  const milestonePlan = await produceInitialMilestonePlan({
     goal: options.goal,
     config: options.config,
     finalMajorPlan: finalMajorPlan.value,
@@ -124,10 +136,81 @@ export async function runImplementationWorkflow(
     return fail("implementing", milestonePlan.error, milestonePlan.details);
   }
 
+  let finalMilestonePlan = milestonePlan.value.content;
+
+  if (options.config.milestonePlanReviewPolicy === "scrupulous") {
+    const milestonePlanDraftWrite = await writeTextArtifactOrFail(
+      "implementing",
+      milestonePaths.files.milestonePlanDraft,
+      milestonePlan.value.content,
+      "milestone plan draft artifact",
+    );
+    if (!milestonePlanDraftWrite.ok) return milestonePlanDraftWrite.result;
+
+    state = await persist(
+      recordMilestoneArtifact(
+        state,
+        "milestonePlanDrafts",
+        activeMilestoneId,
+        milestonePaths.statePaths.milestonePlanDraft,
+        clock(),
+      ),
+    );
+
+    const milestonePlanReview = await reviewMilestonePlanDraft({
+      goal: options.goal,
+      finalMajorPlan: finalMajorPlan.value,
+      metadata,
+      activeMilestone,
+      state,
+      milestonePlanDraft: milestonePlan.value.content,
+    });
+    if (!milestonePlanReview.ok) {
+      return fail("implementing", milestonePlanReview.error, milestonePlanReview.details);
+    }
+
+    const milestonePlanReviewWrite = await writeTextArtifactOrFail(
+      "implementing",
+      milestonePaths.files.milestonePlanReview,
+      milestonePlanReview.value,
+      "milestone plan review artifact",
+    );
+    if (!milestonePlanReviewWrite.ok) return milestonePlanReviewWrite.result;
+
+    state = await persist(
+      recordMilestoneArtifact(
+        state,
+        "milestonePlanReviews",
+        activeMilestoneId,
+        milestonePaths.statePaths.milestonePlanReview,
+        clock(),
+      ),
+    );
+
+    const correctedMilestonePlan = await produceFinalMilestonePlan({
+      goal: options.goal,
+      finalMajorPlan: finalMajorPlan.value,
+      metadata,
+      activeMilestone,
+      state,
+      milestonePlanDraft: milestonePlan.value.content,
+      milestonePlanReview: milestonePlanReview.value,
+    });
+    if (!correctedMilestonePlan.ok) {
+      return fail(
+        "implementing",
+        correctedMilestonePlan.error,
+        correctedMilestonePlan.details,
+      );
+    }
+
+    finalMilestonePlan = correctedMilestonePlan.value;
+  }
+
   const milestonePlanWrite = await writeTextArtifactOrFail(
     "implementing",
     milestonePaths.files.milestonePlan,
-    milestonePlan.value.content,
+    finalMilestonePlan,
     "milestone plan artifact",
   );
   if (!milestonePlanWrite.ok) return milestonePlanWrite.result;
@@ -147,7 +230,7 @@ export async function runImplementationWorkflow(
     goal: options.goal,
     finalMajorPlan: finalMajorPlan.value,
     activeMilestone,
-    milestonePlan: milestonePlan.value.content,
+    milestonePlan: finalMilestonePlan,
     state,
   });
   if (!implementationPrompt.ok) return fail("implementing", implementationPrompt.error);
@@ -302,7 +385,11 @@ export async function runImplementationWorkflow(
   };
 
   async function renderLoadedPrompt(
-    promptName: "milestone-plan" | "implement-milestone",
+    promptName:
+      | "milestone-plan"
+      | "milestone-plan-review"
+      | "final-milestone-plan"
+      | "implement-milestone",
     variables: PromptVariables,
   ): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
     const loaded = await loadPrompt(promptName, {
@@ -313,14 +400,9 @@ export async function runImplementationWorkflow(
     return renderPrompt(loaded.value.text, variables);
   }
 
-  async function produceMilestonePlan(production: {
-    goal: string;
-    config: ImplementationWorkflowOptions["config"];
-    finalMajorPlan: string;
-    metadata: MilestoneMetadata;
-    activeMilestone: Milestone;
-    state: RunState;
-  }): Promise<
+  async function produceInitialMilestonePlan(
+    production: InitialMilestonePlanProductionContext,
+  ): Promise<
     | { ok: true; value: ProducedMilestonePlan }
     | { ok: false; error: string; details?: AgentRunResult | { message: string } }
   > {
@@ -377,6 +459,65 @@ export async function runImplementationWorkflow(
         decision,
       },
     };
+  }
+
+  async function reviewMilestonePlanDraft(
+    production: MilestonePlanPromptContext & { milestonePlanDraft: string },
+  ): Promise<
+    | { ok: true; value: string }
+    | { ok: false; error: string; details?: AgentRunResult | { message: string } }
+  > {
+    const reviewPrompt = await renderLoadedPrompt("milestone-plan-review", {
+      goal: production.goal,
+      finalMajorPlan: production.finalMajorPlan,
+      milestones: production.metadata,
+      activeMilestone: production.activeMilestone,
+      state: production.state,
+      milestonePlanDraft: production.milestonePlanDraft,
+    });
+    if (!reviewPrompt.ok) return reviewPrompt;
+
+    return runPhase("milestone_plan_review", reviewPrompt.value, {
+      goal: production.state.artifacts.goal ?? "00-goal.txt",
+      finalMajorPlan:
+        production.state.artifacts.finalMajorPlanMarkdown ??
+        planningPaths.statePaths.finalMajorPlanMarkdown,
+      milestones:
+        production.state.artifacts.milestones ?? planningPaths.statePaths.milestones,
+      milestonePlanDraft: milestonePaths.statePaths.milestonePlanDraft,
+    });
+  }
+
+  async function produceFinalMilestonePlan(
+    production: MilestonePlanPromptContext & {
+      milestonePlanDraft: string;
+      milestonePlanReview: string;
+    },
+  ): Promise<
+    | { ok: true; value: string }
+    | { ok: false; error: string; details?: AgentRunResult | { message: string } }
+  > {
+    const finalPlanPrompt = await renderLoadedPrompt("final-milestone-plan", {
+      goal: production.goal,
+      finalMajorPlan: production.finalMajorPlan,
+      milestones: production.metadata,
+      activeMilestone: production.activeMilestone,
+      state: production.state,
+      milestonePlanDraft: production.milestonePlanDraft,
+      milestonePlanReview: production.milestonePlanReview,
+    });
+    if (!finalPlanPrompt.ok) return finalPlanPrompt;
+
+    return runPhase("final_milestone_plan", finalPlanPrompt.value, {
+      goal: production.state.artifacts.goal ?? "00-goal.txt",
+      finalMajorPlan:
+        production.state.artifacts.finalMajorPlanMarkdown ??
+        planningPaths.statePaths.finalMajorPlanMarkdown,
+      milestones:
+        production.state.artifacts.milestones ?? planningPaths.statePaths.milestones,
+      milestonePlanDraft: milestonePaths.statePaths.milestonePlanDraft,
+      milestonePlanReview: milestonePaths.statePaths.milestonePlanReview,
+    });
   }
 
   async function runPhase(

@@ -64,6 +64,7 @@ test("codex-exec adapter runs a deterministic fake codex through the workflow", 
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "scrupulous",
     };
     const runnerResult = createAgentRunner(config.runner);
     assert.equal(runnerResult.ok, true);
@@ -138,12 +139,14 @@ test("codex-exec adapter runs a deterministic fake codex through the workflow", 
 
     assert.deepEqual((await readdir(paths.dirs.runner)).sort(), [
       "final_major_plan-03.json",
+      "final_milestone_plan-07.json",
       "final_plan_json-04.json",
-      "implement_milestone-06.json",
+      "implement_milestone-08.json",
       "major_plan-01.json",
       "major_plan_review-02.json",
       "milestone_plan-05.json",
-      "review_milestone-07.json",
+      "milestone_plan_review-06.json",
+      "review_milestone-09.json",
     ]);
 
     const finalPlanJsonDiagnostic = JSON.parse(
@@ -153,15 +156,29 @@ test("codex-exec adapter runs a deterministic fake codex through the workflow", 
     assert.match(finalPlanJsonDiagnostic.outputSchemaPath, /schemas\/milestones\.schema\.json$/);
 
     const implementationDiagnostic = JSON.parse(
-      await readFile(path.join(paths.dirs.runner, "implement_milestone-06.json"), "utf8"),
+      await readFile(path.join(paths.dirs.runner, "implement_milestone-08.json"), "utf8"),
     );
     assert.equal(implementationDiagnostic.phase, "implement_milestone");
     assert.equal(implementationDiagnostic.sandbox, "workspace-write");
     assert.match(implementationDiagnostic.stdout, /fake-codex:implement_milestone/);
     assert.equal("prompt" in implementationDiagnostic, false);
 
+    const milestonePlanReviewDiagnostic = JSON.parse(
+      await readFile(path.join(paths.dirs.runner, "milestone_plan_review-06.json"), "utf8"),
+    );
+    assert.equal(milestonePlanReviewDiagnostic.phase, "milestone_plan_review");
+    assert.equal(milestonePlanReviewDiagnostic.sandbox, "read-only");
+    assert.equal("outputSchemaPath" in milestonePlanReviewDiagnostic, false);
+
+    const finalMilestonePlanDiagnostic = JSON.parse(
+      await readFile(path.join(paths.dirs.runner, "final_milestone_plan-07.json"), "utf8"),
+    );
+    assert.equal(finalMilestonePlanDiagnostic.phase, "final_milestone_plan");
+    assert.equal(finalMilestonePlanDiagnostic.sandbox, "read-only");
+    assert.equal("outputSchemaPath" in finalMilestonePlanDiagnostic, false);
+
     const reviewDiagnostic = JSON.parse(
-      await readFile(path.join(paths.dirs.runner, "review_milestone-07.json"), "utf8"),
+      await readFile(path.join(paths.dirs.runner, "review_milestone-09.json"), "utf8"),
     );
     assert.equal(reviewDiagnostic.phase, "review_milestone");
     assert.equal(reviewDiagnostic.sandbox, "read-only");
@@ -176,6 +193,8 @@ test("codex-exec adapter runs a deterministic fake codex through the workflow", 
         "final_major_plan",
         "final_plan_json",
         "milestone_plan",
+        "milestone_plan_review",
+        "final_milestone_plan",
         "implement_milestone",
         "review_milestone",
       ],
@@ -315,6 +334,8 @@ function phaseForPrompt(prompt) {
   if (prompt.startsWith("# Final Major Plan Prompt")) return "final_major_plan";
   if (prompt.startsWith("# Final Plan JSON Prompt")) return "final_plan_json";
   if (prompt.startsWith("# Milestone Implementation Plan Prompt")) return "milestone_plan";
+  if (prompt.startsWith("# Milestone Plan Review Prompt")) return "milestone_plan_review";
+  if (prompt.startsWith("# Final Milestone Plan Prompt")) return "final_milestone_plan";
   if (prompt.startsWith("# Implement Milestone Prompt")) return "implement_milestone";
   if (prompt.startsWith("# Review Milestone")) return "review_milestone";
   return null;
@@ -345,6 +366,10 @@ function finalMessageForPhase(phase) {
       });
     case "milestone_plan":
       return "# Milestone Plan\n\nWrite codex-fixture-output.txt with deterministic content.\n";
+    case "milestone_plan_review":
+      return "# Milestone Plan Review\n\nThe draft plan is concrete and correctly scoped.\n";
+    case "final_milestone_plan":
+      return "# Final Milestone Plan\n\nWrite codex-fixture-output.txt with deterministic content.\n";
     case "implement_milestone":
       return "# Implementation Report\n\nWrote codex-fixture-output.txt.\n";
     case "review_milestone":

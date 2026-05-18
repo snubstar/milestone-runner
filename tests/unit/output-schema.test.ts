@@ -25,6 +25,8 @@ test("outputSchemaRelativePathForPhase leaves Markdown phases unconstrained", ()
   assert.equal(outputSchemaRelativePathForPhase("major_plan_review"), null);
   assert.equal(outputSchemaRelativePathForPhase("final_major_plan"), null);
   assert.equal(outputSchemaRelativePathForPhase("milestone_plan"), null);
+  assert.equal(outputSchemaRelativePathForPhase("milestone_plan_review"), null);
+  assert.equal(outputSchemaRelativePathForPhase("final_milestone_plan"), null);
   assert.equal(outputSchemaRelativePathForPhase("implement_milestone"), null);
   assert.equal(outputSchemaRelativePathForPhase("fix_review_findings"), null);
 });

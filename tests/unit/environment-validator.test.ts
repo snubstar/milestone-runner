@@ -191,6 +191,7 @@ function fakeConfig(options: { checks: string[] }): OrchestratorConfig {
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
   };
 }
 
@@ -209,6 +210,7 @@ function codexConfig(options: { command: string }): OrchestratorConfig {
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
   };
 }
 

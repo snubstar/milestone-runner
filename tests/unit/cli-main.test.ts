@@ -34,6 +34,8 @@ test("main stops after planning when --planning-only is set", async () => {
     assert.match(result.stdout, /Config source: config file/);
     assert.match(result.stdout, /Effective max fix attempts: 0/);
     assert.match(result.stdout, /Milestone plan policy: always/);
+    assert.match(result.stdout, /Milestone plan review policy: normal/);
+    assert.match(result.stdout, /Scrupulous review for next milestone: no \(policy normal\)/);
     assert.match(result.stdout, /State: ready_for_milestone/);
     assert.match(result.stdout, /Current milestone: 1/);
     assert.match(result.stdout, /Milestones:\n  1: pending\n  2: pending/);
@@ -79,16 +81,21 @@ test("main stores config CLI overrides in new run state", async () => {
       "2",
       "--milestone-plan-policy",
       "light",
+      "--milestone-plan-review-policy",
+      "scrupulous",
       "Add feature X",
     ]);
 
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Effective max fix attempts: 2/);
     assert.match(result.stdout, /Milestone plan policy: light/);
+    assert.match(result.stdout, /Milestone plan review policy: scrupulous/);
+    assert.match(result.stdout, /Scrupulous review for next milestone: no \(planning only\)/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.config.snapshot?.maxFixAttempts, 2);
     assert.equal(state.config.snapshot?.milestonePlanPolicy, "light");
+    assert.equal(state.config.snapshot?.milestonePlanReviewPolicy, "scrupulous");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -115,6 +122,8 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /runner: fake/);
     assert.match(result.stdout, /maxFixAttempts: 0/);
     assert.match(result.stdout, /milestonePlanPolicy: always/);
+    assert.match(result.stdout, /milestonePlanReviewPolicy: normal/);
+    assert.match(result.stdout, /scrupulousReviewForNextMilestone: no \(policy normal\)/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -143,6 +152,30 @@ test("main dry-runs explicit milestone plan policies", async () => {
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
+  }
+});
+
+test("main dry-runs explicit milestone plan review policy", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--milestone-plan-review-policy",
+      "scrupulous",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /milestonePlanReviewPolicy: scrupulous/);
+    assert.match(result.stdout, /scrupulousReviewForNextMilestone: yes \(after planning\)/);
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
   }
 });
 
@@ -363,6 +396,7 @@ test("main reports resume max fix attempts override without mutating saved snaps
     const plannedState = await readOnlyRunState(repo);
     assert.equal(plannedState.config.snapshot?.maxFixAttempts, 0);
     assert.equal(plannedState.config.snapshot?.milestonePlanPolicy, "always");
+    assert.equal(plannedState.config.snapshot?.milestonePlanReviewPolicy, "normal");
 
     const resumeResult = await runMainInRepo(repo, [
       "--resume",
@@ -371,6 +405,8 @@ test("main reports resume max fix attempts override without mutating saved snaps
       "2",
       "--milestone-plan-policy",
       "auto",
+      "--milestone-plan-review-policy",
+      "scrupulous",
     ]);
 
     assert.equal(resumeResult.exitCode, 0);
@@ -379,11 +415,18 @@ test("main reports resume max fix attempts override without mutating saved snaps
     assert.match(resumeResult.stdout, /Saved max fix attempts: 0/);
     assert.match(resumeResult.stdout, /Milestone plan policy: auto/);
     assert.match(resumeResult.stdout, /Saved milestone plan policy: always/);
+    assert.match(resumeResult.stdout, /Milestone plan review policy: scrupulous/);
+    assert.match(resumeResult.stdout, /Saved milestone plan review policy: normal/);
+    assert.match(
+      resumeResult.stdout,
+      /Scrupulous review for next milestone: no \(no runnable milestone\)/,
+    );
 
     const finalState = await readOnlyRunState(repo);
     assert.equal(finalState.currentPhase, "passed");
     assert.equal(finalState.config.snapshot?.maxFixAttempts, 0);
     assert.equal(finalState.config.snapshot?.milestonePlanPolicy, "always");
+    assert.equal(finalState.config.snapshot?.milestonePlanReviewPolicy, "normal");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -413,6 +456,8 @@ test("main dry-runs resume without writing state changes", async () => {
       plannedState.runDir,
       "--milestone-plan-policy",
       "auto",
+      "--milestone-plan-review-policy",
+      "scrupulous",
     ]);
 
     assert.equal(result.exitCode, 0);
@@ -423,6 +468,9 @@ test("main dry-runs resume without writing state changes", async () => {
     assert.match(result.stdout, /Next action: continue_milestone/);
     assert.match(result.stdout, /milestonePlanPolicy: auto/);
     assert.match(result.stdout, /savedMilestonePlanPolicy: always/);
+    assert.match(result.stdout, /milestonePlanReviewPolicy: scrupulous/);
+    assert.match(result.stdout, /savedMilestonePlanReviewPolicy: normal/);
+    assert.match(result.stdout, /scrupulousReviewForNextMilestone: yes/);
 
     const rawStateAfter = await readFile(statePath, "utf8");
     assert.equal(rawStateAfter, rawStateBefore);
@@ -842,6 +890,7 @@ test("main resumes codex-exec implementation-capable runs through the adapter", 
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
       },
       configPath: path.join(repo, "orchestrator.config.json"),
     });

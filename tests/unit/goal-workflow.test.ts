@@ -101,6 +101,110 @@ test("runGoalWorkflow completes the full fake multi-milestone path", async () =>
   }
 });
 
+test("runGoalWorkflow completes the full scrupulous fake multi-milestone path", async () => {
+  const context = await createGoalContext({
+    config: testConfig({ milestonePlanReviewPolicy: "scrupulous" }),
+  });
+  try {
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.status, "passed");
+    assert.deepEqual(
+      runner.requests.map(({ phase, milestoneId }) => ({
+        phase,
+        milestoneId: milestoneId ?? null,
+      })),
+      [
+        { phase: "major_plan", milestoneId: null },
+        { phase: "major_plan_review", milestoneId: null },
+        { phase: "final_major_plan", milestoneId: null },
+        { phase: "final_plan_json", milestoneId: null },
+        { phase: "milestone_plan", milestoneId: 1 },
+        { phase: "milestone_plan_review", milestoneId: 1 },
+        { phase: "final_milestone_plan", milestoneId: 1 },
+        { phase: "implement_milestone", milestoneId: 1 },
+        { phase: "review_milestone", milestoneId: 1 },
+        { phase: "milestone_plan", milestoneId: 2 },
+        { phase: "milestone_plan_review", milestoneId: 2 },
+        { phase: "final_milestone_plan", milestoneId: 2 },
+        { phase: "implement_milestone", milestoneId: 2 },
+        { phase: "review_milestone", milestoneId: 2 },
+      ],
+    );
+
+    for (const milestoneId of [1, 2]) {
+      const key = String(milestoneId);
+      const artifactPaths = [
+        [
+          result.state.artifacts.milestonePlanDrafts?.[key],
+          path.join("milestones", `10-milestone-${milestoneId}-plan-draft.md`),
+        ],
+        [
+          result.state.artifacts.milestonePlanReviews?.[key],
+          path.join("milestones", `10-milestone-${milestoneId}-plan-review.md`),
+        ],
+        [
+          result.state.artifacts.milestonePlans?.[key],
+          path.join("milestones", `10-milestone-${milestoneId}-plan.md`),
+        ],
+        [
+          result.state.artifacts.implementations?.[key],
+          path.join("milestones", `11-milestone-${milestoneId}-implementation.md`),
+        ],
+        [
+          result.state.artifacts.diffs?.[key],
+          path.join("diffs", `12-milestone-${milestoneId}.diff`),
+        ],
+        [
+          result.state.artifacts.checks?.[key],
+          path.join("checks", `13-milestone-${milestoneId}-checks.txt`),
+        ],
+        [
+          result.state.artifacts.summaries?.[key],
+          path.join("milestones", `14-milestone-${milestoneId}-summary.md`),
+        ],
+        [
+          result.state.artifacts.reviews?.[key],
+          path.join("reviews", `20-milestone-${milestoneId}-review.json`),
+        ],
+      ] as const;
+
+      for (const [actual, expected] of artifactPaths) {
+        assert.equal(actual, expected);
+        await access(path.join(context.paths.runDir, expected));
+      }
+
+      assert.match(
+        await readFile(
+          path.join(context.paths.dirs.milestones, `10-milestone-${milestoneId}-plan.md`),
+          "utf8",
+        ),
+        new RegExp(`^# Fake Final Milestone ${milestoneId} Plan`),
+      );
+      assert.match(
+        await readFile(
+          path.join(
+            context.paths.dirs.milestones,
+            `10-milestone-${milestoneId}-plan-review.md`,
+          ),
+          "utf8",
+        ),
+        new RegExp(`^# Fake Milestone ${milestoneId} Plan Review`),
+      );
+      await access(path.join(context.repo, `fake-milestone-${milestoneId}-implementation.txt`));
+    }
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runGoalWorkflow stops after planning when planningOnly is true", async () => {
   const context = await createGoalContext();
   try {
@@ -1237,6 +1341,7 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
     ...overrides,
   };
 }

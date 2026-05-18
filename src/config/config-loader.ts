@@ -6,6 +6,7 @@ import type {
   ConfigResult,
   LoadedConfig,
   MilestonePlanPolicy,
+  MilestonePlanReviewPolicy,
   OrchestratorConfig,
   SandboxMode,
 } from "./config-types.js";
@@ -15,6 +16,7 @@ const exampleConfigName = "orchestrator.config.example.json";
 
 const runnerTypes = new Set(["fake", "codex-exec"]);
 const milestonePlanPolicies = new Set(["always", "auto", "light"]);
+const milestonePlanReviewPolicies = new Set(["normal", "scrupulous"]);
 const sandboxModes = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const approvalPolicies = new Set(["never", "on-request", "untrusted"]);
 const codexExecOptionKeys = new Set([
@@ -242,6 +244,17 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     };
   }
 
+  const milestonePlanReviewPolicy =
+    value.milestonePlanReviewPolicy === undefined
+      ? "normal"
+      : value.milestonePlanReviewPolicy;
+  if (!isMilestonePlanReviewPolicy(milestonePlanReviewPolicy)) {
+    return {
+      ok: false,
+      error: '`milestonePlanReviewPolicy` must be "normal" or "scrupulous".',
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -250,6 +263,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
       maxFixAttempts,
       artifactRoot: value.artifactRoot,
       milestonePlanPolicy,
+      milestonePlanReviewPolicy,
     },
   };
 }
@@ -261,6 +275,7 @@ export function applyConfigOverrides(
     runnerType?: string;
     maxFixAttempts?: number;
     milestonePlanPolicy?: MilestonePlanPolicy;
+    milestonePlanReviewPolicy?: MilestonePlanReviewPolicy;
   },
 ): OrchestratorConfig {
   return {
@@ -268,6 +283,8 @@ export function applyConfigOverrides(
     artifactRoot: overrides.artifactRoot ?? config.artifactRoot,
     maxFixAttempts: overrides.maxFixAttempts ?? config.maxFixAttempts,
     milestonePlanPolicy: overrides.milestonePlanPolicy ?? config.milestonePlanPolicy,
+    milestonePlanReviewPolicy:
+      overrides.milestonePlanReviewPolicy ?? config.milestonePlanReviewPolicy,
     runner: {
       ...config.runner,
       type: (overrides.runnerType ?? config.runner.type) as OrchestratorConfig["runner"]["type"],
@@ -302,6 +319,12 @@ function isApprovalPolicy(value: unknown): value is ApprovalPolicy {
 
 function isMilestonePlanPolicy(value: unknown): value is MilestonePlanPolicy {
   return typeof value === "string" && milestonePlanPolicies.has(value);
+}
+
+function isMilestonePlanReviewPolicy(
+  value: unknown,
+): value is MilestonePlanReviewPolicy {
+  return typeof value === "string" && milestonePlanReviewPolicies.has(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

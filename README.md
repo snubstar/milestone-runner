@@ -46,6 +46,8 @@ goal
 -> plan review
 -> final major plan
 -> milestone 1 plan
+-> optional milestone 1 plan review
+-> optional final milestone 1 plan
 -> implement milestone 1
 -> run checks
 -> review diff
@@ -58,7 +60,7 @@ goal
 
 The fake runner path can complete all generated fake milestones offline. The `codex-exec` runner path can now execute real planning, implementation, review, and fix phases through `codex exec` when the Codex CLI is installed and authenticated.
 
-Goal-level planning is always produced. The major plan, plan review, final major plan, and milestone metadata remain the source of truth for the workflow. `milestonePlanPolicy` only controls the per-milestone implementation plan created immediately before a milestone is implemented.
+Goal-level planning is always produced. The major plan, plan review, final major plan, and milestone metadata remain the source of truth for the workflow. `milestonePlanPolicy` only controls how the initial per-milestone implementation plan is created immediately before a milestone is implemented. `milestonePlanReviewPolicy` controls whether that per-milestone plan is reviewed and corrected before implementation. In `scrupulous` mode, the corrected final milestone plan is the plan handed to the implementation agent.
 
 ## Git Safety
 
@@ -369,7 +371,8 @@ Initial config shape:
   },
   "maxFixAttempts": 2,
   "artifactRoot": ".agent-work",
-  "milestonePlanPolicy": "always"
+  "milestonePlanPolicy": "always",
+  "milestonePlanReviewPolicy": "normal"
 }
 ```
 
@@ -382,6 +385,7 @@ Config fields:
 - `maxFixAttempts`: maximum number of review/fix retries before stopping.
 - `artifactRoot`: root directory for generated run artifacts.
 - `milestonePlanPolicy`: per-milestone implementation plan policy. Missing values default to `always`.
+- `milestonePlanReviewPolicy`: per-milestone implementation plan review policy. Missing values default to `normal`.
 
 The config schema lives in [schemas/config.schema.json](./schemas/config.schema.json).
 
@@ -392,6 +396,13 @@ Milestone plan policies:
 - `light`: always skip the runner-backed `milestone_plan` phase and write a deterministic lightweight milestone plan from milestone metadata.
 
 The policy does not skip major planning, plan review, final plan generation, implementation, checks, review, fix attempts, summaries, or artifact writing. It only controls the plan artifact created for each individual milestone.
+
+Milestone plan review policies:
+
+- `normal`: default behavior. Per-milestone plans proceed directly to implementation after they are generated.
+- `scrupulous`: after the initial per-milestone plan is produced by `milestonePlanPolicy`, run `milestone_plan_review`, then `final_milestone_plan`, and hand the corrected final milestone plan to implementation.
+
+Scrupulous mode works with every milestone plan policy. With `always` or `auto` full-plan decisions, the draft comes from the runner-backed `milestone_plan` phase. With `light`, the deterministic lightweight plan becomes the draft that is reviewed and corrected.
 
 ## Runners
 
@@ -484,6 +495,7 @@ Common options:
 - `--milestone <id>`: run only one runnable milestone and stop before advancing to remaining pending milestones.
 - `--max-fix-attempts <n>`: override fix attempts for this invocation.
 - `--milestone-plan-policy always|auto|light`: override the per-milestone implementation plan policy for this invocation.
+- `--milestone-plan-review-policy normal|scrupulous`: override the per-milestone implementation plan review policy for this invocation.
 - `--allow-dirty`: allow implementation-capable runs or resumes from a dirty working tree.
 - `--allow-non-git-planning`: allow planning-only operation outside a Git repository.
 
@@ -638,9 +650,12 @@ Resume a stopped or constrained run:
 node dist/cli/main.js --resume "$RUN_DIR" --dry-run
 node dist/cli/main.js --resume "$RUN_DIR"
 node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
+node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-review-policy scrupulous
 ```
 
-If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command. A resume policy override affects only milestones that have not already produced a milestone plan artifact.
+If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command. Resume policy overrides are per-invocation and affect only future milestone planning work reached during that invocation.
+
+Scrupulous draft, review, and final-plan generation currently stay inside the existing `implementing` phase and run before target repository edits begin. If a process is interrupted during those internal steps, resume remains conservative: incomplete implementation-ready artifacts stop as `needs_human_review` instead of automatically reusing a partial draft, partial review, or final plan. A resume-time `--milestone-plan-review-policy` override does not rewrite the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
 
 Interpret final states:
 

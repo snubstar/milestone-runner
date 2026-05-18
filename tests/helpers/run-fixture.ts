@@ -51,6 +51,7 @@ export function defaultTestConfig(
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
     ...overrides,
   };
 }

@@ -4,6 +4,8 @@ import { toRunRelativePath, type RunPaths } from "./paths.js";
 
 export interface MilestoneArtifactPaths {
   files: {
+    milestonePlanDraft: string;
+    milestonePlanReview: string;
     milestonePlan: string;
     implementation: string;
     diff: string;
@@ -11,6 +13,8 @@ export interface MilestoneArtifactPaths {
     summary: string;
   };
   statePaths: {
+    milestonePlanDraft: string;
+    milestonePlanReview: string;
     milestonePlan: string;
     implementation: string;
     diff: string;
@@ -25,6 +29,8 @@ export function buildMilestoneArtifactPaths(
 ): MilestoneArtifactPaths {
   const suffix = `milestone-${milestoneId}`;
   const files = {
+    milestonePlanDraft: path.join(paths.dirs.milestones, `10-${suffix}-plan-draft.md`),
+    milestonePlanReview: path.join(paths.dirs.milestones, `10-${suffix}-plan-review.md`),
     milestonePlan: path.join(paths.dirs.milestones, `10-${suffix}-plan.md`),
     implementation: path.join(paths.dirs.milestones, `11-${suffix}-implementation.md`),
     diff: path.join(paths.dirs.diffs, `12-${suffix}.diff`),
@@ -35,6 +41,8 @@ export function buildMilestoneArtifactPaths(
   return {
     files,
     statePaths: {
+      milestonePlanDraft: toRunRelativePath(paths.runDir, files.milestonePlanDraft),
+      milestonePlanReview: toRunRelativePath(paths.runDir, files.milestonePlanReview),
       milestonePlan: toRunRelativePath(paths.runDir, files.milestonePlan),
       implementation: toRunRelativePath(paths.runDir, files.implementation),
       diff: toRunRelativePath(paths.runDir, files.diff),

@@ -41,6 +41,8 @@ export interface StateArtifacts {
   finalMajorPlanMarkdown?: string;
   finalMajorPlanJson?: string;
   milestones?: string;
+  milestonePlanDrafts?: Record<string, string>;
+  milestonePlanReviews?: Record<string, string>;
   milestonePlans?: Record<string, string>;
   implementations?: Record<string, string>;
   diffs?: Record<string, string>;

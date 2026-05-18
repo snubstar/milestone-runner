@@ -387,6 +387,7 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
   const runner = new ScenarioRunner([
@@ -518,6 +519,7 @@ test("runReviewWorkflow persists failed state when the fix runner fails", async 
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
   try {
@@ -559,6 +561,7 @@ test("runReviewWorkflow stops as needs human review when max fix attempts are ex
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
   try {
@@ -608,6 +611,7 @@ test("runReviewWorkflow does not pass after a fix when post-fix checks fail", as
       maxFixAttempts: 1,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
   try {

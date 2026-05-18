@@ -11,6 +11,8 @@ export type PlanningArtifactStateKey =
   | "milestones";
 
 export type MilestoneArtifactStateKey =
+  | "milestonePlanDrafts"
+  | "milestonePlanReviews"
   | "milestonePlans"
   | "implementations"
   | "diffs"

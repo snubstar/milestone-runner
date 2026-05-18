@@ -126,7 +126,12 @@ test("findPromptVariables returns unique sorted variable names", () => {
 });
 
 test("milestone prompts expose the expected implementation variables", async () => {
-  const prompts = await loadPrompts(["milestone-plan", "implement-milestone"], {
+  const prompts = await loadPrompts([
+    "milestone-plan",
+    "milestone-plan-review",
+    "final-milestone-plan",
+    "implement-milestone",
+  ], {
     cwd: process.cwd(),
   });
 
@@ -140,6 +145,23 @@ test("milestone prompts expose the expected implementation variables", async () 
     "milestones",
     "state",
   ]);
+  assert.deepEqual(findPromptVariables(prompts.value["milestone-plan-review"]?.text ?? ""), [
+    "activeMilestone",
+    "finalMajorPlan",
+    "goal",
+    "milestonePlanDraft",
+    "milestones",
+    "state",
+  ]);
+  assert.deepEqual(findPromptVariables(prompts.value["final-milestone-plan"]?.text ?? ""), [
+    "activeMilestone",
+    "finalMajorPlan",
+    "goal",
+    "milestonePlanDraft",
+    "milestonePlanReview",
+    "milestones",
+    "state",
+  ]);
   assert.deepEqual(findPromptVariables(prompts.value["implement-milestone"]?.text ?? ""), [
     "activeMilestone",
     "finalMajorPlan",
@@ -150,7 +172,12 @@ test("milestone prompts expose the expected implementation variables", async () 
 });
 
 test("milestone prompts render with workflow-shaped values", async () => {
-  const prompts = await loadPrompts(["milestone-plan", "implement-milestone"], {
+  const prompts = await loadPrompts([
+    "milestone-plan",
+    "milestone-plan-review",
+    "final-milestone-plan",
+    "implement-milestone",
+  ], {
     cwd: process.cwd(),
   });
 
@@ -169,6 +196,45 @@ test("milestone prompts render with workflow-shaped values", async () => {
     assert.match(planPrompt.value, /Add feature X/);
     assert.match(planPrompt.value, /Milestone 1/);
     assert.match(planPrompt.value, /Do not implement code/);
+  }
+
+  const planReviewPrompt = renderPrompt(
+    prompts.value["milestone-plan-review"]?.text ?? "",
+    {
+      goal: "Add feature X",
+      finalMajorPlan: "# Final Plan",
+      milestones: { milestones: [] },
+      activeMilestone: { id: 1, title: "Milestone 1" },
+      state: { currentPhase: "implementing" },
+      milestonePlanDraft: "# Draft Milestone Plan",
+    },
+  );
+  assert.equal(planReviewPrompt.ok, true);
+  if (planReviewPrompt.ok) {
+    assert.match(planReviewPrompt.value, /Milestone 1/);
+    assert.match(planReviewPrompt.value, /# Draft Milestone Plan/);
+    assert.match(planReviewPrompt.value, /Return a concise Markdown review/);
+    assert.match(planReviewPrompt.value, /Do not implement code/);
+  }
+
+  const finalPlanPrompt = renderPrompt(
+    prompts.value["final-milestone-plan"]?.text ?? "",
+    {
+      goal: "Add feature X",
+      finalMajorPlan: "# Final Plan",
+      milestones: { milestones: [] },
+      activeMilestone: { id: 1, title: "Milestone 1" },
+      state: { currentPhase: "implementing" },
+      milestonePlanDraft: "# Draft Milestone Plan",
+      milestonePlanReview: "# Review\n- Tighten validation.",
+    },
+  );
+  assert.equal(finalPlanPrompt.ok, true);
+  if (finalPlanPrompt.ok) {
+    assert.match(finalPlanPrompt.value, /Milestone 1/);
+    assert.match(finalPlanPrompt.value, /Tighten validation/);
+    assert.match(finalPlanPrompt.value, /Write only the corrected Markdown implementation plan/);
+    assert.match(finalPlanPrompt.value, /Do not include commentary before or after/);
   }
 
   const implementationPrompt = renderPrompt(prompts.value["implement-milestone"]?.text ?? "", {
@@ -268,6 +334,8 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
     "final-major-plan",
     "final-plan-json",
     "milestone-plan",
+    "milestone-plan-review",
+    "final-milestone-plan",
     "implement-milestone",
     "review-milestone",
     "fix-review-findings",
@@ -296,6 +364,19 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
 
   assert.match(text("milestone-plan"), /Do not tell the implementation agent to create commits/);
   assert.match(text("milestone-plan"), /Do not produce an inspection-only or no-op milestone plan/);
+
+  assert.match(text("milestone-plan-review"), /implementation agents orchestration authority/);
+  assert.match(text("milestone-plan-review"), /Return a concise Markdown review/);
+  assert.match(text("milestone-plan-review"), /Do not implement code/);
+  assert.match(text("milestone-plan-review"), /Do not run commands/);
+  assert.match(text("milestone-plan-review"), /Do not create commits/);
+  assert.match(text("milestone-plan-review"), /Do not make acceptance decisions/);
+
+  assert.match(text("final-milestone-plan"), /Write only the corrected Markdown implementation plan/);
+  assert.match(text("final-milestone-plan"), /Preserve the active milestone boundary/);
+  assert.match(text("final-milestone-plan"), /The plan must lead to a non-empty Git diff/);
+  assert.match(text("final-milestone-plan"), /Do not give implementation agents orchestration authority/);
+  assert.match(text("final-milestone-plan"), /Do not include commentary before or after/);
 
   assert.match(text("implement-milestone"), /The orchestrator will capture the Git diff, run final checks/);
   assert.match(text("implement-milestone"), /Do not change orchestrator artifacts under `\.agent-work\/`/);

@@ -5,7 +5,10 @@ import {
   formatEnvironmentDiagnostics,
   type EnvironmentDiagnostic,
 } from "../diagnostics/environment-validator.js";
-import type { MilestonePlanPolicy } from "../config/config-types.js";
+import type {
+  MilestonePlanPolicy,
+  MilestonePlanReviewPolicy,
+} from "../config/config-types.js";
 import type { GitMetadata } from "../git/git-types.js";
 import type { RunState } from "../state/state-types.js";
 import type { TimingWarning } from "../timings/timing-types.js";
@@ -29,6 +32,8 @@ export interface RunReportOptions {
   savedMaxFixAttempts?: number;
   milestonePlanPolicy: MilestonePlanPolicy;
   savedMilestonePlanPolicy?: MilestonePlanPolicy;
+  milestonePlanReviewPolicy: MilestonePlanReviewPolicy;
+  savedMilestonePlanReviewPolicy?: MilestonePlanReviewPolicy;
   gitRequired: boolean;
   gitRoot: string;
   gitDirty: boolean;
@@ -69,6 +74,18 @@ export function printRunReport(options: RunReportOptions): void {
   ) {
     console.log(`Saved milestone plan policy: ${options.savedMilestonePlanPolicy}`);
   }
+  console.log(`Milestone plan review policy: ${options.milestonePlanReviewPolicy}`);
+  if (options.savedMilestonePlanReviewPolicy !== undefined) {
+    console.log(`Saved milestone plan review policy: ${options.savedMilestonePlanReviewPolicy}`);
+  }
+  console.log(
+    `Scrupulous review for next milestone: ${describeScrupulousReviewForNextMilestone({
+      policy: options.milestonePlanReviewPolicy,
+      planningOnly: options.planningOnly,
+      state: options.finalState,
+      nextAction: options.nextAction,
+    })}`,
+  );
   console.log(`Git required: ${options.gitRequired}`);
   console.log(`Git root: ${options.gitRoot}`);
   console.log(`Git dirty: ${options.gitDirty}`);
@@ -167,6 +184,50 @@ export function nonGitPlanningOverride(
   allowNonGitPlanning: boolean,
 ): boolean {
   return allowNonGitPlanning && git.planningOnly && !git.required && git.root === null;
+}
+
+export function describeScrupulousReviewForNextMilestone(options: {
+  policy: MilestonePlanReviewPolicy;
+  planningOnly: boolean;
+  state?: RunState;
+  nextAction?: string;
+  allowed?: boolean;
+}): string {
+  if (options.policy !== "scrupulous") return "no (policy normal)";
+  if (options.planningOnly) return "no (planning only)";
+  if (options.allowed === false) return "no (blocked)";
+
+  if (options.nextAction === "run_full_goal") return "yes (after planning)";
+  if (options.nextAction === "continue_planning") return "yes (after planning)";
+  if (options.nextAction === "continue_milestone") return "yes";
+  if (options.nextAction === "advance_to_next_milestone") return "yes";
+  if (options.nextAction === "run_planning_only") return "no (planning only)";
+
+  if (options.state !== undefined) {
+    if (
+      options.state.currentPhase === "ready_for_milestone" &&
+      options.state.currentMilestoneId !== null
+    ) {
+      return "yes";
+    }
+
+    if (
+      options.state.currentPhase === "initialized" ||
+      options.state.currentPhase === "planning" ||
+      options.state.currentPhase === "plan_reviewing"
+    ) {
+      return "yes (after planning)";
+    }
+
+    if (
+      options.state.currentPhase === "passed" &&
+      Object.values(options.state.milestoneStatuses).some((status) => status === "pending")
+    ) {
+      return "yes (pending milestone on resume)";
+    }
+  }
+
+  return "no (no runnable milestone)";
 }
 
 export function formatChecks(checks: string[]): string {

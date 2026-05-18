@@ -206,6 +206,158 @@ test("runImplementationWorkflow uses runner-backed milestone plans for always po
   }
 });
 
+test("runImplementationWorkflow reviews and corrects full milestone plans in scrupulous mode", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("always", "scrupulous"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Draft Milestone Plan\n\nDraft-only implementation direction.",
+      exitCode: 0,
+    },
+    {
+      phase: "milestone_plan_review",
+      text: "# Draft Review\n\nTighten the implementation direction.",
+      exitCode: 0,
+    },
+    {
+      phase: "final_milestone_plan",
+      text: "# Corrected Milestone Plan\n\nUse this final implementation direction.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan",
+      "milestone_plan_review",
+      "final_milestone_plan",
+      "implement_milestone",
+    ]);
+    assert.deepEqual(result.state.artifacts.milestonePlanDrafts, {
+      "1": path.join("milestones", "10-milestone-1-plan-draft.md"),
+    });
+    assert.deepEqual(result.state.artifacts.milestonePlanReviews, {
+      "1": path.join("milestones", "10-milestone-1-plan-review.md"),
+    });
+    assert.deepEqual(result.state.artifacts.milestonePlans, {
+      "1": path.join("milestones", "10-milestone-1-plan.md"),
+    });
+
+    assert.equal(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan-draft.md"),
+        "utf8",
+      ),
+      "# Draft Milestone Plan\n\nDraft-only implementation direction.\n",
+    );
+    assert.equal(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan-review.md"),
+        "utf8",
+      ),
+      "# Draft Review\n\nTighten the implementation direction.\n",
+    );
+    assert.equal(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan.md"),
+        "utf8",
+      ),
+      "# Corrected Milestone Plan\n\nUse this final implementation direction.\n",
+    );
+    assert.match(
+      runner.requests[1]?.prompt ?? "",
+      /# Draft Milestone Plan\n\nDraft-only implementation direction\./,
+    );
+    assert.match(
+      runner.requests[2]?.prompt ?? "",
+      /# Draft Review\n\nTighten the implementation direction\./,
+    );
+    assert.match(
+      runner.requests[3]?.prompt ?? "",
+      /# Corrected Milestone Plan\n\nUse this final implementation direction\./,
+    );
+    assert.doesNotMatch(runner.requests[3]?.prompt ?? "", /Draft-only implementation direction/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow reviews and corrects light milestone plans in scrupulous mode", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("light", "scrupulous"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan_review",
+      text: "# Light Plan Review\n\nNo changes required.",
+      exitCode: 0,
+    },
+    {
+      phase: "final_milestone_plan",
+      text: "# Final Light Milestone Plan\n\nImplement the light milestone.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nWrote feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "implemented\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan_review",
+      "final_milestone_plan",
+      "implement_milestone",
+    ]);
+    assert.equal(
+      runner.requests.some((request) => request.phase === "milestone_plan"),
+      false,
+    );
+    assert.match(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan-draft.md"),
+        "utf8",
+      ),
+      /^# Milestone 1 Plan: First milestone/,
+    );
+    assert.equal(
+      await readFile(
+        path.join(context.paths.dirs.milestones, "10-milestone-1-plan.md"),
+        "utf8",
+      ),
+      "# Final Light Milestone Plan\n\nImplement the light milestone.\n",
+    );
+    assert.match(runner.requests[0]?.prompt ?? "", /- Mode: light/);
+    assert.match(runner.requests[2]?.prompt ?? "", /# Final Light Milestone Plan/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runImplementationWorkflow skips milestone_plan and writes a light plan for light policy", async () => {
   const context = await createImplementationContext({
     config: lightImplementationConfig(),
@@ -491,6 +643,169 @@ test("runImplementationWorkflow persists failed state when the milestone-plan ru
   }
 });
 
+test("runImplementationWorkflow fails scrupulous plan review before implementation starts", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("always", "scrupulous"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Draft Plan\n\nNeeds review.",
+      exitCode: 0,
+    },
+    {
+      phase: "milestone_plan_review",
+      text: "# Review Failure\n\nCould not review.",
+      exitCode: 2,
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Runner phase milestone_plan_review failed with exit code 2/);
+    assert.deepEqual(runner.phases(), ["milestone_plan", "milestone_plan_review"]);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "implementing");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.deepEqual(result.state.artifacts.milestonePlanDrafts, {
+      "1": path.join("milestones", "10-milestone-1-plan-draft.md"),
+    });
+    assert.equal(result.state.artifacts.milestonePlanReviews, undefined);
+    assert.equal(result.state.artifacts.milestonePlans, undefined);
+    assert.equal(result.state.artifacts.implementations, undefined);
+    assert.equal(result.state.artifacts.diffs, undefined);
+    await assert.rejects(
+      () => readFile(path.join(context.repo, "fake-milestone-1-implementation.txt"), "utf8"),
+      /ENOENT/,
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow fails scrupulous final plan correction before implementation starts", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("always", "scrupulous"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Draft Plan\n\nNeeds correction.",
+      exitCode: 0,
+    },
+    {
+      phase: "milestone_plan_review",
+      text: "# Review\n\nCorrect the draft.",
+      exitCode: 0,
+    },
+    {
+      phase: "final_milestone_plan",
+      text: "# Correction Failure\n\nCould not correct.",
+      exitCode: 3,
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Runner phase final_milestone_plan failed with exit code 3/);
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan",
+      "milestone_plan_review",
+      "final_milestone_plan",
+    ]);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "implementing");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.deepEqual(result.state.artifacts.milestonePlanDrafts, {
+      "1": path.join("milestones", "10-milestone-1-plan-draft.md"),
+    });
+    assert.deepEqual(result.state.artifacts.milestonePlanReviews, {
+      "1": path.join("milestones", "10-milestone-1-plan-review.md"),
+    });
+    assert.equal(result.state.artifacts.milestonePlans, undefined);
+    assert.equal(result.state.artifacts.implementations, undefined);
+    assert.equal(result.state.artifacts.diffs, undefined);
+    await assert.rejects(
+      () => readFile(path.join(context.repo, "fake-milestone-1-implementation.txt"), "utf8"),
+      /ENOENT/,
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow fails empty scrupulous final plan before implementation starts", async () => {
+  const context = await createImplementationContext({
+    config: implementationConfig("always", "scrupulous"),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Draft Plan\n\nNeeds correction.",
+      exitCode: 0,
+    },
+    {
+      phase: "milestone_plan_review",
+      text: "# Review\n\nCorrect the draft.",
+      exitCode: 0,
+    },
+    {
+      phase: "final_milestone_plan",
+      text: "   \n",
+      exitCode: 0,
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Runner phase final_milestone_plan returned empty output/);
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan",
+      "milestone_plan_review",
+      "final_milestone_plan",
+    ]);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "implementing");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.deepEqual(result.state.artifacts.milestonePlanDrafts, {
+      "1": path.join("milestones", "10-milestone-1-plan-draft.md"),
+    });
+    assert.deepEqual(result.state.artifacts.milestonePlanReviews, {
+      "1": path.join("milestones", "10-milestone-1-plan-review.md"),
+    });
+    assert.equal(result.state.artifacts.milestonePlans, undefined);
+    assert.equal(result.state.artifacts.implementations, undefined);
+    assert.equal(result.state.artifacts.diffs, undefined);
+    await assert.rejects(
+      () => readFile(path.join(context.repo, "fake-milestone-1-implementation.txt"), "utf8"),
+      /ENOENT/,
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runImplementationWorkflow persists failed state when milestone artifact writes fail", async () => {
   const context = await createImplementationContext();
   try {
@@ -552,6 +867,7 @@ test("runImplementationWorkflow persists check output and fails when checks fail
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
   try {
@@ -644,6 +960,7 @@ function lightImplementationConfig(): OrchestratorConfig {
 
 function implementationConfig(
   milestonePlanPolicy: OrchestratorConfig["milestonePlanPolicy"],
+  milestonePlanReviewPolicy: OrchestratorConfig["milestonePlanReviewPolicy"] = "normal",
 ): OrchestratorConfig {
   return {
     checks: [`${JSON.stringify(process.execPath)} -e "process.stdout.write('check ok')" `],
@@ -651,15 +968,20 @@ function implementationConfig(
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy,
+    milestonePlanReviewPolicy,
   };
 }
 
-type ImplementationPhase = "milestone_plan" | "implement_milestone";
+type ImplementationPhase =
+  | "milestone_plan"
+  | "milestone_plan_review"
+  | "final_milestone_plan"
+  | "implement_milestone";
 
 class ScriptedImplementationRunner implements AgentRunner {
   readonly type = "scripted";
 
-  constructor(private readonly responses: Record<ImplementationPhase, AgentRunResult>) {}
+  constructor(private readonly responses: Partial<Record<ImplementationPhase, AgentRunResult>>) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     return this.responses[request.phase as ImplementationPhase] ?? {

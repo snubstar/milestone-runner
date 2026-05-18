@@ -436,6 +436,7 @@ async function createWorkflowContext(): Promise<WorkflowContext> {
     maxFixAttempts: 0,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
   };
 
   await createRunDirectory(paths, goal);

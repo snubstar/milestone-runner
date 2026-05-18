@@ -25,6 +25,16 @@ node dist/cli/main.js --runner fake --milestone 1 \
   "Add a docs note explaining how to run the orchestrator manually"
 ```
 
+To review and correct each per-milestone plan before implementation, opt into scrupulous mode:
+
+```bash
+node dist/cli/main.js --runner fake --milestone 1 \
+  --milestone-plan-review-policy scrupulous \
+  "Add a docs note explaining how to run the orchestrator manually"
+```
+
+Scrupulous mode keeps the goal-level plan flow unchanged. The selected `milestonePlanPolicy` still controls the initial per-milestone draft: `always` uses a runner-backed plan, `auto` chooses between full and lightweight drafts, and `light` always creates a deterministic lightweight draft. Scrupulous mode then reviews that draft and writes the corrected final plan used by implementation.
+
 Expected behavior:
 
 - Creates `.agent-work/<run-id>/`.
@@ -56,6 +66,14 @@ For a simple real task where the general plan is enough, use a lightweight per-m
 ```bash
 node dist/cli/main.js --runner codex-exec --milestone 1 \
   --milestone-plan-policy light \
+  "Add a short manual testing section to README.md"
+```
+
+The review policy can also be set explicitly:
+
+```bash
+node dist/cli/main.js --runner codex-exec --milestone 1 \
+  --milestone-plan-review-policy scrupulous \
   "Add a short manual testing section to README.md"
 ```
 
@@ -108,9 +126,12 @@ Runner and check durations are nested inside workflow phase duration. Use them t
 node dist/cli/main.js --resume "$RUN_DIR" --dry-run
 node dist/cli/main.js --resume "$RUN_DIR"
 node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
+node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-review-policy scrupulous
 ```
 
-Use `--allow-dirty` on resume only when the current working tree changes are intentional. A resume policy override affects only milestones that have not already written a milestone plan artifact.
+Use `--allow-dirty` on resume only when the current working tree changes are intentional. Resume policy overrides are per-invocation and affect only future milestone planning work reached during that invocation.
+
+Scrupulous draft, review, and corrected-plan generation are internal to the existing `implementing` phase. If a run is interrupted during those steps, resume is conservative and stops for human review when implementation-ready artifacts are incomplete. The resume override above does not persist into the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
 
 ## Opt-In Real Smoke Test
 

@@ -7,6 +7,8 @@ export type PromptName =
   | "final-major-plan"
   | "final-plan-json"
   | "milestone-plan"
+  | "milestone-plan-review"
+  | "final-milestone-plan"
   | "implement-milestone"
   | "review-milestone"
   | "fix-review-findings";
@@ -30,6 +32,8 @@ const promptFiles: Record<PromptName, string> = {
   "final-major-plan": "final-major-plan.md",
   "final-plan-json": "final-plan-json.md",
   "milestone-plan": "milestone-plan.md",
+  "milestone-plan-review": "milestone-plan-review.md",
+  "final-milestone-plan": "final-milestone-plan.md",
   "implement-milestone": "implement-milestone.md",
   "review-milestone": "review-milestone.md",
   "fix-review-findings": "fix-review-findings.md",

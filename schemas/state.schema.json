@@ -228,6 +228,12 @@
         "milestones": {
           "$ref": "#/$defs/artifactPath"
         },
+        "milestonePlanDrafts": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "milestonePlanReviews": {
+          "$ref": "#/$defs/artifactMap"
+        },
         "milestonePlans": {
           "$ref": "#/$defs/artifactMap"
         },

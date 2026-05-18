@@ -1,4 +1,7 @@
-import type { MilestonePlanPolicy } from "../config/config-types.js";
+import type {
+  MilestonePlanPolicy,
+  MilestonePlanReviewPolicy,
+} from "../config/config-types.js";
 import type { RunnerType } from "../runners/runner-types.js";
 
 export interface CliOptions {
@@ -14,6 +17,7 @@ export interface CliOptions {
   milestone?: number;
   runner?: RunnerType;
   milestonePlanPolicy?: MilestonePlanPolicy;
+  milestonePlanReviewPolicy?: MilestonePlanReviewPolicy;
 }
 
 export type ParseArgsResult =
@@ -22,6 +26,10 @@ export type ParseArgsResult =
 
 const runnerTypes = new Set<RunnerType>(["fake", "codex-exec"]);
 const milestonePlanPolicies = new Set<MilestonePlanPolicy>(["always", "auto", "light"]);
+const milestonePlanReviewPolicies = new Set<MilestonePlanReviewPolicy>([
+  "normal",
+  "scrupulous",
+]);
 
 export function parseArgs(argv: string[]): ParseArgsResult {
   const goalParts: string[] = [];
@@ -105,6 +113,22 @@ export function parseArgs(argv: string[]): ParseArgsResult {
         };
       }
       options.milestonePlanPolicy = value.value as MilestonePlanPolicy;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--milestone-plan-review-policy") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      if (!milestonePlanReviewPolicies.has(value.value as MilestonePlanReviewPolicy)) {
+        return {
+          ok: false,
+          error:
+            `Invalid --milestone-plan-review-policy value "${value.value}". ` +
+            'Expected "normal" or "scrupulous".',
+        };
+      }
+      options.milestonePlanReviewPolicy = value.value as MilestonePlanReviewPolicy;
       index += 1;
       continue;
     }
@@ -239,6 +263,8 @@ export function usage(): string {
     "  --milestone <id>        Constrain execution to one milestone.",
     "  --milestone-plan-policy <policy>",
     "                          Per-milestone plan policy: always, auto, or light.",
+    "  --milestone-plan-review-policy <policy>",
+    "                          Per-milestone plan review policy: normal or scrupulous.",
     "  --runner <type>         Runner type: fake or codex-exec.",
   ].join("\n");
 }

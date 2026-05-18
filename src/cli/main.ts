@@ -77,6 +77,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     runnerType: options.runner,
     maxFixAttempts: options.maxFixAttempts,
     milestonePlanPolicy: options.milestonePlanPolicy,
+    milestonePlanReviewPolicy: options.milestonePlanReviewPolicy,
   });
   const configValidation = validateConfig(configWithOverrides);
   if (!configValidation.ok) {
@@ -268,6 +269,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       checks: config.checks,
       maxFixAttempts: config.maxFixAttempts,
       milestonePlanPolicy: config.milestonePlanPolicy,
+      milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -299,6 +301,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     checks: config.checks,
     maxFixAttempts: config.maxFixAttempts,
     milestonePlanPolicy: config.milestonePlanPolicy,
+    milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -342,6 +345,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
   const configWithOverrides = applyConfigOverrides(resumeResult.config, {
     maxFixAttempts: options.maxFixAttempts,
     milestonePlanPolicy: options.milestonePlanPolicy,
+    milestonePlanReviewPolicy: options.milestonePlanReviewPolicy,
   });
   const configValidation = validateConfig(configWithOverrides);
   if (!configValidation.ok) {
@@ -517,6 +521,9 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
       milestonePlanPolicy: config.milestonePlanPolicy,
       savedMilestonePlanPolicy: resumeResult.config.milestonePlanPolicy,
+      milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
+      savedMilestonePlanReviewPolicy:
+        resumeResult.config.milestonePlanReviewPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -551,6 +558,9 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     savedMaxFixAttempts: resumeResult.config.maxFixAttempts,
     milestonePlanPolicy: config.milestonePlanPolicy,
     savedMilestonePlanPolicy: resumeResult.config.milestonePlanPolicy,
+    milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
+    savedMilestonePlanReviewPolicy:
+      resumeResult.config.milestonePlanReviewPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,

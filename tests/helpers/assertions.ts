@@ -63,6 +63,8 @@ const scalarArtifactFields = [
 ];
 
 const mapArtifactFields = [
+  "milestonePlanDrafts",
+  "milestonePlanReviews",
   "milestonePlans",
   "implementations",
   "diffs",

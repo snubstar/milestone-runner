@@ -14,6 +14,14 @@ test("buildMilestoneArtifactPaths creates expected milestone artifact paths", ()
   const milestonePaths = buildMilestoneArtifactPaths(runPaths, 12);
 
   assert.equal(
+    milestonePaths.files.milestonePlanDraft,
+    path.resolve("/repo", ".agent-work", "run-1", "milestones", "10-milestone-12-plan-draft.md"),
+  );
+  assert.equal(
+    milestonePaths.files.milestonePlanReview,
+    path.resolve("/repo", ".agent-work", "run-1", "milestones", "10-milestone-12-plan-review.md"),
+  );
+  assert.equal(
     milestonePaths.files.milestonePlan,
     path.resolve("/repo", ".agent-work", "run-1", "milestones", "10-milestone-12-plan.md"),
   );
@@ -40,6 +48,8 @@ test("buildMilestoneArtifactPaths creates expected milestone artifact paths", ()
     path.resolve("/repo", ".agent-work", "run-1", "milestones", "14-milestone-12-summary.md"),
   );
   assert.deepEqual(milestonePaths.statePaths, {
+    milestonePlanDraft: path.join("milestones", "10-milestone-12-plan-draft.md"),
+    milestonePlanReview: path.join("milestones", "10-milestone-12-plan-review.md"),
     milestonePlan: path.join("milestones", "10-milestone-12-plan.md"),
     implementation: path.join("milestones", "11-milestone-12-implementation.md"),
     diff: path.join("diffs", "12-milestone-12.diff"),

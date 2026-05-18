@@ -289,6 +289,7 @@ function state(): RunState {
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
   });
 }

@@ -37,6 +37,8 @@ test("parseArgs accepts supported options", () => {
     "2",
     "--milestone-plan-policy",
     "auto",
+    "--milestone-plan-review-policy",
+    "scrupulous",
     "--runner",
     "fake",
     "--config",
@@ -56,6 +58,7 @@ test("parseArgs accepts supported options", () => {
     assert.equal(result.options.maxFixAttempts, 1);
     assert.equal(result.options.milestone, 2);
     assert.equal(result.options.milestonePlanPolicy, "auto");
+    assert.equal(result.options.milestonePlanReviewPolicy, "scrupulous");
     assert.equal(result.options.runner, "fake");
     assert.equal(result.options.configPath, "custom.json");
     assert.equal(result.options.artifactRoot, ".runs");
@@ -96,6 +99,22 @@ test("parseArgs accepts milestone plan policy with resume", () => {
     assert.equal(result.options.goal, null);
     assert.equal(result.options.resume, ".agent-work/run-1");
     assert.equal(result.options.milestonePlanPolicy, "light");
+  }
+});
+
+test("parseArgs accepts milestone plan review policy with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    ".agent-work/run-1",
+    "--milestone-plan-review-policy",
+    "scrupulous",
+  ]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.options.goal, null);
+    assert.equal(result.options.resume, ".agent-work/run-1");
+    assert.equal(result.options.milestonePlanReviewPolicy, "scrupulous");
   }
 });
 
@@ -183,5 +202,19 @@ test("parseArgs rejects invalid milestone plan policy", () => {
     ok: false,
     error:
       'Invalid --milestone-plan-policy value "sometimes". Expected "always", "auto", or "light".',
+  });
+});
+
+test("parseArgs rejects invalid milestone plan review policy", () => {
+  const result = parseArgs([
+    "--milestone-plan-review-policy",
+    "sometimes",
+    "Add feature X",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error:
+      'Invalid --milestone-plan-review-policy value "sometimes". Expected "normal" or "scrupulous".',
   });
 });

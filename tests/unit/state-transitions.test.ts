@@ -204,7 +204,7 @@ test("setStatePhase accepts ready_for_review", () => {
 });
 
 test("recordMilestoneArtifact records per-milestone artifact paths", () => {
-  const state = recordMilestoneArtifact(
+  const withDraft = recordMilestoneArtifact(
     {
       ...initialState(),
       artifacts: {
@@ -214,12 +214,32 @@ test("recordMilestoneArtifact records per-milestone artifact paths", () => {
         },
       },
     },
+    "milestonePlanDrafts",
+    1,
+    "milestones/10-milestone-1-plan-draft.md",
+    new Date("2026-05-10T12:00:04.000Z"),
+  );
+  const withReview = recordMilestoneArtifact(
+    withDraft,
+    "milestonePlanReviews",
+    1,
+    "milestones/10-milestone-1-plan-review.md",
+    new Date("2026-05-10T12:00:04.500Z"),
+  );
+  const state = recordMilestoneArtifact(
+    withReview,
     "implementations",
     1,
     "milestones/11-milestone-1-implementation.md",
     new Date("2026-05-10T12:00:05.000Z"),
   );
 
+  assert.deepEqual(state.artifacts.milestonePlanDrafts, {
+    "1": "milestones/10-milestone-1-plan-draft.md",
+  });
+  assert.deepEqual(state.artifacts.milestonePlanReviews, {
+    "1": "milestones/10-milestone-1-plan-review.md",
+  });
   assert.deepEqual(state.artifacts.milestonePlans, {
     "1": "milestones/10-milestone-1-plan.md",
   });
@@ -322,6 +342,7 @@ function initialState(): RunState {
       maxFixAttempts: 0,
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
     },
     now: new Date("2026-05-10T12:00:00.000Z"),
   });
