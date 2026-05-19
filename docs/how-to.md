@@ -84,6 +84,20 @@ node dist/cli/main.js --allow-dirty --runner codex-exec --milestone 1 \
   "Add a short manual testing section to README.md"
 ```
 
+## Task Launchers
+
+For repeatable real tasks, keep a task-specific launcher under `tasks/`. The
+script should contain the prompt and the pipeline flags for that task, then call
+the built CLI with `-- "$PROMPT"` to avoid shell quoting problems.
+
+Start from `tasks/task-template.sh`, replace the placeholder prompt, and run a
+dry run before allowing a real execution:
+
+```bash
+tasks/run-your-task.sh --dry-run
+tasks/run-your-task.sh
+```
+
 ## Inspect A Run
 
 ```bash
@@ -96,7 +110,8 @@ ls "$RUN_DIR/runner"
 
 Important locations:
 
-- `milestones/10-milestone-<id>-plan.md`: per-milestone plan artifact. It may be full or lightweight depending on `milestonePlanPolicy`.
+- `milestones/10-milestone-<id>-plan.md`: final per-milestone plan artifact used for implementation. It may be full, lightweight, or scrupulously corrected depending on `milestonePlanPolicy` and `milestonePlanReviewPolicy`.
+- `milestones/10-milestone-<id>-plan-draft.md` and `milestones/10-milestone-<id>-plan-review.md`: scrupulous-mode trace artifacts for the initial draft and its review.
 - `diffs/`: Git diffs captured by the orchestrator.
 - `checks/`: deterministic check reports.
 - `reviews/`: review verdict JSON.

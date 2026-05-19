@@ -380,7 +380,7 @@ Config fields:
 
 - `checks`: deterministic shell commands to run during verification phases. An empty array is valid for early prototypes, but later workflow output must report that no checks were configured.
 - `runner.type`: selected agent runner adapter. Initial supported values are `codex-exec` and `fake`.
-- `runner.command`: executable command for real subprocess-backed runners. For `codex-exec`, this defaults to `codex`.
+- `runner.command`: executable command for real subprocess-backed runners. For `codex-exec`, this is required; the example config sets it to `codex`.
 - `runner.options`: adapter-specific options. Codex-specific sandbox, approval, timeout, model/profile, and JSON event settings belong here rather than at the top level.
 - `maxFixAttempts`: maximum number of review/fix retries before stopping.
 - `artifactRoot`: root directory for generated run artifacts.
@@ -623,6 +623,7 @@ Expected result:
 - Review verdict JSON is written under `.agent-work/<run-id>/reviews/`.
 - Runner diagnostics are written under `.agent-work/<run-id>/runner/`.
 - `state.json` records final status and every produced artifact path.
+- In scrupulous mode, milestone plan draft and plan-review trace artifacts are also written under `.agent-work/<run-id>/milestones/`.
 
 If the starting dirty tree is deliberate, make that explicit:
 
