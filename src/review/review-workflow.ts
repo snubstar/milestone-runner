@@ -28,6 +28,7 @@ import { appendStateTimelineEvent } from "../timings/state-timeline.js";
 import {
   parseReviewVerdictJson,
 } from "./review-verdict-validator.js";
+import { buildReviewEvidence } from "./review-evidence.js";
 import type {
   ReviewRunnerPhase,
   ReviewFinding,
@@ -179,12 +180,22 @@ export async function runReviewWorkflow(
   state = await persist(setStatePhase(state, "reviewing", clock()));
   state = await persist(setMilestoneStatus(state, activeMilestoneId, "reviewing", clock()));
 
+  const evidence = await writeReviewEvidenceArtifactOrFail({
+    filePath: reviewPaths.files.evidence,
+    statePath: reviewPaths.statePaths.evidence,
+    stateKey: reviewPaths.stateKeys.evidence,
+    diff: latestDiff,
+    reviewRound: { kind: "base" },
+  });
+  if (!evidence.ok) return evidence.result;
+
   const reviewedArtifacts = [
     state.artifacts.finalMajorPlanMarkdown ?? planningPaths.statePaths.finalMajorPlanMarkdown,
     state.artifacts.milestonePlans?.[String(activeMilestoneId)] ?? milestonePaths.statePaths.milestonePlan,
     state.artifacts.implementations?.[String(activeMilestoneId)] ?? milestonePaths.statePaths.implementation,
     latestDiffPath,
     latestChecksPath,
+    reviewPaths.statePaths.evidence,
   ];
 
   const prompt = await renderLoadedPrompt("review-milestone", {
@@ -196,6 +207,7 @@ export async function runReviewWorkflow(
     diff: latestDiff,
     checks: latestChecks,
     latestChecksPassed,
+    reviewEvidence: evidence.value,
     reviewedArtifacts,
     state,
   });
@@ -207,6 +219,7 @@ export async function runReviewWorkflow(
     implementation: reviewedArtifacts[2] ?? milestonePaths.statePaths.implementation,
     diff: latestDiffPath,
     checks: latestChecksPath,
+    reviewEvidence: reviewPaths.statePaths.evidence,
   });
   if (!review.ok) return fail("reviewing", review.error, review.details);
 
@@ -528,6 +541,15 @@ export async function runReviewWorkflow(
     state = await persist(setStatePhase(state, "reviewing", clock()));
     state = await persist(setMilestoneStatus(state, activeMilestoneId, "reviewing", clock()));
 
+    const postFixEvidence = await writeReviewEvidenceArtifactOrFail({
+      filePath: fixPaths.files.evidence,
+      statePath: fixPaths.statePaths.evidence,
+      stateKey: fixPaths.stateKeys.evidence,
+      diff: latestDiff,
+      reviewRound: { kind: "fix", attempt },
+    });
+    if (!postFixEvidence.ok) return postFixEvidence.result;
+
     const postFixReviewedArtifacts = [
       state.artifacts.finalMajorPlanMarkdown ?? planningPaths.statePaths.finalMajorPlanMarkdown,
       state.artifacts.milestonePlans?.[String(activeMilestoneId)] ?? milestonePaths.statePaths.milestonePlan,
@@ -535,6 +557,7 @@ export async function runReviewWorkflow(
       latestDiffPath,
       latestChecksPath,
       fixPaths.statePaths.fix,
+      fixPaths.statePaths.evidence,
     ];
     const postFixPrompt = await renderLoadedPrompt("review-milestone", {
       goal: options.goal,
@@ -545,6 +568,7 @@ export async function runReviewWorkflow(
       diff: latestDiff,
       checks: latestChecks,
       latestChecksPassed,
+      reviewEvidence: postFixEvidence.value,
       reviewedArtifacts: postFixReviewedArtifacts,
       state,
     });
@@ -557,6 +581,7 @@ export async function runReviewWorkflow(
       diff: latestDiffPath,
       checks: latestChecksPath,
       fix: fixPaths.statePaths.fix,
+      reviewEvidence: fixPaths.statePaths.evidence,
     });
     if (!postFixReview.ok) return fail("reviewing", postFixReview.error, postFixReview.details);
 
@@ -828,6 +853,50 @@ export async function runReviewWorkflow(
         result: await fail(
           phase,
           `Failed to write ${label} at ${filePath}: ${formatError(error)}`,
+        ),
+      };
+    }
+  }
+
+  async function writeReviewEvidenceArtifactOrFail(optionsForEvidence: {
+    filePath: string;
+    statePath: string;
+    stateKey: string;
+    diff: string;
+    reviewRound:
+      | { kind: "base" }
+      | { kind: "fix"; attempt: number };
+  }): Promise<
+    | { ok: true; value: string }
+    | { ok: false; result: ReviewWorkflowResult }
+  > {
+    try {
+      const evidenceResult = await buildReviewEvidence({
+        cwd: options.cwd,
+        gitRoot: state.git.root,
+        runDir: options.paths.runDir,
+        runId: state.runId,
+        milestoneId: activeMilestoneId ?? 0,
+        reviewRound: optionsForEvidence.reviewRound,
+        diff: optionsForEvidence.diff,
+      });
+      await writeTextArtifact(optionsForEvidence.filePath, evidenceResult.markdown);
+      state = await persist(
+        recordArtifactByKey(
+          state,
+          "reviews",
+          optionsForEvidence.stateKey,
+          optionsForEvidence.statePath,
+          clock(),
+        ),
+      );
+      return { ok: true, value: evidenceResult.markdown };
+    } catch (error) {
+      return {
+        ok: false,
+        result: await fail(
+          "reviewing",
+          `Failed to write review evidence artifact at ${optionsForEvidence.filePath}: ${formatError(error)}`,
         ),
       };
     }

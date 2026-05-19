@@ -4,15 +4,22 @@ import { fileURLToPath } from "node:url";
 
 import { buildRunPaths, createRunId } from "../artifacts/paths.js";
 import { createRunDirectory, writeRunLog } from "../artifacts/run-directory.js";
-import { buildNewRunDryRunReport, buildResumeDryRunReport } from "./dry-run.js";
+import {
+  buildNewRunDryRunReport,
+  buildResumeDryRunReport,
+  type DryRunReport,
+} from "./dry-run.js";
 import { loadResumeRun } from "./run-loader.js";
 import { parseArgs, usage, type CliOptions } from "./args.js";
 import {
   nonGitPlanningOverride,
+  printDryRunJsonReport,
   printDryRunReport,
   printEnvironmentDiagnostics,
   printGitOverrideWarnings,
+  printRunJsonReport,
   printRunReport,
+  type RunReportOptions,
 } from "./run-report.js";
 import {
   applyConfigOverrides,
@@ -100,6 +107,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
+        ...newRunDryRunIdentity(options, config.artifactRoot),
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -111,7 +119,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
         diagnostics: environment.diagnostics,
         blockedReason: classifyEnvironmentFailure(environment.diagnostics),
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -135,6 +143,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
+        ...newRunDryRunIdentity(options, config.artifactRoot),
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -146,7 +155,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
         diagnostics: environment.diagnostics,
         blockedReason: classifyGitPreflightFailure(gitPreflight.error),
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -163,6 +172,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
+        ...newRunDryRunIdentity(options, config.artifactRoot),
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -174,7 +184,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
         diagnostics: environment.diagnostics,
         blockedReason: "blocked_runner_configuration",
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -185,6 +195,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
   if (options.dryRun) {
     const report = buildNewRunDryRunReport({
       goal,
+      ...newRunDryRunIdentity(options, config.artifactRoot),
       config,
       configPath: loadedConfig.value.path,
       planningOnly: options.planningOnly,
@@ -195,11 +206,11 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       runnerType: runnerResult.runner.type,
       diagnostics: environment.diagnostics,
     });
-    printDryRunReport(report);
+    printDryRunReportForCli(options, report);
     return report.exitCode;
   }
 
-  const runId = createRunId();
+  const runId = options.runId ?? createRunId();
   const paths = buildRunPaths({
     cwd: process.cwd(),
     artifactRoot: config.artifactRoot,
@@ -253,7 +264,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
 
   if (!workflowResult.ok) {
     console.error(workflowResult.error ?? "Goal workflow failed.");
-    printRunReport({
+    printRunReportForCli(options, {
       mode: "new",
       runId,
       paths,
@@ -281,11 +292,11 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       nextAction: workflowResult.nextAction,
       finalState,
       timingWarnings: workflowResult.timingWarnings,
-    });
+    }, 1);
     return 1;
   }
 
-  printRunReport({
+  printRunReportForCli(options, {
     mode: "new",
     runId,
     paths,
@@ -313,7 +324,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     nextAction: workflowResult.nextAction,
     finalState,
     timingWarnings: workflowResult.timingWarnings,
-  });
+  }, 0);
   return 0;
 }
 
@@ -380,7 +391,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
         warnings: resumeResult.warnings,
         blockedReason: classifyEnvironmentFailure(environment.diagnostics),
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -416,7 +427,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
         warnings: resumeResult.warnings,
         blockedReason: classifyGitPreflightFailure(gitPreflight.error),
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -445,7 +456,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
         warnings: resumeResult.warnings,
         blockedReason: "blocked_runner_configuration",
       });
-      printDryRunReport(report);
+      printDryRunReportForCli(options, report);
       return report.exitCode;
     }
 
@@ -467,7 +478,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       diagnostics: environment.diagnostics,
       warnings: resumeResult.warnings,
     });
-    printDryRunReport(report);
+    printDryRunReportForCli(options, report);
     return report.exitCode;
   }
 
@@ -503,7 +514,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
 
   if (!workflowResult.ok) {
     console.error(workflowResult.error ?? "Goal workflow failed.");
-    printRunReport({
+    printRunReportForCli(options, {
       mode: "resume",
       runId: resumeResult.state.runId,
       paths: resumeResult.paths,
@@ -536,11 +547,11 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       nextAction: workflowResult.nextAction,
       finalState,
       timingWarnings: workflowResult.timingWarnings,
-    });
+    }, 1);
     return 1;
   }
 
-  printRunReport({
+  printRunReportForCli(options, {
     mode: "resume",
     runId: resumeResult.state.runId,
     paths: resumeResult.paths,
@@ -573,7 +584,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     nextAction: workflowResult.nextAction,
     finalState,
     timingWarnings: workflowResult.timingWarnings,
-  });
+  }, 0);
   return 0;
 }
 
@@ -603,6 +614,39 @@ function executionLimitsForOptions(options: CliOptions) {
     targetMilestoneId: options.milestone,
     stopAfterTargetMilestone: true,
   };
+}
+
+function newRunDryRunIdentity(
+  options: CliOptions,
+  artifactRoot: string,
+): { runId?: string; runDir?: string } {
+  if (!options.runId) return {};
+  const paths = buildRunPaths({
+    cwd: process.cwd(),
+    artifactRoot,
+    runId: options.runId,
+  });
+  return { runId: options.runId, runDir: paths.runDir };
+}
+
+function printDryRunReportForCli(options: CliOptions, report: DryRunReport): void {
+  if (options.json) {
+    printDryRunJsonReport(report);
+    return;
+  }
+  printDryRunReport(report);
+}
+
+function printRunReportForCli(
+  options: CliOptions,
+  report: RunReportOptions,
+  exitCode: 0 | 1,
+): void {
+  if (options.json) {
+    printRunJsonReport(report, exitCode);
+    return;
+  }
+  printRunReport(report);
 }
 
 function emptyGitMetadata(planningOnly: boolean): GitMetadata {

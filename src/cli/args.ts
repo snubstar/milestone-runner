@@ -3,6 +3,7 @@ import type {
   MilestonePlanReviewPolicy,
 } from "../config/config-types.js";
 import type { RunnerType } from "../runners/runner-types.js";
+import { isSafeRunId } from "../artifacts/paths.js";
 
 export interface CliOptions {
   goal: string | null;
@@ -12,7 +13,9 @@ export interface CliOptions {
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
   dryRun: boolean;
+  json: boolean;
   resume?: string;
+  runId?: string;
   maxFixAttempts?: number;
   milestone?: number;
   runner?: RunnerType;
@@ -38,6 +41,7 @@ export function parseArgs(argv: string[]): ParseArgsResult {
     allowDirty: false,
     allowNonGitPlanning: false,
     dryRun: false,
+    json: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -65,6 +69,27 @@ export function parseArgs(argv: string[]): ParseArgsResult {
 
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--run-id") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      if (!isSafeRunId(value.value)) {
+        return {
+          ok: false,
+          error:
+            `Invalid --run-id value "${value.value}". ` +
+            'Expected a filesystem-safe id beginning with "run-".',
+        };
+      }
+      options.runId = value.value;
+      index += 1;
       continue;
     }
 
@@ -172,6 +197,13 @@ export function parseArgs(argv: string[]): ParseArgsResult {
 
   const goal = goalParts.join(" ").trim();
   if (options.resume) {
+    if (options.runId) {
+      return {
+        ok: false,
+        error: "--run-id cannot be combined with --resume.",
+      };
+    }
+
     if (goal) {
       return {
         ok: false,
@@ -258,6 +290,8 @@ export function usage(): string {
     "  --allow-non-git-planning",
     "                          Allow planning-only runs outside a Git repository.",
     "  --dry-run               Validate and report the next action without writing artifacts.",
+    "  --json                  Print the dry-run or final run report as JSON.",
+    "  --run-id <id>           Use a specific filesystem-safe id for a new run.",
     "  --resume <value>        Resume from a run directory, state.json path, or run id.",
     "  --max-fix-attempts <n>  Override the configured max fix attempts.",
     "  --milestone <id>        Constrain execution to one milestone.",

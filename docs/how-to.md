@@ -148,6 +148,51 @@ Use `--allow-dirty` on resume only when the current working tree changes are int
 
 Scrupulous draft, review, and corrected-plan generation are internal to the existing `implementing` phase. If a run is interrupted during those steps, resume is conservative and stops for human review when implementation-ready artifacts are incomplete. The resume override above does not persist into the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
 
+## Local Dashboard
+
+The dashboard is an optional localhost operator view over the same runs and
+artifacts used by the CLI. Terminal usage remains unchanged if you never start
+the dashboard.
+
+Start the dashboard:
+
+```bash
+npm run dashboard
+```
+
+By default, this builds the project and serves the dashboard at
+`http://127.0.0.1:3737`.
+
+Dashboard launch and resume actions call the same built CLI entrypoint used by
+terminal runs. The server binds to `127.0.0.1` by default, checks the request
+host and browser origin for mutating requests, and uses a per-server operator
+token for launch and resume requests from the served page.
+
+The run list distinguishes an empty artifact root from a missing or invalid
+artifact root. Malformed run state stays visible as an unreadable run with a
+warning, and missing artifacts are shown as missing links rather than hidden.
+Launch and resume dry-runs surface CLI blocks such as dirty-tree protection or
+missing runner tools before starting a mutating process.
+
+Useful server options can be passed after `--`:
+
+```bash
+npm run dashboard -- --port 4747
+npm run dashboard -- --artifact-root .agent-work
+npm run dashboard -- --cli-path dist/cli/main.js
+```
+
+Available options:
+
+- `--port <port>`: listen on a different port.
+- `--host <host>`: bind to a different host. Use the default for local-only operation.
+- `--artifact-root <path>`: read runs from a different artifact root.
+- `--static-root <path>`: serve dashboard assets from a different static root.
+- `--cli-path <path>`: launch or resume through a different built CLI entrypoint.
+
+If the dashboard fails to start or a browser action fails, ordinary CLI commands
+can still be run directly from the terminal.
+
 ## Opt-In Real Smoke Test
 
 ```bash

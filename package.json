@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "dashboard": "npm run build && node dist/dashboard/server.js",
     "test": "npm run test:unit",
     "test:unit": "node --test dist-test/tests/unit/*.test.js",
     "test:real-codex": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/tests/real/*.test.js",

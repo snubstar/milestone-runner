@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildRunPaths } from "../../src/artifacts/paths.js";
-import { printRunReport } from "../../src/cli/run-report.js";
+import { buildRunJsonReport, printRunReport } from "../../src/cli/run-report.js";
 import { createInitialState } from "../../src/state/initial-state.js";
 
 test("printRunReport includes runner diagnostic paths from last error details", () => {
@@ -276,6 +276,87 @@ test("printRunReport includes timing artifact paths and compact durations", asyn
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("printRunReport explains constrained target stops with pending milestones", () => {
+  const paths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const state = {
+    ...createInitialState({
+      runId: "run-1",
+      goal: "Add feature X",
+      paths,
+      git: {
+        required: true,
+        planningOnly: false,
+        root: "/repo",
+        startSha: "abc123",
+        dirtyAtStart: false,
+        dirtyOverride: false,
+        statusPorcelain: "",
+      },
+      configPath: "/repo/orchestrator.config.json",
+      configSnapshot: {
+        checks: [],
+        runner: { type: "fake" },
+        maxFixAttempts: 0,
+        artifactRoot: ".agent-work",
+        milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
+      },
+    }),
+    currentPhase: "passed" as const,
+    status: "passed" as const,
+    currentMilestoneId: 1,
+    milestoneStatuses: {
+      "1": "passed" as const,
+      "2": "pending" as const,
+      "3": "pending" as const,
+    },
+  };
+  const report = {
+    mode: "new" as const,
+    runId: "run-1",
+    paths,
+    goal: "Add feature X",
+    planningOnly: false,
+    allowDirty: false,
+    allowNonGitPlanning: false,
+    targetMilestone: 1,
+    runnerType: "fake",
+    configPath: "/repo/orchestrator.config.json",
+    configSource: "config file",
+    artifactRoot: ".agent-work",
+    checks: [],
+    maxFixAttempts: 0,
+    milestonePlanPolicy: "always" as const,
+    milestonePlanReviewPolicy: "normal" as const,
+    gitRequired: true,
+    gitRoot: "/repo",
+    gitDirty: false,
+    gitDirtyOverride: false,
+    gitNonGitPlanningOverride: false,
+    nextAction: "resume without --milestone to continue remaining milestones",
+    finalState: state,
+  };
+
+  const lines = captureConsoleLog(() => {
+    printRunReport(report);
+  });
+
+  const output = lines.join("\n");
+  assert.match(output, /Target milestone 1 stopped before goal completion\./);
+  assert.match(output, /Pending milestones remain: 2, 3\./);
+  assert.match(
+    output,
+    /Next action: resume without --milestone to continue remaining milestones/,
+  );
+
+  const jsonReport = buildRunJsonReport(report, 0);
+  assert.deepEqual(jsonReport.details.pendingMilestones, ["2", "3"]);
 });
 
 function captureConsoleLog(callback: () => void): string[] {

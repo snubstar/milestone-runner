@@ -30,6 +30,8 @@ export interface DryRunReport {
 
 export interface NewRunDryRunOptions {
   goal: string;
+  runId?: string;
+  runDir?: string;
   config: OrchestratorConfig;
   configPath: string | null;
   planningOnly: boolean;
@@ -75,6 +77,8 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
     ],
     details: {
       goal: options.goal,
+      runId: options.runId ?? null,
+      runDir: options.runDir ?? null,
       planningOnly: options.planningOnly,
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,

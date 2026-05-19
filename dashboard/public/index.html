@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Runs</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Agent Runs</h1>
+          <p id="statusLine" class="status-line">Loading</p>
+        </div>
+        <button id="refreshButton" class="button" type="button">Refresh</button>
+      </header>
+
+      <main class="workspace">
+        <aside class="run-list-panel" aria-label="Runs">
+          <form id="launchForm" class="launch-panel">
+            <div class="panel-header">
+              <h2>Launch</h2>
+              <span id="launchState" class="muted">Ready</span>
+            </div>
+            <div class="launch-fields">
+              <label class="field field-full">
+                <span>Prompt</span>
+                <textarea id="launchPrompt" rows="4" required></textarea>
+              </label>
+              <label class="field">
+                <span>Runner</span>
+                <select id="launchRunner">
+                  <option value="codex-exec">codex-exec</option>
+                  <option value="fake">fake</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Milestone</span>
+                <input id="launchMilestone" type="number" min="1" inputmode="numeric">
+              </label>
+              <label class="field">
+                <span>Plan</span>
+                <select id="launchPlanPolicy">
+                  <option value="">config</option>
+                  <option value="always">always</option>
+                  <option value="auto">auto</option>
+                  <option value="light">light</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Review</span>
+                <select id="launchReviewPolicy">
+                  <option value="">config</option>
+                  <option value="normal">normal</option>
+                  <option value="scrupulous">scrupulous</option>
+                </select>
+              </label>
+              <label class="check-field">
+                <input id="launchDryRun" type="checkbox" checked>
+                <span>Dry run</span>
+              </label>
+              <label class="check-field">
+                <input id="launchAllowDirty" type="checkbox">
+                <span>Allow dirty</span>
+              </label>
+              <label class="check-field">
+                <input id="launchAllowNonGit" type="checkbox">
+                <span>Allow non-Git</span>
+              </label>
+              <button id="launchButton" class="button primary field-full" type="submit">Start</button>
+              <div id="launchResult" class="launch-result hidden"></div>
+            </div>
+          </form>
+
+          <div class="panel-header">
+            <h2>Runs</h2>
+            <span id="runCount" class="muted">0</span>
+          </div>
+          <div id="runList" class="run-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="detail-panel" aria-label="Run detail">
+          <div id="emptyState" class="empty-state">
+            <h2>No Run Selected</h2>
+            <p>Select a run from the list.</p>
+          </div>
+
+          <div id="detailState" class="detail-state hidden">
+            <section class="detail-header">
+              <div class="detail-title">
+                <div id="detailStatus" class="status-badge neutral">Unknown</div>
+                <h2 id="detailGoal"></h2>
+                <p id="detailRunId" class="mono muted"></p>
+              </div>
+              <dl class="run-meta">
+                <div>
+                  <dt>Phase</dt>
+                  <dd id="detailPhase">-</dd>
+                </div>
+                <div>
+                  <dt>Milestone</dt>
+                  <dd id="detailMilestone">-</dd>
+                </div>
+                <div>
+                  <dt>Updated</dt>
+                  <dd id="detailUpdated">-</dd>
+                </div>
+                <div>
+                  <dt>Stream</dt>
+                  <dd id="streamState">-</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section id="warningSection" class="section hidden">
+              <div class="section-header">
+                <h3>Warnings</h3>
+              </div>
+              <div id="warnings" class="warning-list"></div>
+            </section>
+
+            <section id="errorSection" class="section hidden">
+              <div class="section-header">
+                <h3>Last Error</h3>
+              </div>
+              <pre id="lastError" class="code-block"></pre>
+            </section>
+
+            <section id="resumeSection" class="section">
+              <form id="resumeForm" class="resume-panel">
+                <div class="section-header">
+                  <h3>Resume</h3>
+                  <span id="resumeState" class="muted">Ready</span>
+                </div>
+                <div id="resumeTerminal" class="resume-terminal hidden"></div>
+                <div class="resume-fields">
+                  <label class="field">
+                    <span>Milestone</span>
+                    <input id="resumeMilestone" type="number" min="1" inputmode="numeric">
+                  </label>
+                  <label class="field">
+                    <span>Plan</span>
+                    <select id="resumePlanPolicy">
+                      <option value="">saved</option>
+                      <option value="always">always</option>
+                      <option value="auto">auto</option>
+                      <option value="light">light</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Review</span>
+                    <select id="resumeReviewPolicy">
+                      <option value="">saved</option>
+                      <option value="normal">normal</option>
+                      <option value="scrupulous">scrupulous</option>
+                    </select>
+                  </label>
+                  <label class="check-field">
+                    <input id="resumeAllowDirty" type="checkbox">
+                    <span>Allow dirty</span>
+                  </label>
+                  <label class="check-field">
+                    <input id="resumeAllowNonGit" type="checkbox">
+                    <span>Allow non-Git</span>
+                  </label>
+                  <div class="resume-actions">
+                    <button id="resumeDryRunButton" class="button" type="submit">Dry Run</button>
+                    <button id="resumeConfirmButton" class="button primary" type="button" disabled>Resume</button>
+                  </div>
+                  <div id="resumeResult" class="launch-result hidden"></div>
+                </div>
+              </form>
+            </section>
+
+            <section class="section">
+              <div class="section-header">
+                <h3>Milestones</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="milestoneTable"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="split">
+              <div class="section">
+                <div class="section-header">
+                  <h3>Latest Action</h3>
+                </div>
+                <div id="latestAction" class="latest-action muted">None</div>
+              </div>
+
+              <div class="section">
+                <div class="section-header">
+                  <h3>Timeline</h3>
+                </div>
+                <ol id="timeline" class="timeline"></ol>
+              </div>
+            </section>
+
+            <section class="section">
+              <div class="section-header">
+                <h3>Activity</h3>
+                <span id="activityCount" class="muted">0</span>
+              </div>
+              <ol id="activityFeed" class="activity-feed"></ol>
+            </section>
+
+            <section class="section">
+              <div class="section-header">
+                <h3>Artifacts</h3>
+              </div>
+              <div id="artifactGroups" class="artifact-groups"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -21,16 +21,17 @@ import { ScenarioRunner, type ScenarioStep } from "../helpers/scenario-runner.js
 
 test("runReviewWorkflow passes a milestone on a passing review with passing checks", async () => {
   const context = await createReviewContext();
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "pass",
+      summary: "The milestone satisfies the active scope.",
+      findings: [],
+    }),
+  ]);
   try {
     const result = await runReviewWorkflow({
       ...context.workflowOptions,
-      runner: new ScenarioRunner([
-        reviewResponse({
-          verdict: "pass",
-          summary: "The milestone satisfies the active scope.",
-          findings: [],
-        }),
-      ]),
+      runner,
     });
 
     assert.equal(result.ok, true);
@@ -42,6 +43,7 @@ test("runReviewWorkflow passes a milestone on a passing review with passing chec
     assert.equal(result.state.milestoneStatuses["2"], "pending");
     assert.equal(result.state.lastError, null);
     assert.deepEqual(result.state.artifacts.reviews, {
+      "1-evidence": path.join("reviews", "19-milestone-1-review-evidence.md"),
       "1": path.join("reviews", "20-milestone-1-review.json"),
     });
     assert.deepEqual(result.state.artifacts.summaries, {
@@ -53,6 +55,15 @@ test("runReviewWorkflow passes a milestone on a passing review with passing chec
       await readFile(path.join(context.paths.dirs.reviews, "20-milestone-1-review.json"), "utf8"),
     );
     assert.equal(review.verdict, "pass");
+    const evidence = await readFile(
+      path.join(context.paths.dirs.reviews, "19-milestone-1-review-evidence.md"),
+      "utf8",
+    );
+    assert.match(evidence, /^# Milestone 1 Review Evidence/);
+    assert.equal(
+      runner.requests[0]?.artifacts.reviewEvidence,
+      path.join("reviews", "19-milestone-1-review-evidence.md"),
+    );
 
     const summary = await readFile(
       path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
@@ -156,7 +167,9 @@ test("runReviewWorkflow persists failed state when review artifact writes fail",
     assert.equal(result.state.status, "failed");
     assert.equal(result.state.currentPhase, "reviewing");
     assert.equal(result.state.milestoneStatuses["1"], "failed");
-    assert.equal(result.state.artifacts.reviews, undefined);
+    assert.deepEqual(result.state.artifacts.reviews, {
+      "1-evidence": path.join("reviews", "19-milestone-1-review-evidence.md"),
+    });
     assert.deepEqual(await readState(context.paths.files.state), result.state);
   } finally {
     await context.cleanup();
@@ -185,7 +198,9 @@ test("runReviewWorkflow persists failed state when the review runner throws", as
     assert.equal(result.state.currentPhase, "reviewing");
     assert.equal(result.state.milestoneStatuses["1"], "failed");
     assert.match(result.state.lastError?.message ?? "", /review runner crashed/);
-    assert.equal(result.state.artifacts.reviews, undefined);
+    assert.deepEqual(result.state.artifacts.reviews, {
+      "1-evidence": path.join("reviews", "19-milestone-1-review-evidence.md"),
+    });
     assert.deepEqual(await readState(context.paths.files.state), result.state);
   } finally {
     await context.cleanup();
@@ -212,7 +227,9 @@ test("runReviewWorkflow persists failed state when the review runner returns emp
     assert.equal(result.state.status, "failed");
     assert.equal(result.state.currentPhase, "reviewing");
     assert.equal(result.state.milestoneStatuses["1"], "failed");
-    assert.equal(result.state.artifacts.reviews, undefined);
+    assert.deepEqual(result.state.artifacts.reviews, {
+      "1-evidence": path.join("reviews", "19-milestone-1-review-evidence.md"),
+    });
     assert.deepEqual(await readState(context.paths.files.state), result.state);
   } finally {
     await context.cleanup();
@@ -444,6 +461,10 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       result.state.artifacts.reviews?.["1-fix-1"],
       path.join("reviews", "24-milestone-1-review-after-fix-1.json"),
     );
+    assert.equal(
+      result.state.artifacts.reviews?.["1-fix-1-evidence"],
+      path.join("reviews", "23-milestone-1-review-evidence-after-fix-1.md"),
+    );
 
     const diff = await readFile(
       path.join(context.paths.dirs.diffs, "22-milestone-1-diff-after-fix-1.diff"),
@@ -457,6 +478,14 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       "utf8",
     );
     assert.match(checks, /Overall: passed/);
+
+    const postFixEvidence = await readFile(
+      path.join(context.paths.dirs.reviews, "23-milestone-1-review-evidence-after-fix-1.md"),
+      "utf8",
+    );
+    assert.match(postFixEvidence, /^# Milestone 1 Review Evidence/);
+    assert.match(postFixEvidence, /Review round: fix 1/);
+    assert.match(postFixEvidence, /README\.md/);
 
     const summary = await readFile(
       path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
@@ -481,6 +510,18 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
         path.join(context.repo, "schemas", "review-verdict.schema.json"),
       ],
     );
+    assert.equal(
+      runner.requests[0]?.artifacts.reviewEvidence,
+      path.join("reviews", "19-milestone-1-review-evidence.md"),
+    );
+    assert.equal(
+      runner.requests[2]?.artifacts.reviewEvidence,
+      path.join("reviews", "23-milestone-1-review-evidence-after-fix-1.md"),
+    );
+    assert.equal(
+      runner.requests[2]?.artifacts.fix,
+      path.join("fixes", "21-milestone-1-fix-attempt-1.md"),
+    );
     assert.deepEqual((await readdir(context.paths.dirs.runner)).sort(), [
       "fix_review_findings-02.json",
       "review_milestone-01.json",
@@ -496,8 +537,8 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
     assert.equal(fixDiagnostic.milestoneId, 1);
     assert.equal(fixDiagnostic.runner, "codex-exec");
     assert.equal(fixDiagnostic.cwd, context.repo);
-    assert.equal(fixDiagnostic.startedAt, "2026-05-10T12:01:07.000Z");
-    assert.equal(fixDiagnostic.endedAt, "2026-05-10T12:01:08.000Z");
+    assert.equal(fixDiagnostic.startedAt, "2026-05-10T12:01:08.000Z");
+    assert.equal(fixDiagnostic.endedAt, "2026-05-10T12:01:09.000Z");
     assert.equal(fixDiagnostic.durationMs, 1000);
     assert.equal("prompt" in fixDiagnostic, false);
     const checkTimings = checkTimingCollector.list();

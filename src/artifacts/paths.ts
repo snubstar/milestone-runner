@@ -37,6 +37,10 @@ export function createRunId(date = new Date(), entropy = randomBytes(4).toString
   return `run-${date.toISOString().replace(/\D/g, "")}-${entropy}`;
 }
 
+export function isSafeRunId(runId: string): boolean {
+  return /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId);
+}
+
 export function buildRunPaths(options: RunPathOptions): RunPaths {
   const artifactRoot = path.resolve(options.cwd, options.artifactRoot);
   const runDir = path.join(artifactRoot, options.runId);

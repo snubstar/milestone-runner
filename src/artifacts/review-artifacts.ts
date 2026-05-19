@@ -4,14 +4,17 @@ import { toRunRelativePath, type RunPaths } from "./paths.js";
 
 export interface BaseReviewArtifactPaths {
   files: {
+    evidence: string;
     review: string;
     summary: string;
   };
   statePaths: {
+    evidence: string;
     review: string;
     summary: string;
   };
   stateKeys: {
+    evidence: string;
     review: string;
     summary: string;
   };
@@ -24,13 +27,18 @@ export interface FixAttemptArtifactPaths {
     fix: string;
     diff: string;
     checks: string;
+    evidence: string;
     review: string;
   };
   statePaths: {
     fix: string;
     diff: string;
     checks: string;
+    evidence: string;
     review: string;
+  };
+  stateKeys: {
+    evidence: string;
   };
 }
 
@@ -40,6 +48,7 @@ export function buildBaseReviewArtifactPaths(
 ): BaseReviewArtifactPaths {
   const suffix = `milestone-${milestoneId}`;
   const files = {
+    evidence: path.join(paths.dirs.reviews, `19-${suffix}-review-evidence.md`),
     review: path.join(paths.dirs.reviews, `20-${suffix}-review.json`),
     summary: path.join(paths.dirs.milestones, `25-${suffix}-review-summary.md`),
   };
@@ -47,10 +56,12 @@ export function buildBaseReviewArtifactPaths(
   return {
     files,
     statePaths: {
+      evidence: toRunRelativePath(paths.runDir, files.evidence),
       review: toRunRelativePath(paths.runDir, files.review),
       summary: toRunRelativePath(paths.runDir, files.summary),
     },
     stateKeys: {
+      evidence: `${milestoneId}-evidence`,
       review: String(milestoneId),
       summary: `${milestoneId}-review`,
     },
@@ -72,6 +83,10 @@ export function buildFixAttemptArtifactPaths(
     fix: path.join(paths.dirs.fixes, `21-${suffix}-fix-attempt-${attempt}.md`),
     diff: path.join(paths.dirs.diffs, `22-${suffix}-diff-after-fix-${attempt}.diff`),
     checks: path.join(paths.dirs.checks, `23-${suffix}-checks-after-fix-${attempt}.txt`),
+    evidence: path.join(
+      paths.dirs.reviews,
+      `23-${suffix}-review-evidence-after-fix-${attempt}.md`,
+    ),
     review: path.join(paths.dirs.reviews, `24-${suffix}-review-after-fix-${attempt}.json`),
   };
 
@@ -83,7 +98,11 @@ export function buildFixAttemptArtifactPaths(
       fix: toRunRelativePath(paths.runDir, files.fix),
       diff: toRunRelativePath(paths.runDir, files.diff),
       checks: toRunRelativePath(paths.runDir, files.checks),
+      evidence: toRunRelativePath(paths.runDir, files.evidence),
       review: toRunRelativePath(paths.runDir, files.review),
+    },
+    stateKeys: {
+      evidence: `${stateKey}-evidence`,
     },
   };
 }

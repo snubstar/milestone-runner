@@ -45,7 +45,19 @@ export interface RunReportOptions {
   timingWarnings?: TimingWarning[];
 }
 
+export interface CliJsonReport {
+  mode: "new" | "resume";
+  allowed: boolean;
+  exitCode: 0 | 1;
+  nextAction: string;
+  warnings: string[];
+  details: Record<string, unknown>;
+  runId?: string | null;
+  runDir?: string | null;
+}
+
 export function printRunReport(options: RunReportOptions): void {
+  const constrainedStop = constrainedTargetStop(options);
   console.log("Agent milestone orchestrator");
   console.log(`Mode: ${options.mode}`);
   console.log(`Run id: ${options.runId}`);
@@ -105,6 +117,12 @@ export function printRunReport(options: RunReportOptions): void {
       console.log(`Runner diagnostic: ${runnerDiagnostic}`);
     }
   }
+  if (constrainedStop) {
+    console.log(
+      `Target milestone ${constrainedStop.targetMilestone} stopped before goal completion.`,
+    );
+    console.log(`Pending milestones remain: ${constrainedStop.pendingMilestones.join(", ")}.`);
+  }
   if (options.nextAction) {
     console.log(`Next action: ${options.nextAction}`);
   }
@@ -125,6 +143,76 @@ export function printRunReport(options: RunReportOptions): void {
   }
 }
 
+export function buildRunJsonReport(
+  options: RunReportOptions,
+  exitCode: 0 | 1,
+): CliJsonReport {
+  const timingWarnings =
+    options.timingWarnings?.map(
+      (warning) => `[${warning.code}] ${warning.source}: ${warning.message}`,
+    ) ?? [];
+  const nextAction = options.nextAction ?? options.finalState.currentPhase;
+  const constrainedStop = constrainedTargetStop(options);
+
+  return {
+    mode: options.mode,
+    allowed: exitCode === 0,
+    exitCode,
+    nextAction,
+    warnings: timingWarnings,
+    runId: options.runId,
+    runDir: options.paths.runDir,
+    details: {
+      runId: options.runId,
+      runDir: options.paths.runDir,
+      goal: options.goal,
+      planningOnly: options.planningOnly,
+      allowDirty: options.allowDirty,
+      allowNonGitPlanning: options.allowNonGitPlanning,
+      targetMilestone: options.targetMilestone,
+      runner: options.runnerType,
+      config: options.configPath,
+      configSource: options.configSource,
+      artifactRoot: options.artifactRoot,
+      checks: options.checks,
+      maxFixAttempts: options.maxFixAttempts,
+      savedMaxFixAttempts: options.savedMaxFixAttempts,
+      milestonePlanPolicy: options.milestonePlanPolicy,
+      savedMilestonePlanPolicy: options.savedMilestonePlanPolicy,
+      milestonePlanReviewPolicy: options.milestonePlanReviewPolicy,
+      savedMilestonePlanReviewPolicy: options.savedMilestonePlanReviewPolicy,
+      scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
+        policy: options.milestonePlanReviewPolicy,
+        planningOnly: options.planningOnly,
+        state: options.finalState,
+        nextAction: options.nextAction,
+      }),
+      gitRequired: options.gitRequired,
+      gitRoot: options.gitRoot,
+      gitDirty: options.gitDirty,
+      gitDirtyOverride: options.gitDirtyOverride,
+      gitNonGitPlanningOverride: options.gitNonGitPlanningOverride,
+      stateBeforeResume: options.stateBeforeResume,
+      state: options.finalState.currentPhase,
+      status: options.finalState.status,
+      currentMilestone: options.finalState.currentMilestoneId,
+      milestoneStatuses: options.finalState.milestoneStatuses,
+      ...(constrainedStop
+        ? { pendingMilestones: constrainedStop.pendingMilestones }
+        : {}),
+      lastError: options.finalState.lastError ?? null,
+      finalSummaryArtifact: options.finalState.artifacts.summaries?.goal ?? null,
+    },
+  };
+}
+
+export function printRunJsonReport(
+  options: RunReportOptions,
+  exitCode: 0 | 1,
+): void {
+  printJson(buildRunJsonReport(options, exitCode));
+}
+
 export function printDryRunReport(report: DryRunReport): void {
   console.log("Agent milestone orchestrator dry run");
   console.log(`Mode: ${report.mode}`);
@@ -143,6 +231,23 @@ export function printDryRunReport(report: DryRunReport): void {
   for (const [key, value] of Object.entries(report.details)) {
     console.log(`  ${key}: ${value ?? "null"}`);
   }
+}
+
+export function buildDryRunJsonReport(report: DryRunReport): CliJsonReport {
+  return {
+    mode: report.mode,
+    allowed: report.allowed,
+    exitCode: report.exitCode,
+    nextAction: report.nextAction,
+    warnings: report.warnings,
+    details: report.details,
+    runId: stringDetail(report.details.runId),
+    runDir: stringDetail(report.details.runDir),
+  };
+}
+
+export function printDryRunJsonReport(report: DryRunReport): void {
+  printJson(buildDryRunJsonReport(report));
 }
 
 export function printEnvironmentDiagnostics(
@@ -257,11 +362,41 @@ function sortedMilestoneStatusEntries(state: RunState) {
   );
 }
 
+function constrainedTargetStop(
+  options: RunReportOptions,
+): { targetMilestone: number; pendingMilestones: string[] } | null {
+  if (options.targetMilestone === null) return null;
+  if (options.finalState.currentPhase !== "passed") return null;
+  if (
+    options.finalState.milestoneStatuses[String(options.targetMilestone)] !== "passed"
+  ) {
+    return null;
+  }
+
+  const pendingMilestones = sortedMilestoneStatusEntries(options.finalState)
+    .filter(([, status]) => status === "pending")
+    .map(([milestoneId]) => milestoneId);
+  if (pendingMilestones.length === 0) return null;
+
+  return {
+    targetMilestone: options.targetMilestone,
+    pendingMilestones,
+  };
+}
+
 function runnerDiagnosticFromDetails(details: unknown): string | null {
   if (typeof details !== "object" || details === null) return null;
   if (!("diagnosticArtifact" in details)) return null;
 
   const value = details.diagnosticArtifact;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+function stringDetail(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 

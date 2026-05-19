@@ -120,6 +120,7 @@ function buildRunnerDiagnostic(options: {
     error: stringField(metadata.error) ?? options.error,
     outputLastMessageCaptured: booleanField(metadata.outputLastMessageCaptured),
     outputSchemaPath: options.request.outputSchemaPath,
+    requestArtifacts: requestArtifactsField(options.request.artifacts),
     startedAt: options.startedAt,
     endedAt: options.endedAt,
     durationMs,
@@ -149,6 +150,21 @@ function booleanField(value: unknown): boolean | undefined {
 
 function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function requestArtifactsField(
+  artifacts: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (artifacts === undefined || Object.keys(artifacts).length === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(
+    Object.entries(artifacts).filter((entry): entry is [string, string] => {
+      const [key, value] = entry;
+      return key.length > 0 && typeof value === "string";
+    }),
+  );
 }
 
 function durationBetweenIsoTimestamps(

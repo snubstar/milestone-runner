@@ -31,6 +31,9 @@ test("parseArgs accepts supported options", () => {
     "--allow-dirty",
     "--allow-non-git-planning",
     "--dry-run",
+    "--json",
+    "--run-id",
+    "run-dashboard-1",
     "--max-fix-attempts",
     "1",
     "--milestone",
@@ -55,6 +58,8 @@ test("parseArgs accepts supported options", () => {
     assert.equal(result.options.allowDirty, true);
     assert.equal(result.options.allowNonGitPlanning, true);
     assert.equal(result.options.dryRun, true);
+    assert.equal(result.options.json, true);
+    assert.equal(result.options.runId, "run-dashboard-1");
     assert.equal(result.options.maxFixAttempts, 1);
     assert.equal(result.options.milestone, 2);
     assert.equal(result.options.milestonePlanPolicy, "auto");
@@ -133,6 +138,15 @@ test("parseArgs rejects goal with resume", () => {
   });
 });
 
+test("parseArgs rejects run id with resume", () => {
+  const result = parseArgs(["--resume", "run-1", "--run-id", "run-2"]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "--run-id cannot be combined with --resume.",
+  });
+});
+
 test("parseArgs rejects config with resume", () => {
   const result = parseArgs(["--resume", "run-1", "--config", "custom.json"]);
 
@@ -189,6 +203,24 @@ test("parseArgs rejects invalid runner", () => {
     ok: false,
     error: 'Invalid --runner value "other". Expected "fake" or "codex-exec".',
   });
+});
+
+test("parseArgs rejects invalid run ids", () => {
+  for (const value of ["", "job-1", "../run-1", "run-", "run-1/2"]) {
+    const argv = value === "" ? ["--run-id", "", "Add feature X"] : ["--run-id", value, "Add feature X"];
+    const result = parseArgs(argv);
+
+    if (value === "") {
+      assert.deepEqual(result, { ok: false, error: "Missing value for --run-id." });
+    } else {
+      assert.deepEqual(result, {
+        ok: false,
+        error:
+          `Invalid --run-id value "${value}". ` +
+          'Expected a filesystem-safe id beginning with "run-".',
+      });
+    }
+  }
 });
 
 test("parseArgs rejects invalid milestone plan policy", () => {

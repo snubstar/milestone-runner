@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -125,6 +125,93 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /milestonePlanReviewPolicy: normal/);
     assert.match(result.stdout, /scrupulousReviewForNextMilestone: no \(policy normal\)/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main prints machine-readable dry-run JSON", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--dry-run",
+      "--json",
+      "--run-id",
+      "run-dashboard-test",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout) as {
+      allowed: boolean;
+      exitCode: number;
+      nextAction: string;
+      runId: string;
+      runDir: string;
+      details: { runner: string; runId: string; runDir: string };
+    };
+    assert.equal(report.allowed, true);
+    assert.equal(report.exitCode, 0);
+    assert.equal(report.nextAction, "run_full_goal");
+    assert.equal(report.runId, "run-dashboard-test");
+    assert.equal(report.details.runner, "fake");
+    assert.equal(report.details.runId, "run-dashboard-test");
+    assert.equal(
+      report.runDir,
+      path.join(await realpath(repo), ".agent-work", "run-dashboard-test"),
+    );
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main prints machine-readable final run JSON with an explicit run id", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    const result = await runMainInRepo(repo, [
+      "--json",
+      "--run-id",
+      "run-dashboard-real",
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    const report = JSON.parse(result.stdout) as {
+      allowed: boolean;
+      exitCode: number;
+      runId: string;
+      runDir: string;
+      details: {
+        state: string;
+        status: string;
+        currentMilestone: number;
+      };
+    };
+    assert.equal(report.allowed, true);
+    assert.equal(report.exitCode, 0);
+    assert.equal(report.runId, "run-dashboard-real");
+    assert.equal(
+      report.runDir,
+      path.join(await realpath(repo), ".agent-work", "run-dashboard-real"),
+    );
+    assert.equal(report.details.state, "ready_for_milestone");
+    assert.equal(report.details.status, "ready_for_milestone");
+    assert.equal(report.details.currentMilestone, 1);
+    const state = JSON.parse(
+      await readFile(path.join(report.runDir, "state.json"), "utf8"),
+    ) as RunState;
+    assert.equal(state.runId, "run-dashboard-real");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -506,7 +593,9 @@ test("main runs all fake milestones through review when planning-only is not set
       "2": "passed",
     });
     assert.deepEqual(state.artifacts.reviews, {
+      "1-evidence": path.join("reviews", "19-milestone-1-review-evidence.md"),
       "1": path.join("reviews", "20-milestone-1-review.json"),
+      "2-evidence": path.join("reviews", "19-milestone-2-review-evidence.md"),
       "2": path.join("reviews", "20-milestone-2-review.json"),
     });
     assert.deepEqual(state.artifacts.summaries, {
@@ -569,10 +658,18 @@ test("main runs all fake milestones through review when planning-only is not set
       path.join(runDir, state.artifacts.reviews?.["1"] ?? ""),
     );
     assert.equal(review1.verdict, "pass");
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.reviews?.["1-evidence"] ?? ""), "utf8"),
+      /^# Milestone 1 Review Evidence/,
+    );
     const review2 = await assertReviewVerdictArtifact(
       path.join(runDir, state.artifacts.reviews?.["2"] ?? ""),
     );
     assert.equal(review2.verdict, "pass");
+    assert.match(
+      await readFile(path.join(runDir, state.artifacts.reviews?.["2-evidence"] ?? ""), "utf8"),
+      /^# Milestone 2 Review Evidence/,
+    );
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -595,6 +692,8 @@ test("main runs one constrained milestone and leaves remaining milestones resuma
     assert.match(result.stdout, /Target milestone: 1/);
     assert.match(result.stdout, /State: passed/);
     assert.match(result.stdout, /Current milestone: 1/);
+    assert.match(result.stdout, /Target milestone 1 stopped before goal completion\./);
+    assert.match(result.stdout, /Pending milestones remain: 2\./);
     assert.match(result.stdout, /Next action: resume without --milestone to continue remaining milestones/);
     assert.match(result.stdout, /Milestones:\n  1: passed\n  2: pending/);
     assert.doesNotMatch(result.stdout, /Final summary artifact:/);

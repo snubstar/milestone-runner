@@ -54,6 +54,9 @@ test("runAgentPhaseWithDiagnostics writes sanitized diagnostics for real runner 
       stdout: "stdout text",
       stderr: "",
       outputLastMessageCaptured: true,
+      requestArtifacts: {
+        goal: "00-goal.txt",
+      },
       startedAt: "2026-05-10T12:00:00.000Z",
       endedAt: "2026-05-10T12:00:01.000Z",
       durationMs: 1000,
@@ -125,6 +128,46 @@ test("runAgentPhaseWithDiagnostics writes diagnostics when a real runner throws"
     assert.equal(diagnostic.startedAt, "2026-05-10T12:00:00.000Z");
     assert.equal(diagnostic.endedAt, "2026-05-10T12:00:01.000Z");
     assert.equal(diagnostic.durationMs, 1000);
+    assert.equal("prompt" in diagnostic, false);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runAgentPhaseWithDiagnostics records review evidence artifact paths", async () => {
+  const context = await createDiagnosticContext();
+  try {
+    const result = await runAgentPhaseWithDiagnostics({
+      runner: new MetadataRunner(),
+      paths: context.paths,
+      request: {
+        phase: "review_milestone",
+        prompt: "review prompt with sensitive context",
+        milestoneId: 1,
+        cwd: context.repo,
+        artifacts: {
+          diff: "diffs/12-milestone-1.diff",
+          checks: "checks/13-milestone-1-checks.txt",
+          reviewEvidence: "reviews/19-milestone-1-review-evidence.md",
+        },
+      },
+      now: sequenceClock("2026-05-10T12:00:00.000Z"),
+    });
+
+    assert.equal(result.ok, true);
+
+    const raw = await readFile(
+      path.join(context.paths.runDir, result.diagnosticArtifact ?? ""),
+      "utf8",
+    );
+    assert.doesNotMatch(raw, /sensitive context/);
+
+    const diagnostic = JSON.parse(raw);
+    assert.deepEqual(diagnostic.requestArtifacts, {
+      diff: "diffs/12-milestone-1.diff",
+      checks: "checks/13-milestone-1-checks.txt",
+      reviewEvidence: "reviews/19-milestone-1-review-evidence.md",
+    });
     assert.equal("prompt" in diagnostic, false);
   } finally {
     await context.cleanup();

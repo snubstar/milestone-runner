@@ -17,6 +17,16 @@ test("buildBaseReviewArtifactPaths creates expected review artifact paths", () =
   const reviewPaths = buildBaseReviewArtifactPaths(runPaths, 12);
 
   assert.equal(
+    reviewPaths.files.evidence,
+    path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "19-milestone-12-review-evidence.md",
+    ),
+  );
+  assert.equal(
     reviewPaths.files.review,
     path.resolve("/repo", ".agent-work", "run-1", "reviews", "20-milestone-12-review.json"),
   );
@@ -31,10 +41,12 @@ test("buildBaseReviewArtifactPaths creates expected review artifact paths", () =
     ),
   );
   assert.deepEqual(reviewPaths.statePaths, {
+    evidence: path.join("reviews", "19-milestone-12-review-evidence.md"),
     review: path.join("reviews", "20-milestone-12-review.json"),
     summary: path.join("milestones", "25-milestone-12-review-summary.md"),
   });
   assert.deepEqual(reviewPaths.stateKeys, {
+    evidence: "12-evidence",
     review: "12",
     summary: "12-review",
   });
@@ -81,6 +93,16 @@ test("buildFixAttemptArtifactPaths creates expected fix attempt artifact paths",
     ),
   );
   assert.equal(
+    fixPaths.files.evidence,
+    path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "23-milestone-12-review-evidence-after-fix-3.md",
+    ),
+  );
+  assert.equal(
     fixPaths.files.review,
     path.resolve(
       "/repo",
@@ -94,7 +116,11 @@ test("buildFixAttemptArtifactPaths creates expected fix attempt artifact paths",
     fix: path.join("fixes", "21-milestone-12-fix-attempt-3.md"),
     diff: path.join("diffs", "22-milestone-12-diff-after-fix-3.diff"),
     checks: path.join("checks", "23-milestone-12-checks-after-fix-3.txt"),
+    evidence: path.join("reviews", "23-milestone-12-review-evidence-after-fix-3.md"),
     review: path.join("reviews", "24-milestone-12-review-after-fix-3.json"),
+  });
+  assert.deepEqual(fixPaths.stateKeys, {
+    evidence: "12-fix-3-evidence",
   });
 });
 

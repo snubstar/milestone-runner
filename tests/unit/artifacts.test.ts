@@ -6,6 +6,7 @@ import {
   buildRunPaths,
   buildRunPathsFromRunDir,
   createRunId,
+  isSafeRunId,
   toRunRelativePath,
 } from "../../src/artifacts/paths.js";
 
@@ -19,6 +20,15 @@ test("createRunId adds random entropy by default", () => {
   const runId = createRunId(new Date("2026-05-10T12:34:56.789Z"));
 
   assert.match(runId, /^run-20260510123456789-[0-9a-f]{8}$/);
+});
+
+test("isSafeRunId accepts only run-directory-safe ids", () => {
+  assert.equal(isSafeRunId("run-20260510123456789-deadbeef"), true);
+  assert.equal(isSafeRunId("run-dashboard-1"), true);
+  assert.equal(isSafeRunId("job-1"), false);
+  assert.equal(isSafeRunId("run-../x"), false);
+  assert.equal(isSafeRunId("run-1/2"), false);
+  assert.equal(isSafeRunId("run-"), false);
 });
 
 test("buildRunPaths creates expected run paths", () => {

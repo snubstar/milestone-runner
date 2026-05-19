@@ -269,6 +269,7 @@ test("review prompts expose the expected variables", async () => {
     "implementationReport",
     "latestChecksPassed",
     "milestonePlan",
+    "reviewEvidence",
     "reviewedArtifacts",
     "state",
   ]);
@@ -299,8 +300,12 @@ test("review prompts render with workflow-shaped values", async () => {
     implementationReport: "# Implementation",
     diff: "diff --git a/file b/file",
     checks: "Overall: passed",
+    reviewEvidence: "# Review Evidence\n\n- `npm run test` backed by package.json.",
     latestChecksPassed: true,
-    reviewedArtifacts: ["diffs/12-milestone-1.diff"],
+    reviewedArtifacts: [
+      "diffs/12-milestone-1.diff",
+      "reviews/19-milestone-1-review-evidence.md",
+    ],
     state: { currentPhase: "reviewing" },
   });
   assert.equal(reviewPrompt.ok, true);
@@ -308,6 +313,8 @@ test("review prompts render with workflow-shaped values", async () => {
     assert.match(reviewPrompt.value, /Return only JSON/);
     assert.match(reviewPrompt.value, /Milestone 1/);
     assert.match(reviewPrompt.value, /Overall: passed/);
+    assert.match(reviewPrompt.value, /# Review Evidence/);
+    assert.match(reviewPrompt.value, /review evidence artifact/);
   }
 
   const fixPrompt = renderPrompt(prompts.value["fix-review-findings"]?.text ?? "", {
