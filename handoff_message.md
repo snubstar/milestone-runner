@@ -31,8 +31,3 @@ Verification completed:
 
 The dashboard server was stopped and the temporary smoke repository was cleaned up.
 
-## Next Step
-
-Review the full dirty worktree and prepare the final commit/PR boundary for
-`phase4_plan.md`. Focus on separating intentional Phase 4 changes from
-pre-existing unrelated modifications before staging.
