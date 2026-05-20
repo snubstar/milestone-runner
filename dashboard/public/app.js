@@ -1,3 +1,9 @@
+import {
+  buildLaunchSummaryFields,
+  buildLaunchRequestPayload,
+  goalSourceValidationState,
+} from "./launch-request.js";
+
 const POLL_INTERVAL_MS = 3000;
 const STREAM_REFRESH_DELAY_MS = 500;
 
@@ -17,6 +23,7 @@ const streamEventNames = [
 
 const artifactGroupLabels = {
   goal: "Goal",
+  inputs: "Inputs",
   plans: "Plans",
   milestones: "Milestones",
   diffs: "Diffs",
@@ -52,11 +59,17 @@ const elements = {
   refreshButton: document.querySelector("#refreshButton"),
   launchForm: document.querySelector("#launchForm"),
   launchState: document.querySelector("#launchState"),
+  launchGoalSourceMode: document.querySelector("#launchGoalSourceMode"),
+  launchPromptField: document.querySelector("#launchPromptField"),
   launchPrompt: document.querySelector("#launchPrompt"),
+  launchGoalFileField: document.querySelector("#launchGoalFileField"),
+  launchGoalFilePath: document.querySelector("#launchGoalFilePath"),
   launchRunner: document.querySelector("#launchRunner"),
   launchMilestone: document.querySelector("#launchMilestone"),
   launchPlanPolicy: document.querySelector("#launchPlanPolicy"),
   launchReviewPolicy: document.querySelector("#launchReviewPolicy"),
+  launchContextPaths: document.querySelector("#launchContextPaths"),
+  launchSeedMajorPlanPath: document.querySelector("#launchSeedMajorPlanPath"),
   launchDryRun: document.querySelector("#launchDryRun"),
   launchAllowDirty: document.querySelector("#launchAllowDirty"),
   launchAllowNonGit: document.querySelector("#launchAllowNonGit"),
@@ -89,6 +102,7 @@ const elements = {
   warnings: document.querySelector("#warnings"),
   errorSection: document.querySelector("#errorSection"),
   lastError: document.querySelector("#lastError"),
+  inputsSummary: document.querySelector("#inputsSummary"),
   milestoneTable: document.querySelector("#milestoneTable"),
   latestAction: document.querySelector("#latestAction"),
   timeline: document.querySelector("#timeline"),
@@ -105,6 +119,8 @@ elements.launchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void submitLaunch();
 });
+
+elements.launchGoalSourceMode.addEventListener("change", applyLaunchGoalSourceMode);
 
 elements.resumeForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -138,6 +154,7 @@ window.addEventListener("visibilitychange", () => {
 void init();
 
 async function init() {
+  applyLaunchGoalSourceMode();
   await bootstrap();
   await refreshDashboard({ forceDetail: true });
   schedulePolling();
@@ -264,24 +281,30 @@ async function submitResume() {
 }
 
 function buildLaunchRequest() {
-  const milestone = elements.launchMilestone.value.trim();
-  const request = {
+  return buildLaunchRequestPayload({
+    goalSourceMode: elements.launchGoalSourceMode.value,
     prompt: elements.launchPrompt.value,
+    goalFilePath: elements.launchGoalFilePath.value,
     runner: elements.launchRunner.value,
     dryRun: elements.launchDryRun.checked,
     allowDirty: elements.launchAllowDirty.checked,
     allowNonGitPlanning: elements.launchAllowNonGit.checked,
-  };
+    milestone: elements.launchMilestone.value,
+    milestonePlanPolicy: elements.launchPlanPolicy.value,
+    milestonePlanReviewPolicy: elements.launchReviewPolicy.value,
+    contextPathsText: elements.launchContextPaths.value,
+    seedMajorPlanPath: elements.launchSeedMajorPlanPath.value,
+  });
+}
 
-  if (milestone) request.milestone = Number(milestone);
-  if (elements.launchPlanPolicy.value) {
-    request.milestonePlanPolicy = elements.launchPlanPolicy.value;
-  }
-  if (elements.launchReviewPolicy.value) {
-    request.milestonePlanReviewPolicy = elements.launchReviewPolicy.value;
-  }
-
-  return request;
+function applyLaunchGoalSourceMode() {
+  const validation = goalSourceValidationState(elements.launchGoalSourceMode.value);
+  elements.launchPrompt.required = validation.promptRequired;
+  elements.launchPrompt.disabled = validation.promptDisabled;
+  elements.launchPromptField.classList.toggle("hidden", validation.promptHidden);
+  elements.launchGoalFilePath.required = validation.goalFileRequired;
+  elements.launchGoalFilePath.disabled = validation.goalFileDisabled;
+  elements.launchGoalFileField.classList.toggle("hidden", validation.goalFileHidden);
 }
 
 function buildResumeOptions() {
@@ -435,6 +458,21 @@ function renderLaunchResult(response) {
     .join(" / ");
 
   elements.launchResult.append(title, meta);
+  const summaryFields = buildLaunchSummaryFields(response);
+  if (summaryFields.length > 0) {
+    const summary = document.createElement("dl");
+    summary.className = "launch-summary";
+    for (const field of summaryFields) {
+      const row = document.createElement("div");
+      const label = document.createElement("dt");
+      const value = document.createElement("dd");
+      label.textContent = field.label;
+      value.textContent = field.value;
+      row.append(label, value);
+      summary.append(row);
+    }
+    elements.launchResult.append(summary);
+  }
   if (Array.isArray(response.report?.warnings) && response.report.warnings.length > 0) {
     const warnings = document.createElement("div");
     warnings.className = "policy-diff";
@@ -671,6 +709,7 @@ function renderDetail() {
 
   renderWarnings(run.warnings ?? []);
   renderLastError(run.lastError);
+  renderInputs(run.inputs);
   renderResumeControls(run);
   renderMilestones(run.milestoneStatuses ?? {});
   renderTimeline(run.timeline ?? []);
@@ -697,6 +736,7 @@ function renderDetailError(error) {
     },
   ]);
   renderLastError(null);
+  renderInputs(null);
   renderResumeControls(null);
   renderMilestones({});
   renderTimeline([]);
@@ -727,6 +767,107 @@ function renderWarnings(warnings) {
 function renderLastError(lastError) {
   elements.errorSection.classList.toggle("hidden", !lastError);
   elements.lastError.textContent = lastError ? JSON.stringify(lastError, null, 2) : "";
+}
+
+function renderInputs(inputs) {
+  elements.inputsSummary.replaceChildren();
+
+  if (!inputs) {
+    const empty = document.createElement("div");
+    empty.className = "latest-action muted";
+    empty.textContent = "Unavailable";
+    elements.inputsSummary.append(empty);
+    return;
+  }
+
+  const list = document.createElement("dl");
+  list.className = "input-summary-grid";
+  addInputSummaryRow(list, "Goal source", formatInputGoalSource(inputs.goalSource));
+  addInputSummaryRow(
+    list,
+    "Major plan source",
+    formatInputMajorPlanSource(inputs.majorPlanSource),
+  );
+
+  if (inputs.manifestArtifact) {
+    addInputArtifactRow(list, "Manifest", inputs.manifestArtifact);
+  }
+
+  elements.inputsSummary.append(list);
+
+  const contextFiles = Array.isArray(inputs.context) ? inputs.context : [];
+  if (contextFiles.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "input-context-empty muted";
+    empty.textContent = "No context files";
+    elements.inputsSummary.append(empty);
+    return;
+  }
+
+  const contextList = document.createElement("ul");
+  contextList.className = "input-context-list";
+  for (const context of contextFiles) {
+    const item = document.createElement("li");
+    const title = document.createElement("div");
+    title.className = "input-context-title";
+    if (context.artifact) {
+      title.append(createArtifactAnchor(context.artifact, context.path));
+    } else {
+      title.textContent = context.path;
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "artifact-meta";
+    meta.textContent = [
+      context.artifactPath,
+      formatBytes(context.sizeBytes),
+      context.sha256,
+      context.artifact ? null : "artifact unavailable",
+    ]
+      .filter(Boolean)
+      .join(" / ");
+
+    item.append(title, meta);
+    contextList.append(item);
+  }
+  elements.inputsSummary.append(contextList);
+}
+
+function addInputSummaryRow(list, label, value) {
+  const wrapper = document.createElement("div");
+  const term = document.createElement("dt");
+  const description = document.createElement("dd");
+  term.textContent = label;
+  description.textContent = value ?? "-";
+  wrapper.append(term, description);
+  list.append(wrapper);
+}
+
+function addInputArtifactRow(list, label, artifact) {
+  const wrapper = document.createElement("div");
+  const term = document.createElement("dt");
+  const description = document.createElement("dd");
+  term.textContent = label;
+  description.append(createArtifactAnchor(artifact, artifact.label || artifact.relativePath));
+  wrapper.append(term, description);
+  list.append(wrapper);
+}
+
+function createArtifactAnchor(artifact, label) {
+  if (!artifact.exists) {
+    const missing = document.createElement("span");
+    missing.className = "artifact-link missing";
+    missing.textContent = label || artifact.relativePath;
+    return missing;
+  }
+
+  const anchor = document.createElement("a");
+  anchor.className = "artifact-link";
+  anchor.textContent = label || artifact.relativePath;
+  anchor.href = artifact.href;
+  anchor.target = "_blank";
+  anchor.rel = "noreferrer";
+  return anchor;
 }
 
 function renderMilestones(statuses) {
@@ -1227,6 +1368,24 @@ function resumeIsTerminal(run) {
 
 function timelineTitle(event) {
   return formatStatus(event.event || "unknown");
+}
+
+function formatInputGoalSource(goalSource) {
+  if (goalSource?.type === "file") {
+    return goalSource.path ? `file: ${goalSource.path}` : "file";
+  }
+  return "prompt";
+}
+
+function formatInputMajorPlanSource(majorPlanSource) {
+  if (majorPlanSource?.type === "seed") {
+    const source = majorPlanSource.path ? `seeded from ${majorPlanSource.path}` : "seeded";
+    const metadata = [formatBytes(majorPlanSource.sizeBytes), majorPlanSource.sha256]
+      .filter(Boolean)
+      .join(" / ");
+    return metadata ? `${source} (${metadata})` : source;
+  }
+  return "runner";
 }
 
 function formatDateTime(value) {

@@ -599,6 +599,7 @@ export async function runImplementationWorkflow(
     return resolveOutputSchemaPathForPhase({
       phase,
       cwd: options.cwd,
+      schemaRoot: options.schemaRoot,
     });
   }
 

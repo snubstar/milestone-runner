@@ -121,6 +121,53 @@ test("validateConfig accepts extended codex runner options", () => {
   }
 });
 
+test("validateConfig preserves optional runner account label", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "codex-exec",
+      command: "codex",
+      accountLabel: "work-codex",
+      options: {
+        sandboxForPlanning: "read-only",
+        sandboxForImplementation: "workspace-write",
+        approvalPolicy: "on-request",
+        profile: "work-profile",
+      },
+    },
+    maxFixAttempts: 2,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const runner = result.value.runner as typeof result.value.runner & {
+      accountLabel?: string;
+    };
+    assert.equal(runner.accountLabel, "work-codex");
+    assert.equal(result.value.runner.options?.profile, "work-profile");
+  }
+});
+
+test("validateConfig rejects invalid runner account labels", () => {
+  for (const accountLabel of ["", "   ", 42]) {
+    const result = validateConfig({
+      checks: [],
+      runner: {
+        type: "fake",
+        accountLabel,
+      },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /runner\.accountLabel/);
+    }
+  }
+});
+
 test("validateConfig defaults missing milestone plan policy to always", () => {
   const result = validateConfig({
     checks: [],

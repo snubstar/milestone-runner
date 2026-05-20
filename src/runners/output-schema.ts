@@ -17,11 +17,14 @@ export function outputSchemaRelativePathForPhase(phase: string): string | null {
 export async function resolveOutputSchemaPathForPhase(options: {
   phase: string;
   cwd: string;
+  schemaRoot?: string;
 }): Promise<OutputSchemaResult> {
   const relativePath = outputSchemaRelativePathForPhase(options.phase);
   if (relativePath === null) return { ok: true };
 
-  const schemaPath = path.resolve(options.cwd, relativePath);
+  const schemaPath = options.schemaRoot === undefined
+    ? path.resolve(options.cwd, relativePath)
+    : path.resolve(options.schemaRoot, path.relative("schemas", relativePath));
   try {
     await access(schemaPath);
   } catch (error) {

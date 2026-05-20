@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -119,6 +119,10 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /Mode: new/);
     assert.match(result.stdout, /Allowed: true/);
     assert.match(result.stdout, /Next action: run_full_goal/);
+    assert.match(result.stdout, /invocationCwd: /);
+    assert.match(result.stdout, /targetCwd: /);
+    assert.match(result.stdout, /goalSource: argv/);
+    assert.match(result.stdout, /contextInputs: none/);
     assert.match(result.stdout, /runner: fake/);
     assert.match(result.stdout, /maxFixAttempts: 0/);
     assert.match(result.stdout, /milestonePlanPolicy: always/);
@@ -171,6 +175,97 @@ test("main prints machine-readable dry-run JSON", async () => {
   }
 });
 
+test("main dry-run JSON reports target repo and initial inputs", async () => {
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const targetRepo = await createCliFixtureRepo({ copyResources: false });
+  try {
+    await mkdir(path.join(targetRepo, "docs"), { recursive: true });
+    await writeFile(
+      path.join(targetRepo, "docs", "task.md"),
+      "Implement task from a file.\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(targetRepo, "docs", "architecture.md"),
+      "# Architecture\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(targetRepo, "docs", "major-plan.md"),
+      "# Seeded Major Plan\n",
+      "utf8",
+    );
+    await git(targetRepo, [
+      "add",
+      "docs/task.md",
+      "docs/architecture.md",
+      "docs/major-plan.md",
+    ]);
+    await git(targetRepo, [
+      "-c",
+      "user.name=Agent Orchestrator Test",
+      "-c",
+      "user.email=agent-orchestrator@example.invalid",
+      "commit",
+      "-m",
+      "add input docs",
+    ]);
+
+    const result = await runMainInRepo(invocationDir, [
+      "--repo",
+      targetRepo,
+      "--dry-run",
+      "--json",
+      "--run-id",
+      "run-input-dry-run",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--goal-file",
+      "docs/task.md",
+      "--seed-major-plan",
+      "docs/major-plan.md",
+      "--context",
+      "README.md",
+      "--context",
+      "docs/architecture.md",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    const report = JSON.parse(result.stdout) as {
+      nextAction: string;
+      details: {
+        invocationCwd: string;
+        targetCwd: string;
+        goalSource: string;
+        majorPlanSource: { type: string; path: string | null };
+        contextInputs: string;
+        runDir: string;
+      };
+    };
+    assert.equal(report.details.invocationCwd, await realpath(invocationDir));
+    assert.equal(report.details.targetCwd, await realpath(targetRepo));
+    assert.equal(report.details.goalSource, "file:docs/task.md");
+    assert.equal(report.nextAction, "review_seeded_major_plan");
+    assert.deepEqual(report.details.majorPlanSource, {
+      type: "seed",
+      path: "docs/major-plan.md",
+    });
+    assert.equal(report.details.contextInputs, "README.md, docs/architecture.md");
+    assert.equal(
+      report.details.runDir,
+      path.join(await realpath(targetRepo), ".agent-work", "run-input-dry-run"),
+    );
+    await assert.rejects(() => readdir(path.join(targetRepo, ".agent-work")), /ENOENT/);
+    await assert.rejects(() => readdir(path.join(invocationDir, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(targetRepo, { recursive: true, force: true });
+    await rm(invocationDir, { recursive: true, force: true });
+  }
+});
+
 test("main prints machine-readable final run JSON with an explicit run id", async () => {
   const repo = await createCliFixtureRepo();
   try {
@@ -214,6 +309,376 @@ test("main prints machine-readable final run JSON with an explicit run id", asyn
     assert.equal(state.runId, "run-dashboard-real");
   } finally {
     await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main targets a separate repo without requiring bundled resources in the target", async () => {
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const targetRepo = await createCliFixtureRepo({ copyResources: false });
+  try {
+    await assert.rejects(
+      () => readdir(path.join(targetRepo, "src", "prompts")),
+      /ENOENT/,
+    );
+    await assert.rejects(
+      () => readdir(path.join(targetRepo, "schemas")),
+      /ENOENT/,
+    );
+
+    const result = await runMainInRepo(invocationDir, [
+      "--repo",
+      targetRepo,
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /Mode: new/);
+    assert.match(result.stdout, /Planning only: true/);
+
+    const state = await readOnlyRunState(targetRepo) as RunState & {
+      workspace?: { invocationCwd: string; targetCwd: string };
+    };
+    assert.equal(state.workspace?.targetCwd, await realpath(targetRepo));
+    assert.equal(state.workspace?.invocationCwd, await realpath(invocationDir));
+    await assert.rejects(
+      () => readdir(path.join(invocationDir, ".agent-work")),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(targetRepo, { recursive: true, force: true });
+    await rm(invocationDir, { recursive: true, force: true });
+  }
+});
+
+test("main records goal-file and context inputs as run artifacts", async () => {
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const targetRepo = await createCliFixtureRepo({ copyResources: false });
+  try {
+    await mkdir(path.join(targetRepo, "docs"), { recursive: true });
+    await writeFile(
+      path.join(targetRepo, "docs", "task.md"),
+      "Implement task from a file.\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(targetRepo, "docs", "architecture.md"),
+      "# Architecture\n",
+      "utf8",
+    );
+    await git(targetRepo, ["add", "docs/task.md", "docs/architecture.md"]);
+    await git(targetRepo, [
+      "-c",
+      "user.name=Agent Orchestrator Test",
+      "-c",
+      "user.email=agent-orchestrator@example.invalid",
+      "commit",
+      "-m",
+      "add input docs",
+    ]);
+
+    const result = await runMainInRepo(invocationDir, [
+      "--repo",
+      targetRepo,
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--goal-file",
+      "docs/task.md",
+      "--context",
+      "README.md",
+      "--context",
+      "docs/architecture.md",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    const state = await readOnlyRunState(targetRepo) as RunState & {
+      inputs?: {
+        goalSource: { type: string; path: string | null };
+        context: Array<{ path: string; artifactPath: string; sha256: string }>;
+      };
+      artifacts: RunState["artifacts"] & {
+        inputs?: { manifest: string; context?: Record<string, string> };
+      };
+    };
+    assert.equal(state.goal, "Implement task from a file.\n");
+    assert.equal(state.inputs?.goalSource.type, "file");
+    assert.equal(state.inputs?.goalSource.path, "docs/task.md");
+    assert.deepEqual(
+      state.inputs?.context.map((entry) => entry.path),
+      ["README.md", "docs/architecture.md"],
+    );
+    assert.equal(state.artifacts.inputs?.manifest, path.join("inputs", "01-inputs.json"));
+    const manifest = JSON.parse(
+      await readFile(
+        path.join(state.runDir, state.artifacts.inputs?.manifest ?? ""),
+        "utf8",
+      ),
+    ) as { context: Array<{ path: string }> };
+    assert.deepEqual(
+      manifest.context.map((entry) => entry.path),
+      ["README.md", "docs/architecture.md"],
+    );
+  } finally {
+    await rm(targetRepo, { recursive: true, force: true });
+    await rm(invocationDir, { recursive: true, force: true });
+  }
+});
+
+test("main uses a seeded major plan in planning-only runs", async () => {
+  const repo = await createCliFixtureRepo();
+  const seedText = "# Operator Major Plan\n\nUse this prepared plan.";
+  try {
+    await mkdir(path.join(repo, "docs"), { recursive: true });
+    await writeFile(path.join(repo, "docs", "major-plan.md"), seedText, "utf8");
+    await git(repo, ["add", "docs/major-plan.md"]);
+    await git(repo, [
+      "-c",
+      "user.name=Agent Orchestrator Test",
+      "-c",
+      "user.email=agent-orchestrator@example.invalid",
+      "commit",
+      "-m",
+      "add seeded major plan",
+    ]);
+
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--seed-major-plan",
+      "docs/major-plan.md",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Major plan source: seeded from docs\/major-plan\.md/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "ready_for_milestone");
+    assert.equal(state.inputs?.majorPlanSource?.type, "seed");
+    assert.equal(state.inputs?.majorPlanSource?.path, "docs/major-plan.md");
+    assert.equal(state.inputs?.majorPlanSource?.sizeBytes, Buffer.byteLength(seedText));
+    assert.equal(typeof state.inputs?.majorPlanSource?.sha256, "string");
+    assert.equal(state.artifacts.majorPlan, path.join("plans", "01-major-plan.md"));
+    assert.equal(
+      await readFile(path.join(state.runDir, state.artifacts.majorPlan ?? ""), "utf8"),
+      `${seedText}\n`,
+    );
+    assert.doesNotMatch(
+      await readFile(path.join(state.runDir, state.artifacts.majorPlan ?? ""), "utf8"),
+      /# Fake Major Plan/,
+    );
+
+    const manifest = JSON.parse(
+      await readFile(path.join(state.runDir, state.artifacts.inputs?.manifest ?? ""), "utf8"),
+    ) as {
+      majorPlanSource?: {
+        type: string;
+        path: string;
+        sizeBytes: number;
+        sha256: string;
+      };
+    };
+    assert.deepEqual(manifest.majorPlanSource, {
+      type: "seed",
+      path: "docs/major-plan.md",
+      sizeBytes: Buffer.byteLength(seedText),
+      sha256: state.inputs?.majorPlanSource?.sha256,
+    });
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main uses a seeded major plan in full fake runs", async () => {
+  const repo = await createCliFixtureRepo();
+  const seedText = "# Operator Full Run Plan\n\nUse this prepared plan.";
+  try {
+    await mkdir(path.join(repo, "docs"), { recursive: true });
+    await writeFile(path.join(repo, "docs", "major-plan.md"), seedText, "utf8");
+    await git(repo, ["add", "docs/major-plan.md"]);
+    await git(repo, [
+      "-c",
+      "user.name=Agent Orchestrator Test",
+      "-c",
+      "user.email=agent-orchestrator@example.invalid",
+      "commit",
+      "-m",
+      "add seeded major plan",
+    ]);
+
+    const result = await runMainInRepo(repo, [
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--seed-major-plan",
+      "docs/major-plan.md",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Planning only: false/);
+    assert.match(result.stdout, /State: passed/);
+
+    const state = await readOnlyRunState(repo);
+    assert.equal(state.currentPhase, "passed");
+    assert.equal(state.inputs?.majorPlanSource?.type, "seed");
+    assert.equal(
+      await readFile(path.join(state.runDir, state.artifacts.majorPlan ?? ""), "utf8"),
+      `${seedText}\n`,
+    );
+    assert.match(
+      await readFile(path.join(repo, "fake-milestone-1-implementation.txt"), "utf8"),
+      /Fake milestone implementation/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects invalid seed major plans before creating run artifacts", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    await mkdir(path.join(repo, "docs"), { recursive: true });
+    await writeFile(path.join(repo, "docs", "empty-major-plan.md"), " \n", "utf8");
+
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--seed-major-plan",
+      "docs/empty-major-plan.md",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Seed major plan file must not be empty/);
+    assert.equal(result.stdout, "");
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects invalid UTF-8 goal files before creating run artifacts", async () => {
+  const repo = await createCliFixtureRepo();
+  try {
+    await mkdir(path.join(repo, "docs"), { recursive: true });
+    await writeFile(path.join(repo, "docs", "invalid-goal.md"), Buffer.from([0xff]));
+
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--goal-file",
+      "docs/invalid-goal.md",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Goal file must be valid UTF-8/);
+    assert.equal(result.stdout, "");
+    await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("main rejects unsafe artifact roots before creating run artifacts", async () => {
+  for (const artifactRoot of ["/tmp/agent-orchestrator-outside", "../outside", "."]) {
+    const repo = await createCliFixtureRepo();
+    try {
+      const result = await runMainInRepo(repo, [
+        "--dry-run",
+        "--runner",
+        "fake",
+        "--config",
+        "orchestrator.config.json",
+        "--artifact-root",
+        artifactRoot,
+        "Add feature X",
+      ]);
+
+      assert.equal(result.exitCode, 1);
+      assert.match(`${result.stdout}\n${result.stderr}`, /artifactRoot|artifact root/i);
+      await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  }
+});
+
+test("main rejects symlink artifact roots before creating run artifacts", async () => {
+  const repo = await createCliFixtureRepo();
+  const outside = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-outside-"));
+  try {
+    await symlink(outside, path.join(repo, ".agent-work"));
+
+    const result = await runMainInRepo(repo, [
+      "--planning-only",
+      "--allow-non-git-planning",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "Add feature X",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(`${result.stdout}\n${result.stderr}`, /symbolic link/i);
+    assert.deepEqual(await readdir(outside), []);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("main rejects sibling-prefix goal and context paths before runner calls", async () => {
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const targetRepo = await createCliFixtureRepo({ copyResources: false });
+  const siblingDir = `${targetRepo}-other`;
+  try {
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(path.join(siblingDir, "task.md"), "outside goal\n", "utf8");
+    await writeFile(path.join(siblingDir, "context.md"), "outside context\n", "utf8");
+
+    const escapedGoal = path.relative(targetRepo, path.join(siblingDir, "task.md"));
+    const escapedContext = path.relative(targetRepo, path.join(siblingDir, "context.md"));
+    const result = await runMainInRepo(invocationDir, [
+      "--repo",
+      targetRepo,
+      "--planning-only",
+      "--runner",
+      "fake",
+      "--config",
+      "orchestrator.config.json",
+      "--goal-file",
+      escapedGoal,
+      "--context",
+      escapedContext,
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(`${result.stdout}\n${result.stderr}`, /outside the target|inside the target|escapes/i);
+    await assert.rejects(() => readdir(path.join(targetRepo, ".agent-work")), /ENOENT/);
+  } finally {
+    await rm(siblingDir, { recursive: true, force: true });
+    await rm(targetRepo, { recursive: true, force: true });
+    await rm(invocationDir, { recursive: true, force: true });
   }
 });
 
@@ -1106,7 +1571,11 @@ type CliFixtureRunnerConfig =
     };
 
 async function createCliFixtureRepo(
-  options: { runner?: CliFixtureRunnerConfig; checks?: string[] } = {},
+  options: {
+    runner?: CliFixtureRunnerConfig;
+    checks?: string[];
+    copyResources?: boolean;
+  } = {},
 ): Promise<string> {
   const repo = await createCliFixtureProject(options);
 
@@ -1126,7 +1595,11 @@ async function createCliFixtureRepo(
 }
 
 async function createCliFixtureProject(
-  options: { runner?: CliFixtureRunnerConfig; checks?: string[] } = {},
+  options: {
+    runner?: CliFixtureRunnerConfig;
+    checks?: string[];
+    copyResources?: boolean;
+  } = {},
 ): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-cli-"));
   await writeFile(path.join(repo, ".gitignore"), ".agent-work/\n", "utf8");
@@ -1148,12 +1621,14 @@ async function createCliFixtureProject(
     "utf8",
   );
 
-  await cp(path.join(projectRoot, "src", "prompts"), path.join(repo, "src", "prompts"), {
-    recursive: true,
-  });
-  await cp(path.join(projectRoot, "schemas"), path.join(repo, "schemas"), {
-    recursive: true,
-  });
+  if (options.copyResources !== false) {
+    await cp(path.join(projectRoot, "src", "prompts"), path.join(repo, "src", "prompts"), {
+      recursive: true,
+    });
+    await cp(path.join(projectRoot, "schemas"), path.join(repo, "schemas"), {
+      recursive: true,
+    });
+  }
 
   return repo;
 }

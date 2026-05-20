@@ -815,6 +815,7 @@ export async function runReviewWorkflow(
     return resolveOutputSchemaPathForPhase({
       phase,
       cwd: options.cwd,
+      schemaRoot: options.schemaRoot,
     });
   }
 

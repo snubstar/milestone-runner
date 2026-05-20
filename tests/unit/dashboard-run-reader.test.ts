@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -113,6 +113,166 @@ test("readDashboardRun exposes review evidence artifacts in the reviews group", 
       assert.equal(result.run.artifacts.reviews[1]?.exists, true);
       assert.equal(result.run.artifacts.reviews[1]?.source, "state");
       assert.equal(result.run.artifacts.reviews[1]?.milestoneId, 1);
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readDashboardRun exposes normalized input provenance with safe artifact links", async () => {
+  const context = await createDashboardRunContext("run-inputs");
+  try {
+    await mkdir(path.join(context.paths.dirs.inputs, "context"), { recursive: true });
+    await writeTextArtifact(
+      path.join(context.paths.dirs.inputs, "01-inputs.json"),
+      "{}",
+    );
+    await writeTextArtifact(
+      path.join(context.paths.dirs.inputs, "context", "01-README.md"),
+      "# README",
+    );
+    await writeDashboardState(context.paths, {
+      inputs: {
+        goalSource: { type: "file", path: "docs/task.md" },
+        majorPlanSource: {
+          type: "seed",
+          path: "docs/major-plan.md",
+          sizeBytes: 123,
+          sha256: "seed-sha",
+        },
+        context: [
+          {
+            path: "README.md",
+            artifactPath: "inputs/context/01-README.md",
+            sizeBytes: 10,
+            sha256: "context-sha",
+          },
+        ],
+      },
+      artifacts: {
+        inputs: {
+          manifest: "inputs/01-inputs.json",
+          context: { "README.md": "inputs/context/01-README.md" },
+        },
+      },
+    });
+
+    const result = await readDashboardRun(readerOptions(context, "run-inputs"));
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.run.inputs?.goalSource, {
+        type: "file",
+        path: "docs/task.md",
+      });
+      assert.deepEqual(result.run.inputs?.majorPlanSource, {
+        type: "seed",
+        path: "docs/major-plan.md",
+        sizeBytes: 123,
+        sha256: "seed-sha",
+      });
+      assert.equal(result.run.inputs?.manifestArtifact?.relativePath, "inputs/01-inputs.json");
+      assert.equal(result.run.inputs?.context[0]?.path, "README.md");
+      assert.equal(
+        result.run.inputs?.context[0]?.artifact?.relativePath,
+        "inputs/context/01-README.md",
+      );
+      assert.deepEqual(
+        result.run.artifacts.inputs.map((artifact) => artifact.relativePath),
+        ["inputs/01-inputs.json", "inputs/context/01-README.md"],
+      );
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readDashboardRun keeps legacy states without input provenance readable", async () => {
+  const context = await createDashboardRunContext("run-legacy-inputs");
+  try {
+    await writeDashboardState(context.paths, {});
+
+    const result = await readDashboardRun(readerOptions(context, "run-legacy-inputs"));
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.run.inputs, undefined);
+      assert.deepEqual(result.run.artifacts.inputs, []);
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readDashboardRun defaults missing major plan input provenance to runner", async () => {
+  const context = await createDashboardRunContext("run-inputs-default-major-plan");
+  try {
+    await writeDashboardState(context.paths, {
+      inputs: {
+        goalSource: { type: "argv", path: null },
+        context: [],
+      },
+    });
+
+    const result = await readDashboardRun(
+      readerOptions(context, "run-inputs-default-major-plan"),
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.run.inputs?.majorPlanSource, {
+        type: "runner",
+        path: null,
+      });
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readDashboardRun preserves unsafe input artifact text without exposing a link", async () => {
+  const context = await createDashboardRunContext("run-inputs-unsafe-artifact");
+  try {
+    await writeTextArtifact(
+      path.join(context.paths.dirs.inputs, "01-inputs.json"),
+      "{}",
+    );
+    await writeDashboardState(context.paths, {
+      inputs: {
+        goalSource: { type: "argv", path: null },
+        context: [
+          {
+            path: "README.md",
+            artifactPath: "../secret.md",
+            sizeBytes: 10,
+            sha256: "context-sha",
+          },
+        ],
+      },
+      artifacts: {
+        inputs: {
+          manifest: "inputs/01-inputs.json",
+          context: { "README.md": "../secret.md" },
+        },
+      },
+    });
+
+    const result = await readDashboardRun(
+      readerOptions(context, "run-inputs-unsafe-artifact"),
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.run.inputs?.context[0]?.artifactPath, "../secret.md");
+      assert.equal(result.run.inputs?.context[0]?.artifact, null);
+      assert.deepEqual(
+        result.run.artifacts.inputs.map((artifact) => artifact.relativePath),
+        ["inputs/01-inputs.json"],
+      );
+      assert.equal(
+        result.run.warnings.some((warning) => warning.code === "artifact_path_invalid"),
+        true,
+      );
     }
   } finally {
     await rm(context.tempDir, { recursive: true, force: true });

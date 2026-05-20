@@ -17,6 +17,7 @@ import type {
 export interface CodexExecRunnerConfig {
   command: string;
   options: CodexExecRunnerOptions;
+  accountLabel?: string;
   commandRunner?: CommandRunner;
 }
 
@@ -24,11 +25,13 @@ export class CodexExecRunner implements AgentRunner {
   readonly type = "codex-exec";
   readonly command: string;
   readonly options: CodexExecRunnerOptions;
+  readonly accountLabel?: string;
   private readonly commandRunner: CommandRunner;
 
   constructor(config: CodexExecRunnerConfig) {
     this.command = config.command;
     this.options = config.options;
+    this.accountLabel = config.accountLabel;
     this.commandRunner = config.commandRunner ?? nodeCommandRunner;
   }
 
@@ -87,6 +90,8 @@ export class CodexExecRunner implements AgentRunner {
         phase: request.phase,
         sandbox,
         approvalPolicy: this.options.approvalPolicy,
+        accountLabel: this.accountLabel,
+        profile: this.options.profile,
         timeoutMs: this.options.timeoutMs,
         timedOut: Boolean(commandResult.timedOut),
         stdout: commandResult.stdout,

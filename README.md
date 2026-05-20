@@ -111,7 +111,10 @@ These fields make safety decisions auditable after the run completes or stops.
 
 ## Artifacts
 
-Run output belongs under `.agent-work/<run-id>/`.
+Run output belongs under `.agent-work/<run-id>/` by default. The artifact root
+is always resolved relative to the selected target repository, and absolute or
+escaping artifact roots are rejected so generated run files stay inside that
+target.
 
 The run id should be unique and stable for the life of a workflow. A timestamp-based id is acceptable for the prototype.
 
@@ -121,6 +124,10 @@ Initial run layout:
 .agent-work/<run-id>/
   00-goal.txt
   state.json
+  inputs/
+    01-inputs.json
+    context/
+      01-<source-basename>
   logs/
     run.log
     timeline.jsonl
@@ -353,6 +360,14 @@ Finding fields:
 
 The example configuration lives in [orchestrator.config.example.json](./orchestrator.config.example.json). Local runtime configuration should use `orchestrator.config.json`, which is ignored by Git.
 
+Configuration is loaded from the target repository, not necessarily from the
+directory where the CLI was invoked. By default the loader looks for
+`orchestrator.config.json` in the target repository and then falls back to
+`orchestrator.config.example.json` in that same target. A relative `--config`
+path is also resolved inside the target repository; an absolute `--config` path
+is allowed for operators who intentionally keep a central config file. Resume
+runs use the config snapshot saved in state and do not accept `--config`.
+
 Initial config shape:
 
 ```json
@@ -381,9 +396,10 @@ Config fields:
 - `checks`: deterministic shell commands to run during verification phases. An empty array is valid for early prototypes, but later workflow output must report that no checks were configured.
 - `runner.type`: selected agent runner adapter. Initial supported values are `codex-exec` and `fake`.
 - `runner.command`: executable command for real subprocess-backed runners. For `codex-exec`, this is required; the example config sets it to `codex`.
+- `runner.accountLabel`: optional human label for the Codex account you intend this config to use. It is reported in dry-run, final reports, and diagnostics, but it does not authenticate or switch accounts by itself.
 - `runner.options`: adapter-specific options. Codex-specific sandbox, approval, timeout, model/profile, and JSON event settings belong here rather than at the top level.
 - `maxFixAttempts`: maximum number of review/fix retries before stopping.
-- `artifactRoot`: root directory for generated run artifacts.
+- `artifactRoot`: root directory for generated run artifacts, relative to the target repository. Absolute paths, `..` escapes, and malformed relative paths are rejected.
 - `milestonePlanPolicy`: per-milestone implementation plan policy. Missing values default to `always`.
 - `milestonePlanReviewPolicy`: per-milestone implementation plan review policy. Missing values default to `normal`.
 
@@ -487,7 +503,11 @@ node dist/cli/main.js --resume <run-dir-or-id> [options]
 Common options:
 
 - `--config <path>`: load a config file for a new run.
-- `--artifact-root <path>`: set the generated artifact root.
+- `--repo <path>`: select the target repository/workspace. Defaults to the current directory.
+- `--artifact-root <path>`: set the generated artifact root relative to the target repository.
+- `--goal-file <path>`: read the initial goal from a file in the target repository instead of from argv.
+- `--context <path>`: attach a file in the target repository as initial context. Repeat for multiple files.
+- `--seed-major-plan <path>`: use a target-repository file as the draft major plan and start runner planning at plan review.
 - `--runner fake|codex-exec`: override the configured runner for a new run.
 - `--planning-only`: stop after planning and milestone metadata generation.
 - `--dry-run`: validate and report the next action without writing workflow artifacts or calling runners.
@@ -498,6 +518,133 @@ Common options:
 - `--milestone-plan-review-policy normal|scrupulous`: override the per-milestone implementation plan review policy for this invocation.
 - `--allow-dirty`: allow implementation-capable runs or resumes from a dirty working tree.
 - `--allow-non-git-planning`: allow planning-only operation outside a Git repository.
+
+### Target Repositories
+
+By default, the target repository is the current directory. Existing commands
+still work when you run the built CLI from the repository you want the agent to
+inspect or edit:
+
+```bash
+cd /path/to/target-repo
+node /path/to/orchestrator/dist/cli/main.js --runner fake "example goal"
+```
+
+You can also run from the orchestrator checkout and point at a separate target:
+
+```bash
+node dist/cli/main.js --repo /path/to/target-repo --runner fake "example goal"
+```
+
+Runner work, Git preflight checks, configured checks, fake-runner output,
+artifacts, and relative `--config`, `--goal-file`, `--context`,
+`--seed-major-plan`, and `--artifact-root` paths all operate inside the selected
+target repository.
+Bundled prompts and JSON schemas still come from the orchestrator checkout or
+installed package, so the target repository does not need a copy of
+`src/prompts/` or `schemas/`.
+
+Resume by run id looks under `<target-repo>/<artifactRoot>/<run-id>/state.json`.
+Direct-path resume uses the saved `workspace.targetCwd` when present, and an
+explicit `--repo` must match the saved target or saved Git root.
+
+### Initial Inputs
+
+Use `--goal-file` when the prompt is large or should be versioned in the target
+repository:
+
+```bash
+node dist/cli/main.js --goal-file tasks/goal.md --runner fake
+```
+
+Use repeated `--context` flags to attach repository files that should be shown
+to planning:
+
+```bash
+node dist/cli/main.js --runner fake \
+  --context README.md \
+  --context docs/architecture.md \
+  "Update the documented architecture"
+```
+
+`--goal-file` cannot be combined with an argv goal, and `--goal-file` and
+`--context` are for new runs only. Goal and context paths may be relative or
+absolute, but after `realpath` they must resolve inside the target repository;
+symlinks that escape the target are rejected. The goal file limit is 1 MiB,
+each context file is limited to 512 KiB, and all context files together are
+limited to 2 MiB. Non-dry runs write an input manifest to
+`inputs/01-inputs.json`, copy context snapshots under `inputs/context/`, and
+record input sizes and hashes in state.
+
+### Seeded Major Plans
+
+Use `--seed-major-plan` when the first draft of the major plan already exists
+in the target repository:
+
+```bash
+node dist/cli/main.js --runner fake \
+  --goal-file tasks/goal.md \
+  --seed-major-plan tasks/major-plan.md
+```
+
+The seed file must resolve inside the target repository after symlink
+resolution. It must be valid non-empty UTF-8 text and is limited to 1 MiB. A
+seed file may also be passed as `--context` when you want it listed with the
+other operator-provided context.
+
+Seeded mode treats the file as the draft `major_plan` output. Non-dry runs copy
+it to the canonical plan artifact, `plans/01-major-plan.md`, record source
+metadata in `inputs/01-inputs.json` and `state.json`, and make the source
+visible in dry-run and final reports. Seeded mode skips only the
+runner-generated `major_plan` phase. The seeded draft still goes through
+`major_plan_review`, final major-plan generation, milestone JSON generation,
+and the normal milestone workflow.
+
+Resume does not accept a new `--seed-major-plan` value. Seeded runs resume from
+saved state: if `plans/01-major-plan.md` exists, it is reused; otherwise the
+saved source path and hash are checked before recreating the artifact. Changed
+or missing seed inputs fail the resume instead of silently generating a new
+major plan.
+
+The dashboard launch form exposes the same intake model for new runs: prompt or
+repository-relative goal file, optional repository-relative context paths, and
+an optional repository-relative seeded major-plan path. Use the dry-run preview
+before a live dashboard launch to confirm the target repository, artifact root,
+goal source, context inputs, major-plan source, runner profile/account label,
+and next action.
+
+### Local Dashboard
+
+Start the localhost dashboard from this checkout:
+
+```bash
+npm run dashboard
+```
+
+To serve the dashboard from this checkout while operating on a separate target
+repository, pass `--repo`:
+
+```bash
+npm run dashboard -- --repo /path/to/target-repo --artifact-root .agent-work
+```
+
+The dashboard still uses the built CLI for launch and resume actions. Browser
+launch paths are target-repository-relative only:
+
+- choose `Prompt` and enter prompt text, or choose `Goal file` and enter a path
+  such as `tasks/goal.md`;
+- enter context paths one per line, such as `README.md` and
+  `docs/architecture.md`;
+- enter a seed plan path such as `tasks/major-plan.md` when the first draft
+  major plan already exists;
+- leave `Dry run` checked to preview the resolved launch before unchecking it
+  for a live run.
+
+Run detail includes an `Inputs` section showing the saved goal source, context
+snapshot links, seeded major-plan metadata, and input manifest link. If the
+dashboard fails to start or a browser action fails, run the equivalent CLI
+command directly; the dashboard is an operator surface over the same CLI
+contract, not a separate execution engine.
 
 ### Deterministic Fake Runs
 
@@ -577,7 +724,8 @@ Prerequisites for `codex-exec`:
 - The target directory is a Git repository.
 - Implementation-capable runs have at least one commit.
 - The working tree is clean unless you pass `--allow-dirty`.
-- `orchestrator.config.json` exists or the example config is acceptable for the run.
+- `orchestrator.config.json` exists in the target repository, an absolute
+  `--config` is supplied, or the target repository's example config is acceptable.
 - Configured checks are recommended so acceptance is not based only on review output.
 
 Create a local config when you want to customize checks, timeouts, model/profile, or artifact root:
@@ -633,6 +781,13 @@ node dist/cli/main.js --allow-dirty --runner codex-exec --milestone 1 \
 ```
 
 The run state records both `dirtyAtStart` and `dirtyOverride`, and the CLI prints a dirty-tree warning before execution.
+
+Codex authentication is controlled by the Codex CLI environment, not by the
+orchestrator. `runner.options.profile` is passed as the Codex profile when set,
+and `runner.accountLabel` is an operator-facing label that appears in dry-run
+output, final JSON, and diagnostics. The pipeline reports the configured
+profile and label, but it cannot prove which remote Codex account the CLI will
+use beyond the local Codex CLI behavior.
 
 Inspect the newest run:
 

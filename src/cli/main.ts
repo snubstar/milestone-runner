@@ -2,6 +2,10 @@
 
 import { fileURLToPath } from "node:url";
 
+import {
+  assertArtifactRootPathSafe,
+  normalizeArtifactRoot,
+} from "../artifacts/artifact-root.js";
 import { buildRunPaths, createRunId } from "../artifacts/paths.js";
 import { createRunDirectory, writeRunLog } from "../artifacts/run-directory.js";
 import {
@@ -29,6 +33,10 @@ import {
 import { validateEnvironment, type EnvironmentDiagnostic } from "../diagnostics/environment-validator.js";
 import type { GitMetadata } from "../git/git-types.js";
 import { runGitPreflight } from "../git/git-preflight.js";
+import {
+  resolveInitialInputs,
+  writeInitialInputArtifacts,
+} from "../inputs/initial-inputs.js";
 import { runGoalWorkflow } from "../orchestration/goal-workflow.js";
 import { createAgentRunner } from "../runners/create-runner.js";
 import { nodeCommandRunner } from "../shell/command-runner.js";
@@ -40,6 +48,8 @@ import {
   nextTimelineInvocationId,
 } from "../timings/state-timeline.js";
 import { createTimingWarningCollector } from "../timings/timing-types.js";
+import { resolveOrchestratorResources } from "../workspace/orchestrator-resources.js";
+import { resolveTargetRepository } from "../workspace/target-repo.js";
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const result = parseArgs(argv);
@@ -63,14 +73,55 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 }
 
 async function runNewWorkflow(options: CliOptions): Promise<number> {
-  const goal = options.goal;
-  if (goal === null) {
-    console.error("Missing goal.");
+  const workspaceResult = await resolveTargetRepository({
+    repoPath: options.repoPath,
+    invocationCwd: process.cwd(),
+  });
+  if (!workspaceResult.ok) {
+    console.error(workspaceResult.error);
     return 1;
   }
+  const workspace = workspaceResult.value;
+
+  const resourcesResult = await resolveOrchestratorResources({
+    moduleUrl: import.meta.url,
+    cwd: workspace.invocationCwd,
+  });
+  if (!resourcesResult.ok) {
+    console.error(resourcesResult.error);
+    return 1;
+  }
+  const resources = resourcesResult.value;
+
+  const initialInputsResult = await resolveInitialInputs({
+    targetCwd: workspace.targetCwd,
+    argvGoal: options.goal,
+    goalFile: options.goalFile,
+    seedMajorPlanFile: options.seedMajorPlanFile,
+    contextPaths: options.contextPaths,
+  });
+  if (!initialInputsResult.ok) {
+    console.error(initialInputsResult.error);
+    return 1;
+  }
+  const initialInputs = initialInputsResult.value;
+  const goal = initialInputs.goal;
+  const dryRunInputDetails = {
+    invocationCwd: workspace.invocationCwd,
+    targetCwd: workspace.targetCwd,
+    goalSourceType: initialInputs.goalSource.type,
+    goalSourcePath: initialInputs.goalSource.path,
+    majorPlanSource: initialInputs.seedMajorPlan
+      ? {
+          type: "seed" as const,
+          path: initialInputs.seedMajorPlan.path,
+        }
+      : { type: "runner" as const, path: null },
+    contextPaths: initialInputs.context.map((entry) => entry.path),
+  };
 
   const loadedConfig = await loadConfig({
-    cwd: process.cwd(),
+    cwd: workspace.targetCwd,
     configPath: options.configPath,
   });
 
@@ -91,10 +142,26 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     console.error(`Invalid config after CLI overrides: ${configValidation.error}`);
     return 1;
   }
-  const config = configValidation.value;
+  const artifactRootResult = normalizeArtifactRoot(configValidation.value.artifactRoot);
+  if (!artifactRootResult.ok) {
+    console.error(`Invalid artifactRoot: ${artifactRootResult.error}`);
+    return 1;
+  }
+  const config = {
+    ...configValidation.value,
+    artifactRoot: artifactRootResult.value,
+  };
+  const artifactRootSafety = await assertArtifactRootPathSafe({
+    targetCwd: workspace.targetCwd,
+    artifactRoot: config.artifactRoot,
+  });
+  if (!artifactRootSafety.ok) {
+    console.error(`Invalid artifactRoot: ${artifactRootSafety.error}`);
+    return 1;
+  }
 
   const environment = await validateEnvironment({
-    cwd: process.cwd(),
+    cwd: workspace.targetCwd,
     config,
     commandRunner: nodeCommandRunner,
     requireGitCommand: shouldRequireGitCommand({
@@ -107,7 +174,8 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
-        ...newRunDryRunIdentity(options, config.artifactRoot),
+        ...newRunDryRunIdentity(options, config.artifactRoot, workspace.targetCwd),
+        ...dryRunInputDetails,
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -132,7 +200,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
   }
 
   const gitPreflight = await runGitPreflight({
-    cwd: process.cwd(),
+    cwd: workspace.targetCwd,
     planningOnly: options.planningOnly,
     allowDirty: options.allowDirty,
     allowNonGitPlanning: options.allowNonGitPlanning,
@@ -143,7 +211,8 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
-        ...newRunDryRunIdentity(options, config.artifactRoot),
+        ...newRunDryRunIdentity(options, config.artifactRoot, workspace.targetCwd),
+        ...dryRunInputDetails,
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -172,7 +241,8 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     if (options.dryRun) {
       const report = buildNewRunDryRunReport({
         goal,
-        ...newRunDryRunIdentity(options, config.artifactRoot),
+        ...newRunDryRunIdentity(options, config.artifactRoot, workspace.targetCwd),
+        ...dryRunInputDetails,
         config,
         configPath: loadedConfig.value.path,
         planningOnly: options.planningOnly,
@@ -195,7 +265,8 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
   if (options.dryRun) {
     const report = buildNewRunDryRunReport({
       goal,
-      ...newRunDryRunIdentity(options, config.artifactRoot),
+      ...newRunDryRunIdentity(options, config.artifactRoot, workspace.targetCwd),
+      ...dryRunInputDetails,
       config,
       configPath: loadedConfig.value.path,
       planningOnly: options.planningOnly,
@@ -212,13 +283,19 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
 
   const runId = options.runId ?? createRunId();
   const paths = buildRunPaths({
-    cwd: process.cwd(),
+    cwd: workspace.targetCwd,
     artifactRoot: config.artifactRoot,
     runId,
   });
 
-  await createRunDirectory(paths, goal);
+  await createRunDirectory(paths, goal, {
+    goalArtifactText: initialInputs.goalArtifactText,
+  });
   await writeRunLog(paths, `Initialized run ${runId}`);
+  const inputArtifacts = await writeInitialInputArtifacts({
+    paths,
+    inputs: initialInputs,
+  });
 
   const state = createInitialState({
     runId,
@@ -227,6 +304,12 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     git: gitPreflight.metadata,
     configPath: loadedConfig.value.path,
     configSnapshot: config,
+    workspace: {
+      invocationCwd: workspace.invocationCwd,
+      targetCwd: workspace.targetCwd,
+    },
+    inputs: inputArtifacts.stateInputs,
+    inputArtifacts: inputArtifacts.stateArtifacts,
   });
   await writeState(paths.files.state, state);
   const timingWarnings = createTimingWarningCollector();
@@ -253,7 +336,10 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     initialState: state,
     runner: runnerResult.runner,
     commandRunner: nodeCommandRunner,
-    cwd: process.cwd(),
+    cwd: workspace.targetCwd,
+    promptDir: resources.promptDir,
+    schemaRoot: resources.schemaRoot,
+    resolvedSeedMajorPlan: initialInputs.seedMajorPlan,
     planningOnly: options.planningOnly,
     executionLimits: executionLimitsForOptions(options),
     invocationId,
@@ -274,6 +360,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.milestone ?? null,
       runnerType: runnerResult.runner.type,
+      runnerConfig: config.runner,
       configPath: loadedConfig.value.path,
       configSource: loadedConfig.value.path === null ? "default config" : "config file",
       artifactRoot: config.artifactRoot,
@@ -306,6 +393,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     allowNonGitPlanning: options.allowNonGitPlanning,
     targetMilestone: options.milestone ?? null,
     runnerType: runnerResult.runner.type,
+    runnerConfig: config.runner,
     configPath: loadedConfig.value.path,
     configSource: loadedConfig.value.path === null ? "default config" : "config file",
     artifactRoot: config.artifactRoot,
@@ -334,9 +422,38 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     return 1;
   }
 
+  const workspaceResult = await resolveTargetRepository({
+    repoPath: options.repoPath,
+    invocationCwd: process.cwd(),
+  });
+  if (!workspaceResult.ok) {
+    console.error(workspaceResult.error);
+    return 1;
+  }
+  const workspace = workspaceResult.value;
+
+  const resourcesResult = await resolveOrchestratorResources({
+    moduleUrl: import.meta.url,
+    cwd: workspace.invocationCwd,
+  });
+  if (!resourcesResult.ok) {
+    console.error(resourcesResult.error);
+    return 1;
+  }
+  const resources = resourcesResult.value;
+
+  const artifactRootResult = normalizeArtifactRoot(options.artifactRoot ?? ".agent-work");
+  if (!artifactRootResult.ok) {
+    console.error(`Invalid artifactRoot: ${artifactRootResult.error}`);
+    return 1;
+  }
+
   const resumeResult = await loadResumeRun({
-    cwd: process.cwd(),
-    artifactRoot: options.artifactRoot ?? ".agent-work",
+    cwd: workspace.targetCwd,
+    targetCwd: workspace.targetCwd,
+    repoExplicit: workspace.repoExplicit,
+    invocationCwd: workspace.invocationCwd,
+    artifactRoot: artifactRootResult.value,
     resumeValue: options.resume,
     commandRunner: nodeCommandRunner,
   });
@@ -504,6 +621,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     runner: runnerResult.runner,
     commandRunner: nodeCommandRunner,
     cwd: resumeResult.targetCwd,
+    promptDir: resources.promptDir,
+    schemaRoot: resources.schemaRoot,
     planningOnly: resumePlanningOnly,
     executionLimits: executionLimitsForOptions(options),
     invocationId,
@@ -524,6 +643,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.milestone ?? null,
       runnerType: runnerResult.runner.type,
+      runnerConfig: config.runner,
       configPath: resumeResult.state.config.path,
       configSource: "state snapshot",
       artifactRoot: resumeResult.paths.artifactRoot,
@@ -561,6 +681,7 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     allowNonGitPlanning: options.allowNonGitPlanning,
     targetMilestone: options.milestone ?? null,
     runnerType: runnerResult.runner.type,
+    runnerConfig: config.runner,
     configPath: resumeResult.state.config.path,
     configSource: "state snapshot",
     artifactRoot: resumeResult.paths.artifactRoot,
@@ -619,10 +740,11 @@ function executionLimitsForOptions(options: CliOptions) {
 function newRunDryRunIdentity(
   options: CliOptions,
   artifactRoot: string,
+  targetCwd: string,
 ): { runId?: string; runDir?: string } {
   if (!options.runId) return {};
   const paths = buildRunPaths({
-    cwd: process.cwd(),
+    cwd: targetCwd,
     artifactRoot,
     runId: options.runId,
   });

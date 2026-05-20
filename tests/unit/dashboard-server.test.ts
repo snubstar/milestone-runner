@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, symlink, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, stat, symlink, writeFile, readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -62,6 +62,27 @@ test("dashboard server reports a missing artifact root as an index warning", asy
     } finally {
       await server.close();
     }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard server rejects missing target repos before listening", async () => {
+  const context = await createServerContext();
+  const missingTarget = path.join(context.tempDir, "missing-target");
+  try {
+    await assert.rejects(
+      startDashboardServer({
+        cwd: context.tempDir,
+        targetCwd: missingTarget,
+        artifactRoot: ".agent-work",
+        staticRoot: "dashboard/public",
+        host: "127.0.0.1",
+        port: 0,
+      }),
+      /target repository is unavailable/i,
+    );
+    await assert.rejects(stat(missingTarget));
   } finally {
     await rm(context.tempDir, { recursive: true, force: true });
   }
@@ -261,6 +282,27 @@ test("dashboard server rejects mutating requests without the dashboard token", a
   }
 });
 
+test("dashboard server rejects goal-file launches without the dashboard token", async () => {
+  const context = await createServerContext();
+  try {
+    const server = await startFixtureServer(context);
+    try {
+      const response = await postJson(`${server.url}/api/runs`, {
+        goalFilePath: "docs/task.md",
+        dryRun: true,
+      });
+
+      assert.equal(response.statusCode, 403);
+      const body = JSON.parse(response.body) as { error: { code: string } };
+      assert.equal(body.error.code, "dashboard_token_invalid");
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
 test("dashboard server rejects mutating requests with an invalid dashboard token", async () => {
   const context = await createServerContext();
   try {
@@ -381,6 +423,99 @@ test("dashboard server launches a dry run through POST /api/runs", async () => {
       await server.close();
     }
   } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard server launches a goal-file dry run through POST /api/runs", async () => {
+  const context = await createServerContext();
+  try {
+    await mkdir(path.join(context.tempDir, "docs"), { recursive: true });
+    await writeFile(path.join(context.tempDir, "docs", "task.md"), "Goal from file\n", "utf8");
+    const cliPath = await writeStubCli(context.tempDir);
+    const server = await startFixtureServer({ ...context, cliPath });
+    try {
+      const response = await postJson(
+        `${server.url}/api/runs`,
+        {
+          goalFilePath: "docs/task.md",
+          runner: "fake",
+          dryRun: true,
+        },
+        {
+          Origin: server.url,
+          "Sec-Fetch-Site": "same-origin",
+          "X-Dashboard-Token": server.dashboardToken,
+        },
+      );
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body) as {
+        dryRun: boolean;
+        started: boolean;
+        report: { allowed: boolean; details: { goalSource: string; runner: string } };
+      };
+      assert.equal(body.dryRun, true);
+      assert.equal(body.started, false);
+      assert.equal(body.report.allowed, true);
+      assert.equal(body.report.details.goalSource, "file:docs/task.md");
+      assert.equal(body.report.details.runner, "fake");
+
+      const args = JSON.parse(
+        await readFile(path.join(context.tempDir, "server-launch-args.json"), "utf8"),
+      ) as string[];
+      assert.equal(args.includes("--goal-file"), true);
+      assert.equal(args[args.indexOf("--goal-file") + 1], "docs/task.md");
+      assert.equal(args.includes("--"), false);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard server launch forwards configured target repo to child CLI", async () => {
+  const context = await createServerContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    const cliPath = await writeStubCli(context.tempDir);
+    const canonicalTargetDir = await realpath(targetDir);
+    const server = await startDashboardServer({
+      cwd: context.tempDir,
+      targetCwd: targetDir,
+      artifactRoot: ".agent-work",
+      staticRoot: "dashboard/public",
+      host: "127.0.0.1",
+      port: 0,
+      cliPath,
+    } as Parameters<typeof startDashboardServer>[0] & { targetCwd: string });
+    try {
+      const response = await postJson(
+        `${server.url}/api/runs`,
+        {
+          prompt: "Add feature X",
+          runner: "fake",
+          dryRun: true,
+        },
+        {
+          Origin: server.url,
+          "Sec-Fetch-Site": "same-origin",
+          "X-Dashboard-Token": server.dashboardToken,
+        },
+      );
+
+      assert.equal(response.statusCode, 200);
+      const args = JSON.parse(
+        await readFile(path.join(context.tempDir, "server-launch-args.json"), "utf8"),
+      ) as string[];
+      assert.equal(args.includes("--repo"), true);
+      assert.equal(args[args.indexOf("--repo") + 1], canonicalTargetDir);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
     await rm(context.tempDir, { recursive: true, force: true });
   }
 });
@@ -726,11 +861,14 @@ async function writeStubCli(cwd: string): Promise<string> {
   await writeFile(
     cliPath,
     [
+      'import { writeFileSync } from "node:fs";',
       'import path from "node:path";',
       "const args = process.argv.slice(2);",
+      'writeFileSync(path.join(process.cwd(), "server-launch-args.json"), JSON.stringify(args));',
       'const valueAfter = (flag) => args[args.indexOf(flag) + 1];',
       'const runId = valueAfter("--run-id");',
       'const artifactRoot = valueAfter("--artifact-root") ?? ".agent-work";',
+      'const goalFilePath = valueAfter("--goal-file");',
       "const runDir = path.resolve(process.cwd(), artifactRoot, runId);",
       "console.log(JSON.stringify({",
       '  mode: "new",',
@@ -739,7 +877,12 @@ async function writeStubCli(cwd: string): Promise<string> {
       '  nextAction: "run_full_goal",',
       "  runId,",
       "  runDir,",
-      "  details: { runId, runDir, runner: valueAfter('--runner') ?? null }",
+      "  details: {",
+      "    runId,",
+      "    runDir,",
+      "    runner: valueAfter('--runner') ?? null,",
+      "    goalSource: goalFilePath === undefined ? 'argv' : `file:${goalFilePath}`",
+      "  }",
       "}));",
     ].join("\n"),
     "utf8",

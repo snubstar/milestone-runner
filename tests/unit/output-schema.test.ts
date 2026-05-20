@@ -52,6 +52,32 @@ test("resolveOutputSchemaPathForPhase resolves existing schema paths", async () 
   }
 });
 
+test("resolveOutputSchemaPathForPhase resolves schemas from schemaRoot, not runner cwd", async () => {
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const resourceDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-resource-"));
+  try {
+    const schemaRoot = path.join(resourceDir, "schemas");
+    await mkdir(schemaRoot);
+    await writeFile(path.join(schemaRoot, "milestones.schema.json"), "{}", "utf8");
+
+    const result = await resolveOutputSchemaPathForPhase({
+      phase: "final_plan_json",
+      cwd: targetDir,
+      schemaRoot,
+    } as Parameters<typeof resolveOutputSchemaPathForPhase>[0] & {
+      schemaRoot: string;
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      path: path.join(schemaRoot, "milestones.schema.json"),
+    });
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(resourceDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveOutputSchemaPathForPhase reports missing required schemas", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-schema-"));
   try {

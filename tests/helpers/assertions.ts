@@ -77,10 +77,17 @@ const mapArtifactFields = [
 
 export function assertRunStateShape(value: unknown): asserts value is RunState {
   assertRecord(value, "RunState");
-  assertFields(value, topLevelStateFields, "RunState");
+  assertRequiredFields(value, topLevelStateFields, "RunState");
+  assertAllowedFields(value, [...topLevelStateFields, "workspace", "inputs"], "RunState");
 
   assertNonEmptyString(value.runId, "RunState.runId");
   assertNonEmptyString(value.goal, "RunState.goal");
+  if ("workspace" in value) {
+    assertWorkspaceShape(value.workspace);
+  }
+  if ("inputs" in value) {
+    assertInputsShape(value.inputs);
+  }
   assertPhase(value.currentPhase, "RunState.currentPhase");
   assertPhase(value.status, "RunState.status");
   assertNullOrPositiveInteger(value.currentMilestoneId, "RunState.currentMilestoneId");
@@ -94,6 +101,81 @@ export function assertRunStateShape(value: unknown): asserts value is RunState {
   assertStateErrorShape(value.lastError);
   assertIsoTimestamp(value.createdAt, "RunState.createdAt");
   assertIsoTimestamp(value.updatedAt, "RunState.updatedAt");
+}
+
+function assertWorkspaceShape(value: unknown): void {
+  assertRecord(value, "RunState.workspace");
+  assertFields(value, ["invocationCwd", "targetCwd"], "RunState.workspace");
+  assertNonEmptyString(value.invocationCwd, "RunState.workspace.invocationCwd");
+  assertNonEmptyString(value.targetCwd, "RunState.workspace.targetCwd");
+}
+
+function assertInputsShape(value: unknown): void {
+  assertRecord(value, "RunState.inputs");
+  assertRequiredFields(value, ["goalSource", "context"], "RunState.inputs");
+  assertAllowedFields(value, ["goalSource", "majorPlanSource", "context"], "RunState.inputs");
+  assertRecord(value.goalSource, "RunState.inputs.goalSource");
+  assertFields(value.goalSource, ["type", "path"], "RunState.inputs.goalSource");
+  assert.ok(
+    value.goalSource.type === "argv" || value.goalSource.type === "file",
+    "RunState.inputs.goalSource.type must be argv or file.",
+  );
+  assertNullOrString(value.goalSource.path, "RunState.inputs.goalSource.path");
+  if ("majorPlanSource" in value) {
+    assertMajorPlanSourceShape(value.majorPlanSource);
+  }
+  assert.ok(Array.isArray(value.context), "RunState.inputs.context must be an array.");
+  for (const [index, entry] of value.context.entries()) {
+    assertRecord(entry, `RunState.inputs.context[${index}]`);
+    assertFields(
+      entry,
+      ["path", "artifactPath", "sizeBytes", "sha256"],
+      `RunState.inputs.context[${index}]`,
+    );
+    assertNonEmptyString(entry.path, `RunState.inputs.context[${index}].path`);
+    assertNonEmptyString(
+      entry.artifactPath,
+      `RunState.inputs.context[${index}].artifactPath`,
+    );
+    assertNonNegativeInteger(
+      entry.sizeBytes,
+      `RunState.inputs.context[${index}].sizeBytes`,
+    );
+    assertNonEmptyString(entry.sha256, `RunState.inputs.context[${index}].sha256`);
+  }
+}
+
+function assertMajorPlanSourceShape(value: unknown): void {
+  assertRecord(value, "RunState.inputs.majorPlanSource");
+  assertRequiredFields(value, ["type", "path"], "RunState.inputs.majorPlanSource");
+  assertAllowedFields(
+    value,
+    ["type", "path", "sizeBytes", "sha256"],
+    "RunState.inputs.majorPlanSource",
+  );
+  assert.ok(
+    value.type === "runner" || value.type === "seed",
+    "RunState.inputs.majorPlanSource.type must be runner or seed.",
+  );
+  if (value.type === "runner") {
+    assert.equal(value.path, null, "RunState.inputs.majorPlanSource.path must be null.");
+    assert.ok(
+      !("sizeBytes" in value),
+      "RunState.inputs.majorPlanSource.sizeBytes is not allowed for runner source.",
+    );
+    assert.ok(
+      !("sha256" in value),
+      "RunState.inputs.majorPlanSource.sha256 is not allowed for runner source.",
+    );
+    return;
+  }
+
+  assertNonEmptyString(value.path, "RunState.inputs.majorPlanSource.path");
+  assertNonNegativeInteger(
+    value.sizeBytes,
+    "RunState.inputs.majorPlanSource.sizeBytes",
+  );
+  assertNonEmptyString(value.sha256, "RunState.inputs.majorPlanSource.sha256");
 }
 
 export async function assertMilestoneMetadataArtifact(
@@ -166,7 +248,7 @@ function assertArtifactsShape(value: unknown): void {
   assertRecord(value, "RunState.artifacts");
   assertAllowedFields(
     value,
-    [...scalarArtifactFields, ...mapArtifactFields],
+    [...scalarArtifactFields, ...mapArtifactFields, "inputs"],
     "RunState.artifacts",
   );
 
@@ -180,6 +262,20 @@ function assertArtifactsShape(value: unknown): void {
     if (field in value) {
       assertStringRecord(value[field], `RunState.artifacts.${field}`);
     }
+  }
+
+  if ("inputs" in value) {
+    assertInputArtifactsShape(value.inputs);
+  }
+}
+
+function assertInputArtifactsShape(value: unknown): void {
+  assertRecord(value, "RunState.artifacts.inputs");
+  assertRequiredFields(value, ["manifest"], "RunState.artifacts.inputs");
+  assertAllowedFields(value, ["manifest", "context"], "RunState.artifacts.inputs");
+  assertNonEmptyString(value.manifest, "RunState.artifacts.inputs.manifest");
+  if ("context" in value) {
+    assertStringRecord(value.context, "RunState.artifacts.inputs.context");
   }
 }
 

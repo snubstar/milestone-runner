@@ -39,6 +39,7 @@ export interface ReviewWorkflowOptions {
   commandRunner: CommandRunner;
   cwd: string;
   promptDir?: string;
+  schemaRoot?: string;
   checkTimingCollector?: CheckTimingCollector;
   timingWarnings?: TimingWarningCollector;
   now?: () => Date;

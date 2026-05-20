@@ -174,6 +174,36 @@ test("runAgentPhaseWithDiagnostics records review evidence artifact paths", asyn
   }
 });
 
+test("runAgentPhaseWithDiagnostics records runner identity labels", async () => {
+  const context = await createDiagnosticContext();
+  try {
+    const result = await runAgentPhaseWithDiagnostics({
+      runner: new MetadataRunner({
+        accountLabel: "work-codex",
+        profile: "automation",
+      }),
+      paths: context.paths,
+      request: {
+        phase: "major_plan",
+        prompt: "full secret prompt",
+        cwd: context.repo,
+      },
+      now: sequenceClock("2026-05-10T12:00:00.000Z"),
+    });
+
+    assert.equal(result.ok, true);
+
+    const diagnostic = JSON.parse(
+      await readFile(path.join(context.paths.runDir, result.diagnosticArtifact ?? ""), "utf8"),
+    );
+    assert.equal(diagnostic.accountLabel, "work-codex");
+    assert.equal(diagnostic.profile, "automation");
+    assert.equal("prompt" in diagnostic, false);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runAgentPhaseWithDiagnostics omits duration when timestamps are inverted", async () => {
   const context = await createDiagnosticContext();
   try {
@@ -251,6 +281,8 @@ interface MetadataRunnerOptions {
   exitCode?: number;
   stderr?: string;
   error?: string;
+  accountLabel?: string;
+  profile?: string;
 }
 
 class MetadataRunner implements AgentRunner {
@@ -270,6 +302,10 @@ class MetadataRunner implements AgentRunner {
         timedOut: false,
         sandbox: "read-only",
         approvalPolicy: "never",
+        ...(this.options.accountLabel === undefined
+          ? {}
+          : { accountLabel: this.options.accountLabel }),
+        ...(this.options.profile === undefined ? {} : { profile: this.options.profile }),
         timeoutMs: 120000,
         stdout: "stdout text",
         stderr: this.options.stderr ?? "",

@@ -34,6 +34,9 @@ test("loadResumeRun resolves a direct run directory", async () => {
       assert.equal(result.paths.files.state, path.join(expectedRunDir, "state.json"));
       assert.equal(result.config.maxFixAttempts, 0);
       assert.equal(result.targetCwd, await canonicalPath(repo.path));
+      assert.equal(result.state.workspace?.targetCwd, await canonicalPath(repo.path));
+      assert.equal(result.state.inputs?.goalSource.type, "argv");
+      assert.deepEqual(result.state.inputs?.context, []);
       assert.deepEqual(result.warnings, []);
     }
   } finally {
@@ -59,6 +62,75 @@ test("loadResumeRun resolves a direct state.json path", async () => {
       assert.equal(result.runDir, await canonicalPath(fixture.paths.runDir));
     }
   } finally {
+    await repo.cleanup();
+  }
+});
+
+test("loadResumeRun direct-path resume uses saved workspace target when repo is omitted", async () => {
+  const repo = await createFixtureRepo();
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-loader-"));
+  try {
+    const fixture = await createResumeFixture(repo.path);
+    await writeState(fixture.paths.files.state, {
+      ...fixture.state,
+      workspace: {
+        invocationCwd: "/previous/invocation",
+        targetCwd: await canonicalPath(repo.path),
+      },
+    } as typeof fixture.state & {
+      workspace: { invocationCwd: string; targetCwd: string };
+    });
+
+    const result = await loadResumeRun({
+      cwd: invocationDir,
+      artifactRoot: ".agent-work",
+      resumeValue: fixture.paths.files.state,
+      commandRunner: nodeCommandRunner,
+      targetCwd: invocationDir,
+      repoExplicit: false,
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.targetCwd, await canonicalPath(repo.path));
+      assert.equal(result.statePath, await canonicalPath(fixture.paths.files.state));
+    }
+  } finally {
+    await rm(invocationDir, { recursive: true, force: true });
+    await repo.cleanup();
+  }
+});
+
+test("loadResumeRun direct-path resume rejects explicit repo mismatches", async () => {
+  const repo = await createFixtureRepo();
+  const otherRepo = await createFixtureRepo();
+  try {
+    const fixture = await createResumeFixture(repo.path);
+    await writeState(fixture.paths.files.state, {
+      ...fixture.state,
+      workspace: {
+        invocationCwd: "/previous/invocation",
+        targetCwd: await canonicalPath(repo.path),
+      },
+    } as typeof fixture.state & {
+      workspace: { invocationCwd: string; targetCwd: string };
+    });
+
+    const result = await loadResumeRun({
+      cwd: otherRepo.path,
+      artifactRoot: ".agent-work",
+      resumeValue: fixture.paths.files.state,
+      commandRunner: nodeCommandRunner,
+      targetCwd: otherRepo.path,
+      repoExplicit: true,
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /does not match.*saved workspace|does not match.*selected target/i);
+    }
+  } finally {
+    await otherRepo.cleanup();
     await repo.cleanup();
   }
 });
@@ -126,6 +198,41 @@ test("loadResumeRun rejects state without a valid config snapshot", async () => 
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.match(result.error, /Resume state is missing a valid config snapshot/);
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+test("loadResumeRun rejects malformed seeded major plan provenance", async () => {
+  const repo = await createFixtureRepo();
+  try {
+    const fixture = await createResumeFixture(repo.path);
+    await writeState(fixture.paths.files.state, {
+      ...fixture.state,
+      inputs: {
+        goalSource: { type: "argv", path: null },
+        majorPlanSource: {
+          type: "seed",
+          path: "tasks/major-plan.md",
+        },
+        context: [],
+      },
+    });
+
+    const result = await loadResumeRun({
+      cwd: repo.path,
+      artifactRoot: ".agent-work",
+      resumeValue: fixture.paths.runDir,
+      commandRunner: nodeCommandRunner,
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(
+        result.error,
+        /seeded major plan source with incomplete metadata/i,
+      );
     }
   } finally {
     await repo.cleanup();

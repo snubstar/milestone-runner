@@ -18,10 +18,16 @@ import {
   spawnDashboardCliProcess,
   writeDashboardCliDiagnostics,
 } from "./cli-process.js";
+import {
+  resolveDashboardTargetCwd,
+  validateDashboardArtifactRootForRead,
+  validateDashboardArtifactRootForWrite,
+} from "./dashboard-safety.js";
 import { readDashboardRun } from "./run-reader.js";
 
 export interface DashboardRunResumerOptions {
   cwd: string;
+  targetCwd?: string;
   artifactRoot: string;
   cliPath?: string;
   nodePath?: string;
@@ -101,15 +107,25 @@ export async function dryRunDashboardResume(
   input: unknown,
   options: DashboardRunResumerOptions,
 ): Promise<DashboardResumeDryRunResult> {
+  const targetResult = await resolveDashboardTargetCwd(options);
+  if (!targetResult.ok) return resumeServerError("target_unavailable", targetResult.error);
+  const targetCwd = targetResult.value;
   const safeRunId = normalizeRunId(runId);
   if (!safeRunId.ok) return safeRunId;
 
   const request = normalizeResumeOptions(input);
   if (!request.ok) return request;
+  const artifactRootSafety = await validateDashboardArtifactRootForWrite({
+    targetCwd,
+    artifactRoot: options.artifactRoot,
+    allowDirty: request.value.allowDirty,
+  });
+  if (!artifactRootSafety.ok) return invalidResumeRequest(artifactRootSafety.error);
+  const artifactRoot = artifactRootSafety.value;
 
   const run = await readDashboardRun({
-    cwd: options.cwd,
-    artifactRoot: options.artifactRoot,
+    cwd: targetCwd,
+    artifactRoot,
     runId: safeRunId.value,
   });
   if (!run.ok) {
@@ -133,13 +149,14 @@ export async function dryRunDashboardResume(
   const now = options.now?.() ?? new Date();
   const resumeId = createResumeId(now);
   const diagnosticsPath = path.join("dashboard-resumes", `${resumeId}-diagnostics.json`);
-  const diagnosticsFile = path.resolve(options.cwd, options.artifactRoot, diagnosticsPath);
+  const diagnosticsFile = path.resolve(targetCwd, artifactRoot, diagnosticsPath);
   const command = options.nodePath ?? process.execPath;
   const args = [
     cliPath,
     ...buildResumeCliArgs({
       runId: safeRunId.value,
-      artifactRoot: options.artifactRoot,
+      targetCwd,
+      artifactRoot,
       dryRun: true,
       options: request.value,
     }),
@@ -155,6 +172,7 @@ export async function dryRunDashboardResume(
     command,
     args,
     cwd: options.cwd,
+    targetCwd,
     exitCode: null,
     signal: null,
     stdout: "",
@@ -237,11 +255,11 @@ export async function dryRunDashboardResume(
     createdAt: now.toISOString(),
     expiresAt,
     diagnosticsPath,
-    artifactRoot: options.artifactRoot,
+    artifactRoot,
     consumedAt: null,
     stateFingerprint: stateFingerprintAfter,
   };
-  await writeResumeDryRunRecord(options, record);
+  await writeResumeDryRunRecord({ ...options, targetCwd, artifactRoot }, record);
 
   return {
     ok: true,
@@ -255,32 +273,54 @@ export async function resumeDashboardRun(
   input: unknown,
   options: DashboardRunResumerOptions,
 ): Promise<DashboardResumeResult> {
+  const targetResult = await resolveDashboardTargetCwd(options);
+  if (!targetResult.ok) return resumeServerError("target_unavailable", targetResult.error);
+  const targetCwd = targetResult.value;
   const safeRunId = normalizeRunId(runId);
   if (!safeRunId.ok) return safeRunId;
 
   const request = normalizeResumeRequest(input);
   if (!request.ok) return request;
+  const readSafety = await validateDashboardArtifactRootForRead({
+    targetCwd,
+    artifactRoot: options.artifactRoot,
+  });
+  if (!readSafety.ok) return invalidResumeState(readSafety.error);
+  const artifactRoot = readSafety.value;
 
-  const recordResult = await readResumeDryRunRecord(options, request.value.resumeId);
+  const recordResult = await readResumeDryRunRecord(
+    { ...options, targetCwd, artifactRoot },
+    request.value.resumeId,
+  );
   if (!recordResult.ok) return recordResult;
   let record = recordResult.record;
 
-  if (record.runId !== safeRunId.value || record.artifactRoot !== options.artifactRoot) {
+  if (record.runId !== safeRunId.value || record.artifactRoot !== artifactRoot) {
     return invalidResumeState("Resume dry-run record does not match this run.");
   }
-  const claim = await acquireResumeDryRunClaim(options, record.resumeId);
+  const writeSafety = await validateDashboardArtifactRootForWrite({
+    targetCwd,
+    artifactRoot,
+    allowDirty: record.options.allowDirty,
+  });
+  if (!writeSafety.ok) return invalidResumeState(writeSafety.error);
+
+  const claim = await acquireResumeDryRunClaim(
+    { ...options, targetCwd, artifactRoot },
+    record.resumeId,
+  );
   if (!claim.ok) return claim;
 
   let consumed = false;
   try {
     const latestRecordResult = await readResumeDryRunRecord(
-      options,
+      { ...options, targetCwd, artifactRoot },
       request.value.resumeId,
     );
     if (!latestRecordResult.ok) return latestRecordResult;
     record = latestRecordResult.record;
 
-    if (record.runId !== safeRunId.value || record.artifactRoot !== options.artifactRoot) {
+    if (record.runId !== safeRunId.value || record.artifactRoot !== artifactRoot) {
       return invalidResumeState("Resume dry-run record does not match this run.");
     }
     if (record.consumedAt !== null) {
@@ -298,8 +338,8 @@ export async function resumeDashboardRun(
     }
 
     const run = await readDashboardRun({
-      cwd: options.cwd,
-      artifactRoot: options.artifactRoot,
+      cwd: targetCwd,
+      artifactRoot,
       runId: safeRunId.value,
     });
     if (!run.ok) {
@@ -330,12 +370,13 @@ export async function resumeDashboardRun(
     const command = options.nodePath ?? process.execPath;
     const launchId = createResumeLaunchId(now);
     const diagnosticsPath = path.join("dashboard-launches", `${launchId}.json`);
-    const diagnosticsFile = path.resolve(options.cwd, options.artifactRoot, diagnosticsPath);
+    const diagnosticsFile = path.resolve(targetCwd, artifactRoot, diagnosticsPath);
     const args = [
       cliPath,
       ...buildResumeCliArgs({
         runId: safeRunId.value,
-        artifactRoot: options.artifactRoot,
+        targetCwd,
+        artifactRoot,
         dryRun: false,
         options: record.options,
       }),
@@ -351,6 +392,7 @@ export async function resumeDashboardRun(
       command,
       args,
       cwd: options.cwd,
+      targetCwd,
       exitCode: null,
       signal: null,
       stdout: "",
@@ -359,7 +401,7 @@ export async function resumeDashboardRun(
 
     await writeDashboardCliDiagnostics(diagnosticsFile, diagnostics);
     record.consumedAt = now.toISOString();
-    await writeResumeDryRunRecord(options, record);
+    await writeResumeDryRunRecord({ ...options, targetCwd, artifactRoot }, record);
     consumed = true;
 
     const spawnResult = await spawnDashboardCliProcess({
@@ -408,11 +450,18 @@ export async function resumeDashboardRun(
 
 function buildResumeCliArgs(options: {
   runId: string;
+  targetCwd: string;
   artifactRoot: string;
   dryRun: boolean;
   options: NormalizedResumeOptions;
 }): string[] {
-  const args = ["--json", "--artifact-root", options.artifactRoot];
+  const args = [
+    "--json",
+    "--repo",
+    options.targetCwd,
+    "--artifact-root",
+    options.artifactRoot,
+  ];
   if (options.dryRun) args.push("--dry-run");
   if (options.options.allowDirty) args.push("--allow-dirty");
   if (options.options.allowNonGitPlanning) args.push("--allow-non-git-planning");
@@ -666,8 +715,9 @@ function resumeDryRunRecordPath(
   options: DashboardRunResumerOptions,
   resumeId: string,
 ): string {
+  const targetCwd = resolveTargetCwd(options);
   return path.resolve(
-    options.cwd,
+    targetCwd,
     options.artifactRoot,
     "dashboard-resumes",
     `${resumeId}.json`,
@@ -678,8 +728,9 @@ function resumeDryRunClaimPath(
   options: DashboardRunResumerOptions,
   resumeId: string,
 ): string {
+  const targetCwd = resolveTargetCwd(options);
   return path.resolve(
-    options.cwd,
+    targetCwd,
     options.artifactRoot,
     "dashboard-resumes",
     `${resumeId}.claim`,
@@ -778,6 +829,20 @@ function invalidResumeState(message: string): {
   };
 }
 
+function resumeServerError(
+  code: string,
+  message: string,
+): { ok: false; statusCode: 500; error: DashboardError } {
+  return {
+    ok: false,
+    statusCode: 500,
+    error: {
+      code,
+      message,
+    },
+  };
+}
+
 function resumeConflict(message: string): {
   ok: false;
   statusCode: 409;
@@ -832,6 +897,12 @@ function booleanField(value: unknown, fallback: boolean): boolean {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function resolveTargetCwd(options: DashboardRunResumerOptions): string {
+  return options.targetCwd === undefined
+    ? path.resolve(options.cwd)
+    : path.resolve(options.cwd, options.targetCwd);
 }
 
 function isStoredResumeDryRun(value: unknown): value is StoredResumeDryRun {

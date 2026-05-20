@@ -7,6 +7,7 @@ import type { EnvironmentDiagnostic } from "../diagnostics/environment-validator
 import type { GitMetadata } from "../git/git-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
 import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
+import { runnerIdentityDetails } from "../runners/runner-identity.js";
 import type { RunState } from "../state/state-types.js";
 import {
   describeScrupulousReviewForNextMilestone,
@@ -25,13 +26,23 @@ export interface DryRunReport {
   exitCode: 0 | 1;
   nextAction: string;
   warnings: string[];
-  details: Record<string, string | number | boolean | null>;
+  details: Record<string, unknown>;
 }
+
+export type DryRunMajorPlanSource =
+  | { type: "runner"; path: null }
+  | { type: "seed"; path: string };
 
 export interface NewRunDryRunOptions {
   goal: string;
   runId?: string;
   runDir?: string;
+  invocationCwd: string;
+  targetCwd: string;
+  goalSourceType: "argv" | "file";
+  goalSourcePath: string | null;
+  majorPlanSource?: DryRunMajorPlanSource;
+  contextPaths: string[];
   config: OrchestratorConfig;
   configPath: string | null;
   planningOnly: boolean;
@@ -61,8 +72,10 @@ export interface ResumeDryRunOptions {
 
 export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunReport {
   const allowed = options.blockedReason === undefined;
+  const majorPlanSource = options.majorPlanSource ?? { type: "runner" as const, path: null };
   const nextAction =
     options.blockedReason ??
+    (majorPlanSource.type === "seed" ? "review_seeded_major_plan" : undefined) ??
     (options.planningOnly ? "run_planning_only" : "run_full_goal");
 
   return {
@@ -79,12 +92,18 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       goal: options.goal,
       runId: options.runId ?? null,
       runDir: options.runDir ?? null,
+      invocationCwd: options.invocationCwd,
+      targetCwd: options.targetCwd,
+      goalSource: formatGoalSource(options.goalSourceType, options.goalSourcePath),
+      majorPlanSource,
+      contextInputs: formatContextInputs(options.contextPaths),
       planningOnly: options.planningOnly,
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone ?? null,
       runner: options.runnerType,
       runnerExecution: runnerExecutionDescription(options.config),
+      ...runnerIdentityDetails(options.config),
       config: options.configPath,
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
@@ -142,6 +161,16 @@ export async function buildResumeDryRunReport(
       runId: options.state.runId,
       runDir: options.paths.runDir,
       goal: options.state.goal,
+      invocationCwd: options.state.workspace?.invocationCwd ?? null,
+      targetCwd: options.state.workspace?.targetCwd ?? null,
+      goalSource: formatGoalSource(
+        options.state.inputs?.goalSource.type ?? "argv",
+        options.state.inputs?.goalSource.path ?? null,
+      ),
+      majorPlanSource: majorPlanSourceFromState(options.state),
+      contextInputs: formatContextInputs(
+        options.state.inputs?.context.map((entry) => entry.path) ?? [],
+      ),
       currentPhase: options.state.currentPhase,
       currentMilestone: options.state.currentMilestoneId ?? "none",
       milestones: formatMilestoneStatusesCompact(options.state),
@@ -151,6 +180,7 @@ export async function buildResumeDryRunReport(
       targetMilestone: options.targetMilestone ?? null,
       runner: options.runnerType,
       runnerExecution: runnerExecutionDescription(options.config),
+      ...runnerIdentityDetails(options.config),
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
       milestonePlanPolicy: options.config.milestonePlanPolicy,
@@ -183,6 +213,22 @@ export async function buildResumeDryRunReport(
 
 function savedMilestonePlanPolicy(state: RunState): OrchestratorConfig["milestonePlanPolicy"] {
   return state.config.snapshot?.milestonePlanPolicy ?? "always";
+}
+
+function formatGoalSource(type: "argv" | "file", goalPath: string | null): string {
+  return type === "file" && goalPath ? `file:${goalPath}` : "argv";
+}
+
+function formatContextInputs(paths: string[]): string {
+  return paths.length === 0 ? "none" : paths.join(", ");
+}
+
+function majorPlanSourceFromState(state: RunState): DryRunMajorPlanSource {
+  const source = state.inputs?.majorPlanSource;
+  if (source?.type === "seed" && source.path) {
+    return { type: "seed", path: source.path };
+  }
+  return { type: "runner", path: null };
 }
 
 function savedMilestonePlanReviewPolicy(

@@ -8,8 +8,10 @@ import {
 import type {
   MilestonePlanPolicy,
   MilestonePlanReviewPolicy,
+  RunnerConfig,
 } from "../config/config-types.js";
 import type { GitMetadata } from "../git/git-types.js";
+import { runnerIdentityDetails } from "../runners/runner-identity.js";
 import type { RunState } from "../state/state-types.js";
 import type { TimingWarning } from "../timings/timing-types.js";
 import type { DryRunReport } from "./dry-run.js";
@@ -24,6 +26,7 @@ export interface RunReportOptions {
   allowNonGitPlanning: boolean;
   targetMilestone: number | null;
   runnerType: string;
+  runnerConfig?: RunnerConfig;
   configPath: string | null;
   configSource: string;
   artifactRoot: string;
@@ -56,6 +59,10 @@ export interface CliJsonReport {
   runDir?: string | null;
 }
 
+type ReportMajorPlanSource =
+  | { type: "runner"; path: null }
+  | { type: "seed"; path: string };
+
 export function printRunReport(options: RunReportOptions): void {
   const constrainedStop = constrainedTargetStop(options);
   console.log("Agent milestone orchestrator");
@@ -63,11 +70,13 @@ export function printRunReport(options: RunReportOptions): void {
   console.log(`Run id: ${options.runId}`);
   console.log(`Run dir: ${options.paths.runDir}`);
   console.log(`Goal: ${options.goal}`);
+  console.log(`Major plan source: ${formatMajorPlanSource(majorPlanSourceFromState(options.finalState))}`);
   console.log(`Planning only: ${options.planningOnly}`);
   console.log(`Allow dirty: ${options.allowDirty}`);
   console.log(`Allow non-Git planning: ${options.allowNonGitPlanning}`);
   console.log(`Target milestone: ${options.targetMilestone ?? "none"}`);
   console.log(`Runner: ${options.runnerType}`);
+  printRunnerIdentity(options);
   console.log(`Config: ${options.configPath}`);
   console.log(`Config source: ${options.configSource}`);
   console.log(`Artifact root: ${options.artifactRoot}`);
@@ -166,11 +175,13 @@ export function buildRunJsonReport(
       runId: options.runId,
       runDir: options.paths.runDir,
       goal: options.goal,
+      majorPlanSource: majorPlanSourceFromState(options.finalState),
       planningOnly: options.planningOnly,
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone,
       runner: options.runnerType,
+      ...runnerIdentityDetails(runnerConfigForReport(options)),
       config: options.configPath,
       configSource: options.configSource,
       artifactRoot: options.artifactRoot,
@@ -213,6 +224,23 @@ export function printRunJsonReport(
   printJson(buildRunJsonReport(options, exitCode));
 }
 
+function printRunnerIdentity(options: RunReportOptions): void {
+  const identity = runnerIdentityDetails(runnerConfigForReport(options));
+  if (identity.runnerProfile !== null || options.runnerType === "codex-exec") {
+    console.log(`Runner profile: ${identity.runnerProfile ?? "ambient"}`);
+  }
+  if (identity.runnerAccountLabel !== null || options.runnerType === "codex-exec") {
+    console.log(`Runner account label: ${identity.runnerAccountLabel ?? "not configured"}`);
+  }
+  if (options.runnerType === "codex-exec" || identity.runnerAccountLabel !== null) {
+    console.log(`Runner authentication: ${identity.runnerAuthentication}`);
+  }
+}
+
+function runnerConfigForReport(options: RunReportOptions): RunnerConfig {
+  return options.runnerConfig ?? { type: options.runnerType as RunnerConfig["type"] };
+}
+
 export function printDryRunReport(report: DryRunReport): void {
   console.log("Agent milestone orchestrator dry run");
   console.log(`Mode: ${report.mode}`);
@@ -229,7 +257,7 @@ export function printDryRunReport(report: DryRunReport): void {
   }
   console.log("Details:");
   for (const [key, value] of Object.entries(report.details)) {
-    console.log(`  ${key}: ${value ?? "null"}`);
+    console.log(`  ${key}: ${formatDryRunDetailValue(key, value)}`);
   }
 }
 
@@ -304,6 +332,7 @@ export function describeScrupulousReviewForNextMilestone(options: {
 
   if (options.nextAction === "run_full_goal") return "yes (after planning)";
   if (options.nextAction === "continue_planning") return "yes (after planning)";
+  if (options.nextAction === "review_seeded_major_plan") return "yes (after planning)";
   if (options.nextAction === "continue_milestone") return "yes";
   if (options.nextAction === "advance_to_next_milestone") return "yes";
   if (options.nextAction === "run_planning_only") return "no (planning only)";
@@ -390,6 +419,36 @@ function runnerDiagnosticFromDetails(details: unknown): string | null {
 
   const value = details.diagnosticArtifact;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function majorPlanSourceFromState(state: RunState): ReportMajorPlanSource {
+  const source = state.inputs?.majorPlanSource;
+  if (source?.type === "seed" && source.path) {
+    return { type: "seed", path: source.path };
+  }
+  return { type: "runner", path: null };
+}
+
+function formatMajorPlanSource(source: ReportMajorPlanSource): string {
+  return source.type === "seed" ? `seeded from ${source.path}` : "runner";
+}
+
+function formatDryRunDetailValue(key: string, value: unknown): string {
+  if (key === "majorPlanSource" && isMajorPlanSource(value)) {
+    return formatMajorPlanSource(value);
+  }
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function isMajorPlanSource(value: unknown): value is ReportMajorPlanSource {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("type" in value) || !("path" in value)) return false;
+  return (
+    (value.type === "runner" && value.path === null) ||
+    (value.type === "seed" && typeof value.path === "string")
+  );
 }
 
 function printJson(value: unknown): void {

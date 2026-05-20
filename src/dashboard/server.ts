@@ -7,6 +7,11 @@ import { lstat, open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { normalizeArtifactRoot } from "../artifacts/artifact-root.js";
+import {
+  resolveDashboardTargetCwd,
+  validateDashboardArtifactRootForRead,
+} from "./dashboard-safety.js";
 import type {
   DashboardErrorResponse,
   DashboardRunsResponse,
@@ -27,6 +32,7 @@ import {
 
 export interface DashboardServerOptions {
   cwd: string;
+  targetCwd: string;
   artifactRoot: string;
   staticRoot: string;
   host: string;
@@ -48,6 +54,7 @@ interface DashboardRequestContext extends DashboardServerOptions {
 
 const defaultOptions: DashboardServerOptions = {
   cwd: process.cwd(),
+  targetCwd: process.cwd(),
   artifactRoot: ".agent-work",
   staticRoot: "dashboard/public",
   host: "127.0.0.1",
@@ -58,7 +65,24 @@ const defaultOptions: DashboardServerOptions = {
 export async function startDashboardServer(
   options: Partial<DashboardServerOptions> = {},
 ): Promise<DashboardServerInstance> {
-  const resolved = resolveServerOptions(options);
+  const baseOptions = resolveServerOptions(options);
+  const targetResult = await resolveDashboardTargetCwd({
+    cwd: baseOptions.cwd,
+    targetCwd: baseOptions.targetCwd,
+  });
+  if (!targetResult.ok) throw new Error(targetResult.error);
+  const artifactRootSafety = await validateDashboardArtifactRootForRead({
+    targetCwd: targetResult.value,
+    artifactRoot: baseOptions.artifactRoot,
+  });
+  if (!artifactRootSafety.ok) {
+    throw new Error(`Invalid artifactRoot: ${artifactRootSafety.error}`);
+  }
+  const resolved = {
+    ...baseOptions,
+    targetCwd: targetResult.value,
+    artifactRoot: artifactRootSafety.value,
+  };
   let actualPort = resolved.port;
   const server = createServer((request, response) => {
     void handleDashboardRequest(request, response, {
@@ -84,9 +108,20 @@ export async function startDashboardServer(
 export function resolveServerOptions(
   options: Partial<DashboardServerOptions> = {},
 ): DashboardServerOptions {
+  const cwd = options.cwd ?? defaultOptions.cwd;
+  const artifactRootResult = normalizeArtifactRoot(
+    options.artifactRoot ?? defaultOptions.artifactRoot,
+  );
+  if (!artifactRootResult.ok) {
+    throw new Error(`Invalid artifactRoot: ${artifactRootResult.error}`);
+  }
+
   return {
-    cwd: options.cwd ?? defaultOptions.cwd,
-    artifactRoot: options.artifactRoot ?? defaultOptions.artifactRoot,
+    cwd,
+    targetCwd: options.targetCwd === undefined
+      ? path.resolve(cwd)
+      : path.resolve(cwd, options.targetCwd),
+    artifactRoot: artifactRootResult.value,
     staticRoot: options.staticRoot ?? defaultOptions.staticRoot,
     host: options.host ?? defaultOptions.host,
     port: options.port ?? defaultOptions.port,
@@ -199,7 +234,7 @@ async function handleGetApiRequest(
   ) {
     const runId = segments[2] ?? "";
     const result = await readDashboardRun({
-      cwd: context.cwd,
+      cwd: context.targetCwd,
       artifactRoot: context.artifactRoot,
       runId,
     });
@@ -261,6 +296,7 @@ async function handlePostApiRequest(
 
     const result = await launchDashboardRun(body.value, {
       cwd: context.cwd,
+      targetCwd: context.targetCwd,
       artifactRoot: context.artifactRoot,
       cliPath: context.cliPath,
     });
@@ -293,6 +329,7 @@ async function handlePostApiRequest(
 
     const result = await dryRunDashboardResume(segments[2] ?? "", body.value, {
       cwd: context.cwd,
+      targetCwd: context.targetCwd,
       artifactRoot: context.artifactRoot,
       cliPath: context.cliPath,
     });
@@ -324,6 +361,7 @@ async function handlePostApiRequest(
 
     const result = await resumeDashboardRun(segments[2] ?? "", body.value, {
       cwd: context.cwd,
+      targetCwd: context.targetCwd,
       artifactRoot: context.artifactRoot,
       cliPath: context.cliPath,
     });
@@ -347,7 +385,7 @@ async function handlePostApiRequest(
 async function readRunsIndex(
   context: DashboardRequestContext,
 ): Promise<DashboardRunsResponse> {
-  const artifactRoot = path.resolve(context.cwd, context.artifactRoot);
+  const artifactRoot = path.resolve(context.targetCwd, context.artifactRoot);
   const warnings: DashboardWarning[] = [];
 
   try {
@@ -375,7 +413,7 @@ async function readRunsIndex(
   }
 
   const runs = await listDashboardRuns({
-    cwd: context.cwd,
+    cwd: context.targetCwd,
     artifactRoot: context.artifactRoot,
   });
   return { runs, warnings };
@@ -388,7 +426,7 @@ async function handleArtifactRequest(
   artifactId: string,
 ): Promise<void> {
   const result = await readDashboardRun({
-    cwd: context.cwd,
+    cwd: context.targetCwd,
     artifactRoot: context.artifactRoot,
     runId,
   });
@@ -498,7 +536,7 @@ async function handleRunEventsRequest(
 
   const result = await startDashboardRunEventStream(
     {
-      cwd: context.cwd,
+      cwd: context.targetCwd,
       artifactRoot: context.artifactRoot,
       runId,
     },
@@ -693,6 +731,12 @@ function parseArgs(argv: string[]): DashboardServerOptions | { help: true } {
       continue;
     }
 
+    if (arg === "--repo") {
+      options.targetCwd = readArgValue(argv, index, arg);
+      index += 1;
+      continue;
+    }
+
     if (arg === "--static-root") {
       options.staticRoot = readArgValue(argv, index, arg);
       index += 1;
@@ -718,6 +762,7 @@ function usage(): string {
     "Options:",
     "  --port <port>           Port to listen on. Default: 3737.",
     "  --host <host>           Host to bind. Default: 127.0.0.1.",
+    "  --repo <path>           Target repository/workspace. Default: current directory.",
     "  --artifact-root <path>  Artifact root to read. Default: .agent-work.",
     "  --static-root <path>    Static asset root. Default: dashboard/public.",
     "  --cli-path <path>       Built CLI entrypoint. Default: dist/cli/main.js.",

@@ -26,6 +26,7 @@ export function createAgentRunner(config: RunnerConfig): CreateRunnerResult {
       ok: true,
       runner: new CodexExecRunner({
         command: config.command,
+        accountLabel: config.accountLabel,
         options,
       }),
     };

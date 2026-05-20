@@ -135,6 +135,17 @@ const artifactDirectories = new Set([
   "runner/",
 ]);
 
+const defaultDashboardArtifactRoot = ".agent-work";
+const dashboardLaunchesDirectory = "dashboard-launches";
+const dashboardResumesDirectory = "dashboard-resumes";
+const placeholderPathSegmentPattern = "<[A-Za-z0-9][A-Za-z0-9_-]*>";
+const launchIdPlaceholder = "<launch-id>";
+const resumeLaunchIdPlaceholder = "<resume-launch-id>";
+const resumeIdPlaceholder = "<resume-id>";
+
+const pathClaimPattern =
+  /(^|[\s("'`=])((?:\.\/)?(?:\.agent-work(?:\/[A-Za-z0-9._<>/-]*)?|dist\/cli\/main\.js|(?:checks|diffs|fixes|logs|milestones|plans|reviews|runner)\/[A-Za-z0-9._<>/-]*|dashboard-launches(?:\/[A-Za-z0-9._<>/-]*)?|dashboard-resumes(?:\/[A-Za-z0-9._<>/-]*)?))/g;
+
 export async function buildReviewEvidence(
   options: BuildReviewEvidenceOptions,
 ): Promise<ReviewEvidenceResult> {
@@ -193,7 +204,7 @@ export async function buildReviewEvidence(
     }
   }
 
-  markDecomposedCommandSnippets(cappedSnippets);
+  markDecomposedSnippets(cappedSnippets);
   appendSnippetStatusWarnings(cappedSnippets, warnings);
 
   return {
@@ -367,6 +378,11 @@ function addCommandSnippet(
   if (!commandSnippet) return;
 
   for (const derived of deriveCommandClaims(commandSnippet.original)) {
+    if (derived.kind === "path") {
+      addPathSnippet(snippets, derived.original, originFile, commandSnippet.original);
+      continue;
+    }
+
     addSnippet(
       snippets,
       derived.original,
@@ -387,6 +403,8 @@ function extractInlineSnippets(
     const kind = classifySnippetKind(original);
     if (kind === "command") {
       addCommandSnippet(snippets, original, line.file);
+    } else if (kind === "path") {
+      addPathSnippet(snippets, original, line.file);
     } else {
       addSnippet(snippets, original, kind, line.file);
     }
@@ -409,11 +427,25 @@ function extractUnquotedSnippets(
     addSnippet(snippets, match[2] ?? "", "flag", line.file);
   }
 
-  const pathPattern =
-    /(^|[\s("'`])((?:\.\/)?(?:\.agent-work|dist\/cli\/main\.js|logs\/|plans\/|milestones\/|diffs\/|checks\/|reviews\/|runner\/)[A-Za-z0-9._/-]*)/g;
-  for (const match of line.text.matchAll(pathPattern)) {
-    addSnippet(snippets, match[2] ?? "", "path", line.file);
+  for (const pathClaim of extractPathClaimsFromText(line.text)) {
+    addPathSnippet(snippets, pathClaim, line.file);
   }
+}
+
+function addPathSnippet(
+  snippets: Map<string, ReviewEvidenceSnippet>,
+  original: string,
+  originFile: string,
+  derivedFrom?: string,
+): ReviewEvidenceSnippet | null {
+  const pathSnippet = addSnippet(snippets, original, "path", originFile, derivedFrom);
+  if (!pathSnippet) return null;
+
+  for (const derived of deriveDashboardPathClaims(pathSnippet.normalized)) {
+    addSnippet(snippets, derived, "path", originFile, pathSnippet.original);
+  }
+
+  return pathSnippet;
 }
 
 function addSnippet(
@@ -467,13 +499,197 @@ function deriveCommandClaims(command: string): Array<{
     claims.push({ original: match[0], kind: "url" });
   }
 
-  const pathPattern =
-    /(^|[\s="'`])((?:\.\/)?(?:\.agent-work|dist\/cli\/main\.js|logs\/|plans\/|milestones\/|diffs\/|checks\/|reviews\/|runner\/)[A-Za-z0-9._/-]*)/g;
-  for (const match of command.matchAll(pathPattern)) {
-    claims.push({ original: match[2] ?? "", kind: "path" });
+  for (const pathClaim of extractPathClaimsFromText(command)) {
+    claims.push({ original: pathClaim, kind: "path" });
   }
 
   return claims.filter((claim) => claim.original.length > 0);
+}
+
+function extractPathClaimsFromText(text: string): string[] {
+  const claims: string[] = [];
+  for (const match of text.matchAll(pathClaimPattern)) {
+    claims.push(match[2] ?? "");
+  }
+  return unique(claims);
+}
+
+function deriveDashboardPathClaims(pathSnippet: string): string[] {
+  const normalized = normalizePathSnippet(pathSnippet);
+  const dashboardPath = toDashboardSourcePath(normalized);
+  if (!isDashboardDiagnosticPath(dashboardPath.sourcePath)) return [];
+
+  const derived: string[] = [];
+  if (dashboardPath.hasDefaultArtifactRoot) {
+    derived.push(defaultDashboardArtifactRoot);
+  }
+
+  const directory = dashboardDiagnosticDirectory(dashboardPath.sourcePath);
+  if (directory) {
+    derived.push(`${directory}/`);
+  }
+
+  if (dashboardPath.sourcePath !== directory && dashboardPath.sourcePath !== `${directory}/`) {
+    derived.push(dashboardPath.sourcePath);
+  }
+
+  return unique(derived).filter((claim) => claim !== normalized);
+}
+
+function toDashboardSourcePath(pathSnippet: string): {
+  hasDefaultArtifactRoot: boolean;
+  sourcePath: string;
+} {
+  const normalized = normalizePathSnippet(pathSnippet);
+  const artifactRootPrefix = `${defaultDashboardArtifactRoot}/`;
+  if (normalized.startsWith(artifactRootPrefix)) {
+    return {
+      hasDefaultArtifactRoot: true,
+      sourcePath: normalized.slice(artifactRootPrefix.length),
+    };
+  }
+
+  return {
+    hasDefaultArtifactRoot: false,
+    sourcePath: normalized,
+  };
+}
+
+function isDashboardDiagnosticPath(pathSnippet: string): boolean {
+  return isDashboardLaunchesPath(pathSnippet) || isDashboardResumesPath(pathSnippet);
+}
+
+function dashboardDiagnosticDirectory(pathSnippet: string): string | null {
+  if (isDashboardLaunchesPath(pathSnippet)) {
+    return dashboardLaunchesDirectory;
+  }
+
+  if (isDashboardResumesPath(pathSnippet)) {
+    return dashboardResumesDirectory;
+  }
+
+  return null;
+}
+
+function isDashboardLaunchesPath(pathSnippet: string): boolean {
+  const normalized = normalizePathSnippet(pathSnippet);
+  return (
+    isDashboardLaunchesDirectoryPath(normalized) ||
+    isLaunchDiagnosticsTemplatePath(normalized)
+  );
+}
+
+function isDashboardResumesPath(pathSnippet: string): boolean {
+  const normalized = normalizePathSnippet(pathSnippet);
+  return (
+    isDashboardResumesDirectoryPath(normalized) ||
+    isResumeRecordTemplatePath(normalized) ||
+    isResumeDiagnosticsTemplatePath(normalized) ||
+    isResumeClaimTemplatePath(normalized)
+  );
+}
+
+function isDashboardLaunchesDirectoryPath(pathSnippet: string): boolean {
+  return pathSnippet === dashboardLaunchesDirectory || pathSnippet === `${dashboardLaunchesDirectory}/`;
+}
+
+function isDashboardResumesDirectoryPath(pathSnippet: string): boolean {
+  return pathSnippet === dashboardResumesDirectory || pathSnippet === `${dashboardResumesDirectory}/`;
+}
+
+function isLaunchDiagnosticsTemplatePath(pathSnippet: string): boolean {
+  return launchDiagnosticsTemplatePlaceholder(pathSnippet) !== null;
+}
+
+function isResumeRecordTemplatePath(pathSnippet: string): boolean {
+  return resumeRecordTemplatePlaceholder(pathSnippet) === resumeIdPlaceholder;
+}
+
+function isResumeDiagnosticsTemplatePath(pathSnippet: string): boolean {
+  return resumeDiagnosticsTemplatePlaceholder(pathSnippet) === resumeIdPlaceholder;
+}
+
+function isResumeClaimTemplatePath(pathSnippet: string): boolean {
+  return resumeClaimTemplatePlaceholder(pathSnippet) === resumeIdPlaceholder;
+}
+
+function launchDiagnosticsTemplatePlaceholder(pathSnippet: string): string | null {
+  const match = new RegExp(
+    `^${dashboardLaunchesDirectory}/(${placeholderPathSegmentPattern})\\.json$`,
+  ).exec(pathSnippet);
+  const placeholder = match?.[1] ?? null;
+  if (placeholder !== launchIdPlaceholder && placeholder !== resumeLaunchIdPlaceholder) {
+    return null;
+  }
+  return placeholder;
+}
+
+function resumeRecordTemplatePlaceholder(pathSnippet: string): string | null {
+  return new RegExp(`^${dashboardResumesDirectory}/(${placeholderPathSegmentPattern})\\.json$`).exec(
+    pathSnippet,
+  )?.[1] ?? null;
+}
+
+function resumeDiagnosticsTemplatePlaceholder(pathSnippet: string): string | null {
+  return new RegExp(
+    `^${dashboardResumesDirectory}/(${placeholderPathSegmentPattern})-diagnostics\\.json$`,
+  ).exec(pathSnippet)?.[1] ?? null;
+}
+
+function resumeClaimTemplatePlaceholder(pathSnippet: string): string | null {
+  return new RegExp(`^${dashboardResumesDirectory}/(${placeholderPathSegmentPattern})\\.claim$`).exec(
+    pathSnippet,
+  )?.[1] ?? null;
+}
+
+function launchDiagnosticsSource(options: {
+  sourcePath: string;
+}): "launcher" | "resumer" | null {
+  const placeholder = launchDiagnosticsTemplatePlaceholder(options.sourcePath);
+  if (placeholder === launchIdPlaceholder) return "launcher";
+  if (placeholder === resumeLaunchIdPlaceholder) return "resumer";
+  return null;
+}
+
+function dashboardResumeDiagnosticSource(options: {
+  sourcePath: string;
+}): {
+  blockStartNeedle: string;
+  needles: string[];
+} | null {
+  if (isDashboardResumesDirectoryPath(options.sourcePath)) {
+    return {
+      blockStartNeedle: "export async function dryRunDashboardResume",
+      needles: [`"${dashboardResumesDirectory}"`],
+    };
+  }
+
+  if (isResumeDiagnosticsTemplatePath(options.sourcePath)) {
+    return {
+      blockStartNeedle: "export async function dryRunDashboardResume",
+      needles: [
+        "const resumeId = createResumeId",
+        `"${dashboardResumesDirectory}"`,
+        "`${resumeId}-diagnostics.json`",
+      ],
+    };
+  }
+
+  if (isResumeRecordTemplatePath(options.sourcePath)) {
+    return {
+      blockStartNeedle: "function resumeDryRunRecordPath",
+      needles: [`"${dashboardResumesDirectory}"`, "`${resumeId}.json`"],
+    };
+  }
+
+  if (isResumeClaimTemplatePath(options.sourcePath)) {
+    return {
+      blockStartNeedle: "function resumeDryRunClaimPath",
+      needles: [`"${dashboardResumesDirectory}"`, "`${resumeId}.claim`"],
+    };
+  }
+
+  return null;
 }
 
 function capSnippets(
@@ -509,6 +725,25 @@ async function validateStructuredSnippet(options: {
   }
 
   if (snippet.kind === "path") {
+    if (snippet.normalized === defaultDashboardArtifactRoot) {
+      return validateDashboardDefaultArtifactRoot(options);
+    }
+
+    const dashboardPath = toDashboardSourcePath(snippet.normalized);
+    if (!dashboardPath.hasDefaultArtifactRoot && isDashboardLaunchesPath(dashboardPath.sourcePath)) {
+      return validateDashboardLaunchDiagnosticPath({
+        ...options,
+        sourcePath: dashboardPath.sourcePath,
+      });
+    }
+
+    if (!dashboardPath.hasDefaultArtifactRoot && isDashboardResumesPath(dashboardPath.sourcePath)) {
+      return validateDashboardResumeDiagnosticPath({
+        ...options,
+        sourcePath: dashboardPath.sourcePath,
+      });
+    }
+
     if (artifactDirectories.has(snippet.normalized)) {
       return validateArtifactDirectory(options);
     }
@@ -663,6 +898,117 @@ async function validateDashboardFlag(options: {
   return { matches: match ? [match] : [], warnings: [] };
 }
 
+async function validateDashboardDefaultArtifactRoot(options: {
+  snippet: ReviewEvidenceSnippet;
+  repoRoot: string;
+  limits: EvidenceLimits;
+}): Promise<StructuredValidationResult> {
+  const serverPath = path.join(options.repoRoot, "src", "dashboard", "server.ts");
+  const raw = await readFile(serverPath, "utf8").catch(() => null);
+  if (raw === null) return { matches: [], warnings: [] };
+  const match = lineMatch(
+    raw,
+    `artifactRoot: "${defaultDashboardArtifactRoot}"`,
+    toRepoRelativePath(options.repoRoot, serverPath),
+    options.limits,
+    "structured",
+  );
+  return { matches: match ? [match] : [], warnings: [] };
+}
+
+async function validateDashboardLaunchDiagnosticPath(options: {
+  snippet: ReviewEvidenceSnippet;
+  repoRoot: string;
+  limits: EvidenceLimits;
+  sourcePath: string;
+}): Promise<StructuredValidationResult> {
+  if (isDashboardLaunchesDirectoryPath(options.sourcePath)) {
+    const launcherPath = path.join(options.repoRoot, "src", "dashboard", "run-launcher.ts");
+    const raw = await readFile(launcherPath, "utf8").catch(() => null);
+    if (raw === null) return { matches: [], warnings: [] };
+
+    return {
+      matches: structuredBlockLineMatches(
+        raw,
+        toRepoRelativePath(options.repoRoot, launcherPath),
+        options.limits,
+        "export async function launchDashboardRun",
+        [`"${dashboardLaunchesDirectory}"`],
+      ),
+      warnings: [],
+    };
+  }
+
+  const source = launchDiagnosticsSource({ sourcePath: options.sourcePath });
+  if (source === "launcher") {
+    const launcherPath = path.join(options.repoRoot, "src", "dashboard", "run-launcher.ts");
+    const raw = await readFile(launcherPath, "utf8").catch(() => null);
+    if (raw === null) return { matches: [], warnings: [] };
+
+    return {
+      matches: structuredBlockLineMatches(
+        raw,
+        toRepoRelativePath(options.repoRoot, launcherPath),
+        options.limits,
+        "export async function launchDashboardRun",
+        [
+          "const launchId = createLaunchId",
+          `"${dashboardLaunchesDirectory}"`,
+          "`${launchId}.json`",
+        ],
+      ),
+      warnings: [],
+    };
+  }
+
+  if (source === "resumer") {
+    const resumerPath = path.join(options.repoRoot, "src", "dashboard", "run-resumer.ts");
+    const raw = await readFile(resumerPath, "utf8").catch(() => null);
+    if (raw === null) return { matches: [], warnings: [] };
+
+    return {
+      matches: structuredBlockLineMatches(
+        raw,
+        toRepoRelativePath(options.repoRoot, resumerPath),
+        options.limits,
+        "export async function resumeDashboardRun",
+        [
+          "const launchId = createResumeLaunchId",
+          `"${dashboardLaunchesDirectory}"`,
+          "`${launchId}.json`",
+        ],
+      ),
+      warnings: [],
+    };
+  }
+
+  return { matches: [], warnings: [] };
+}
+
+async function validateDashboardResumeDiagnosticPath(options: {
+  snippet: ReviewEvidenceSnippet;
+  repoRoot: string;
+  limits: EvidenceLimits;
+  sourcePath: string;
+}): Promise<StructuredValidationResult> {
+  const resumerPath = path.join(options.repoRoot, "src", "dashboard", "run-resumer.ts");
+  const raw = await readFile(resumerPath, "utf8").catch(() => null);
+  if (raw === null) return { matches: [], warnings: [] };
+
+  const source = dashboardResumeDiagnosticSource({ sourcePath: options.sourcePath });
+  if (!source) return { matches: [], warnings: [] };
+  return {
+    matches: structuredBlockLineMatches(
+      raw,
+      toRepoRelativePath(options.repoRoot, resumerPath),
+      options.limits,
+      source.blockStartNeedle,
+      source.needles,
+    ),
+    warnings: [],
+  };
+}
+
 async function validateArtifactDirectory(options: {
   snippet: ReviewEvidenceSnippet;
   repoRoot: string;
@@ -811,6 +1157,55 @@ function lineMatch(
   };
 }
 
+function structuredBlockLineMatches(
+  content: string,
+  relativePath: string,
+  limits: EvidenceLimits,
+  blockStartNeedle: string,
+  needles: string[],
+): ReviewEvidenceMatch[] {
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.includes(blockStartNeedle));
+  if (start < 0) return [];
+
+  const end = findNextTopLevelFunctionLine(lines, start + 1);
+  const matches: ReviewEvidenceMatch[] = [];
+  for (const needle of needles) {
+    const index = findNeedleBetweenLines(lines, needle, start, end);
+    if (index < 0) return [];
+    if (!matches.some((item) => item.file === relativePath && item.line === index + 1)) {
+      matches.push({
+        file: relativePath,
+        line: index + 1,
+        excerpt: excerptAroundLine(lines, index, limits.maxExcerptLines),
+        source: "structured",
+      });
+    }
+  }
+  return matches;
+}
+
+function findNextTopLevelFunctionLine(lines: string[], start: number): number {
+  for (let index = start; index < lines.length; index += 1) {
+    if (/^(export\s+)?(async\s+)?function\s+[A-Za-z0-9_]+/.test(lines[index] ?? "")) {
+      return index;
+    }
+  }
+  return lines.length;
+}
+
+function findNeedleBetweenLines(
+  lines: string[],
+  needle: string,
+  start: number,
+  end: number,
+): number {
+  for (let index = start; index < end; index += 1) {
+    if ((lines[index] ?? "").includes(needle)) return index;
+  }
+  return -1;
+}
+
 function excerptAroundLine(lines: string[], index: number, maxExcerptLines: number): string {
   const extra = Math.max(0, Math.floor((maxExcerptLines - 1) / 2));
   const start = Math.max(0, index - extra);
@@ -818,15 +1213,19 @@ function excerptAroundLine(lines: string[], index: number, maxExcerptLines: numb
   return lines.slice(start, end).join("\n").trimEnd();
 }
 
-function markDecomposedCommandSnippets(snippets: ReviewEvidenceSnippet[]): void {
+function markDecomposedSnippets(snippets: ReviewEvidenceSnippet[]): void {
   for (const snippet of snippets) {
-    if (snippet.kind !== "command" || snippet.status === "backed") continue;
+    if (!canDecomposeSnippet(snippet) || snippet.status === "backed") continue;
     const derived = snippets.filter((candidate) => candidate.derivedFrom === snippet.original);
     if (derived.length === 0) continue;
     if (derived.every((candidate) => candidate.status === "backed")) {
       snippet.status = "decomposed";
     }
   }
+}
+
+function canDecomposeSnippet(snippet: ReviewEvidenceSnippet): boolean {
+  return snippet.kind === "command" || snippet.kind === "path";
 }
 
 function appendSnippetStatusWarnings(
@@ -898,9 +1297,22 @@ function formatSnippets(snippets: ReviewEvidenceSnippet[]): string[] {
     if (snippet.derivedFrom) {
       lines.push(`- Derived from: ${formatInlineCode(snippet.derivedFrom)}`);
     }
+    const derivedChildren = snippets.filter((candidate) => candidate.derivedFrom === snippet.original);
+    if (derivedChildren.length > 0) {
+      lines.push("- Derived child claims:");
+      for (const child of derivedChildren) {
+        lines.push(
+          `  - ${formatInlineCode(child.original)}: ${child.status}${formatChildMatchSummary(child)}`,
+        );
+      }
+    }
 
     if (snippet.matches.length === 0) {
-      lines.push("- Matches: none");
+      lines.push(
+        snippet.status === "decomposed" && derivedChildren.length > 0
+          ? "- Matches: none directly; see derived child claims."
+          : "- Matches: none",
+      );
       lines.push("");
       continue;
     }
@@ -917,6 +1329,12 @@ function formatSnippets(snippets: ReviewEvidenceSnippet[]): string[] {
   }
 
   return lines;
+}
+
+function formatChildMatchSummary(snippet: ReviewEvidenceSnippet): string {
+  if (snippet.matches.length === 0) return "";
+  const locations = snippet.matches.map((match) => `${match.file}:${match.line}`);
+  return ` (${locations.join(", ")})`;
 }
 
 function formatAddedMarkdownLines(lines: AddedMarkdownLine[]): string[] {
@@ -988,10 +1406,11 @@ function normalizeSnippet(
 }
 
 function normalizePathSnippet(value: string): string {
-  return value
+  const normalized = value
     .trim()
     .replace(/^\.\/+/, "")
     .replace(/\\/g, "/");
+  return normalized.endsWith("/") ? normalized.replace(/\/+$/, "/") : normalized;
 }
 
 function classifySnippetKind(value: string): ReviewEvidenceSnippet["kind"] {
@@ -1017,8 +1436,12 @@ function looksLikeClaim(value: string): boolean {
 
 function looksLikePath(value: string): boolean {
   return (
-    value === ".agent-work" ||
-    value.startsWith(".agent-work/") ||
+    value === defaultDashboardArtifactRoot ||
+    value.startsWith(`${defaultDashboardArtifactRoot}/`) ||
+    value === dashboardLaunchesDirectory ||
+    value.startsWith(`${dashboardLaunchesDirectory}/`) ||
+    value === dashboardResumesDirectory ||
+    value.startsWith(`${dashboardResumesDirectory}/`) ||
     value.includes("/") ||
     artifactDirectories.has(value)
   );

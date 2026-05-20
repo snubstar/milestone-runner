@@ -36,6 +36,10 @@ export interface StateError {
 
 export interface StateArtifacts {
   goal?: string;
+  inputs?: {
+    manifest: string;
+    context?: Record<string, string>;
+  };
   majorPlan?: string;
   majorPlanReview?: string;
   finalMajorPlanMarkdown?: string;
@@ -56,6 +60,28 @@ export interface StateArtifacts {
 export interface RunState {
   runId: string;
   goal: string;
+  workspace?: {
+    invocationCwd: string;
+    targetCwd: string;
+  };
+  inputs?: {
+    goalSource: {
+      type: "argv" | "file";
+      path: string | null;
+    };
+    majorPlanSource?: {
+      type: "runner" | "seed";
+      path: string | null;
+      sizeBytes?: number;
+      sha256?: string;
+    };
+    context: Array<{
+      path: string;
+      artifactPath: string;
+      sizeBytes: number;
+      sha256: string;
+    }>;
+  };
   currentPhase: OrchestratorPhase;
   status: OrchestratorPhase;
   currentMilestoneId: number | null;

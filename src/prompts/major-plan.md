@@ -14,6 +14,8 @@ Resolved orchestrator config:
 {{config}}
 ```
 
+{{initialContext}}
+
 Write a concise major plan in Markdown. Include:
 
 - Objective

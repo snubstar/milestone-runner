@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { TextDecoder } from "node:util";
 
 import {
   buildPlanningArtifactPaths,
@@ -11,6 +12,10 @@ import {
   parseMilestoneMetadataJson,
   toMilestoneStatusMap,
 } from "../milestones/milestone-validator.js";
+import {
+  resolveSeedMajorPlan,
+  type ResolvedSeedMajorPlan,
+} from "../inputs/initial-inputs.js";
 import { loadPrompt } from "../prompts/prompt-loader.js";
 import { renderPrompt, type PromptVariables } from "../prompts/prompt-renderer.js";
 import type { AgentRunResult } from "../runners/agent-runner.js";
@@ -69,39 +74,25 @@ export async function runPlanningWorkflow(
 
   state = await persist(setStatePhase(state, "planning", clock()));
 
-  const majorPlanPrompt = await renderLoadedPrompt("major-plan", {
-    goal: options.goal,
-    config: options.config,
-  });
-  if (!majorPlanPrompt.ok) return fail("major_plan", majorPlanPrompt.error);
-
-  const majorPlan = await runPhase("major_plan", majorPlanPrompt.value, {
-    goal: state.artifacts.goal ?? "00-goal.txt",
-  });
+  const majorPlan = await prepareMajorPlan();
   if (!majorPlan.ok) return fail("major_plan", majorPlan.error, majorPlan.details);
 
-  await writeTextArtifact(planningPaths.files.majorPlan, majorPlan.value);
-  state = await persist(
-    recordPlanningArtifact(
-      state,
-      "majorPlan",
-      planningPaths.statePaths.majorPlan,
-      clock(),
-    ),
-  );
+  const majorPlanText = majorPlan.value;
 
   state = await persist(setStatePhase(state, "plan_reviewing", clock()));
 
   const reviewPrompt = await renderLoadedPrompt("major-plan-review", {
     goal: options.goal,
-    majorPlan: majorPlan.value,
+    majorPlan: majorPlanText,
+    initialContext: renderReviewInitialContext(state),
   });
   if (!reviewPrompt.ok) return fail("major_plan_review", reviewPrompt.error);
 
-  const majorPlanReview = await runPhase("major_plan_review", reviewPrompt.value, {
-    goal: state.artifacts.goal ?? "00-goal.txt",
-    majorPlan: planningPaths.statePaths.majorPlan,
-  });
+  const majorPlanReview = await runPhase(
+    "major_plan_review",
+    reviewPrompt.value,
+    majorPlanReviewArtifacts(state, planningPaths.statePaths.majorPlan),
+  );
   if (!majorPlanReview.ok) {
     return fail("major_plan_review", majorPlanReview.error, majorPlanReview.details);
   }
@@ -120,7 +111,7 @@ export async function runPlanningWorkflow(
 
   const finalPlanPrompt = await renderLoadedPrompt("final-major-plan", {
     goal: options.goal,
-    majorPlan: majorPlan.value,
+    majorPlan: majorPlanText,
     majorPlanReview: majorPlanReview.value,
   });
   if (!finalPlanPrompt.ok) return fail("final_major_plan", finalPlanPrompt.error);
@@ -195,6 +186,65 @@ export async function runPlanningWorkflow(
     state,
     metadata: metadataResult.value,
   };
+
+  async function prepareMajorPlan(): Promise<
+    | { ok: true; value: string }
+    | { ok: false; error: string; details?: AgentRunResult | { message: string } }
+  > {
+    if (state.inputs?.majorPlanSource?.type === "seed") {
+      const seededPlan = await loadSeededMajorPlanText({
+        state,
+        paths: options.paths,
+        targetCwd: options.cwd ?? process.cwd(),
+        resolvedSeedMajorPlan: options.resolvedSeedMajorPlan,
+      });
+      if (!seededPlan.ok) return seededPlan;
+
+      await writeTextArtifact(planningPaths.files.majorPlan, seededPlan.value);
+      state = await persist(
+        recordPlanningArtifact(
+          state,
+          "majorPlan",
+          planningPaths.statePaths.majorPlan,
+          clock(),
+        ),
+      );
+      return seededPlan;
+    }
+
+    if (options.resolvedSeedMajorPlan !== undefined) {
+      return {
+        ok: false,
+        error:
+          "Resolved seed major plan was provided, but run state does not mark the major plan source as seed.",
+      };
+    }
+
+    const majorPlanPrompt = await renderLoadedPrompt("major-plan", {
+      goal: options.goal,
+      config: options.config,
+      initialContext: renderInitialContext(state),
+    });
+    if (!majorPlanPrompt.ok) return { ok: false, error: majorPlanPrompt.error };
+
+    const majorPlan = await runPhase(
+      "major_plan",
+      majorPlanPrompt.value,
+      majorPlanArtifacts(state),
+    );
+    if (!majorPlan.ok) return majorPlan;
+
+    await writeTextArtifact(planningPaths.files.majorPlan, majorPlan.value);
+    state = await persist(
+      recordPlanningArtifact(
+        state,
+        "majorPlan",
+        planningPaths.statePaths.majorPlan,
+        clock(),
+      ),
+    );
+    return majorPlan;
+  }
 
   async function renderLoadedPrompt(
     promptName:
@@ -289,6 +339,7 @@ export async function runPlanningWorkflow(
     return resolveOutputSchemaPathForPhase({
       phase,
       cwd: options.cwd ?? process.cwd(),
+      schemaRoot: options.schemaRoot,
     });
   }
 }
@@ -300,7 +351,10 @@ function readMilestonesSchema(
     return Promise.resolve({ ok: true, value: options.milestonesSchema });
   }
 
-  const schemaPath = path.resolve(options.cwd ?? process.cwd(), "schemas", "milestones.schema.json");
+  const schemaPath = path.resolve(
+    options.schemaRoot ?? path.resolve(options.cwd ?? process.cwd(), "schemas"),
+    "milestones.schema.json",
+  );
   return readFile(schemaPath, "utf8")
     .then((value) => ({ ok: true as const, value }))
     .catch((error) => ({
@@ -311,6 +365,228 @@ function readMilestonesSchema(
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function renderInitialContext(state: RunState): string {
+  const context = state.inputs?.context ?? [];
+  if (context.length === 0) {
+    return "Initial context files: none provided.";
+  }
+
+  return [
+    "Initial context files:",
+    ...context.map((entry) => `- ${entry.path} (snapshot artifact: ${entry.artifactPath})`),
+    "",
+    "These files were explicitly provided by the operator. Read them from the " +
+      "target repository before drafting the major plan when they are relevant to the goal.",
+  ].join("\n");
+}
+
+function renderReviewInitialContext(state: RunState): string {
+  const context = state.inputs?.context ?? [];
+  if (context.length === 0) {
+    return "Initial context files: none provided.";
+  }
+
+  return [
+    "Initial context files:",
+    ...context.map((entry) => `- ${entry.path} (snapshot artifact: ${entry.artifactPath})`),
+    "",
+    "These files were explicitly provided by the operator. Consider them while " +
+      "reviewing or finalizing the major plan when they are relevant to the goal.",
+  ].join("\n");
+}
+
+function majorPlanArtifacts(state: RunState): Record<string, string> {
+  return {
+    goal: state.artifacts.goal ?? "00-goal.txt",
+    ...initialInputArtifacts(state),
+  };
+}
+
+function majorPlanReviewArtifacts(
+  state: RunState,
+  majorPlanArtifact: string,
+): Record<string, string> {
+  return {
+    goal: state.artifacts.goal ?? "00-goal.txt",
+    majorPlan: majorPlanArtifact,
+    ...initialInputArtifacts(state),
+  };
+}
+
+function initialInputArtifacts(state: RunState): Record<string, string> {
+  const artifacts: Record<string, string> = {};
+  if (state.artifacts.inputs?.manifest) {
+    artifacts.initialInputsManifest = state.artifacts.inputs.manifest;
+  }
+
+  for (const [index, input] of (state.inputs?.context ?? []).entries()) {
+    artifacts[`initialContext${index + 1}`] = input.artifactPath;
+  }
+
+  return artifacts;
+}
+
+async function loadSeededMajorPlanText(options: {
+  state: RunState;
+  paths: PlanningWorkflowOptions["paths"];
+  targetCwd: string;
+  resolvedSeedMajorPlan?: ResolvedSeedMajorPlan;
+}): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
+  const source = options.state.inputs?.majorPlanSource;
+  if (source?.type !== "seed") {
+    return {
+      ok: false,
+      error: "Run state does not record a seeded major plan source.",
+    };
+  }
+
+  const sourcePath = source.path;
+  const sourceSizeBytes = source.sizeBytes;
+  const sourceSha256 = source.sha256;
+  if (
+    typeof sourcePath !== "string" ||
+    sourcePath.length === 0 ||
+    typeof sourceSizeBytes !== "number" ||
+    typeof sourceSha256 !== "string" ||
+    sourceSha256.length === 0
+  ) {
+    return {
+      ok: false,
+      error: "Run state has incomplete seeded major plan metadata.",
+    };
+  }
+  const sourceMetadata = {
+    path: sourcePath,
+    sizeBytes: sourceSizeBytes,
+    sha256: sourceSha256,
+  };
+
+  if (options.resolvedSeedMajorPlan !== undefined) {
+    const mismatch = seedCacheMismatch(sourceMetadata, options.resolvedSeedMajorPlan);
+    if (mismatch) return { ok: false, error: mismatch };
+    return nonBlankSeededPlan(options.resolvedSeedMajorPlan.text, "Resolved seed major plan");
+  }
+
+  if (options.state.artifacts.majorPlan !== undefined) {
+    const artifact = await readRunRelativeTextArtifact({
+      runDir: options.paths.runDir,
+      artifactPath: options.state.artifacts.majorPlan,
+      label: "Seeded major plan artifact",
+    });
+    if (!artifact.ok) return artifact;
+    return nonBlankSeededPlan(artifact.value, "Seeded major plan artifact");
+  }
+
+  const resolved = await resolveSeedMajorPlan({
+    targetCwd: options.targetCwd,
+    seedMajorPlanFile: sourceMetadata.path,
+  });
+  if (!resolved.ok) return resolved;
+  if (resolved.value === undefined) {
+    return {
+      ok: false,
+      error: "Seeded major plan source is missing from run state.",
+    };
+  }
+
+  const mismatch = seedCacheMismatch(sourceMetadata, resolved.value);
+  if (mismatch) {
+    return {
+      ok: false,
+      error: "Seed major plan file changed since the run was initialized.",
+    };
+  }
+
+  return nonBlankSeededPlan(resolved.value.text, "Seed major plan file");
+}
+
+function seedCacheMismatch(
+  source: { path: string; sizeBytes?: number; sha256?: string },
+  seed: ResolvedSeedMajorPlan,
+): string | null {
+  if (
+    source.path !== seed.path ||
+    source.sizeBytes !== seed.sizeBytes ||
+    source.sha256 !== seed.sha256
+  ) {
+    return "Resolved seed major plan does not match saved seeded major plan source.";
+  }
+
+  return null;
+}
+
+async function readRunRelativeTextArtifact(options: {
+  runDir: string;
+  artifactPath: string;
+  label: string;
+}): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
+  if (!isSafeRunRelativePath(options.artifactPath)) {
+    return {
+      ok: false,
+      error: `${options.label} path is not a safe run-relative path: ${options.artifactPath}`,
+    };
+  }
+
+  const runDir = path.resolve(options.runDir);
+  const filePath = path.resolve(runDir, ...options.artifactPath.split("/"));
+  if (!isInsideDirectory(runDir, filePath)) {
+    return {
+      ok: false,
+      error: `${options.label} path escapes the run directory: ${options.artifactPath}`,
+    };
+  }
+
+  try {
+    const content = await readFile(filePath);
+    return decodeUtf8(content, options.label);
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Failed to read ${options.label} at ${options.artifactPath}: ${formatError(error)}`,
+    };
+  }
+}
+
+function decodeUtf8(
+  content: Buffer,
+  label: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  try {
+    return {
+      ok: true,
+      value: new TextDecoder("utf-8", { fatal: true }).decode(content),
+    };
+  } catch {
+    return { ok: false, error: `${label} must be valid UTF-8 text.` };
+  }
+}
+
+function nonBlankSeededPlan(
+  text: string,
+  label: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (text.trim().length === 0) {
+    return {
+      ok: false,
+      error: `${label} must not be empty or whitespace-only.`,
+    };
+  }
+
+  return { ok: true, value: text };
+}
+
+function isSafeRunRelativePath(filePath: string): boolean {
+  return (
+    filePath.length > 0 &&
+    !path.isAbsolute(filePath) &&
+    !filePath.split(/[\\/]+/).includes("..")
+  );
+}
+
+function isInsideDirectory(root: string, targetPath: string): boolean {
+  return targetPath === root || targetPath.startsWith(`${root}${path.sep}`);
 }
 
 function withDiagnosticArtifact<T extends object>(

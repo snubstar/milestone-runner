@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -70,6 +70,48 @@ test("dryRunDashboardResume stores an allowed resume dry-run confirmation", asyn
       assert.equal(args.includes("--milestone-plan-review-policy"), true);
     }
   } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("dryRunDashboardResume reads runs from target repo and forwards --repo", async () => {
+  const context = await createResumerContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    await createResumeRun(targetDir, "run-1");
+    const canonicalTargetDir = await realpath(targetDir);
+    const result = await dryRunDashboardResume(
+      "run-1",
+      { allowDirty: true },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof dryRunDashboardResume>[2] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const args = JSON.parse(
+        await readFile(path.join(context.tempDir, "resume-dry-run-args.json"), "utf8"),
+      ) as string[];
+      assert.equal(args.includes("--repo"), true);
+      assert.equal(args[args.indexOf("--repo") + 1], canonicalTargetDir);
+      assert.equal(args.includes("--resume"), true);
+      assert.equal(args.includes("run-1"), true);
+
+      const diagnostics = JSON.parse(
+        await readFile(
+          path.join(targetDir, ".agent-work", result.response.diagnosticsPath),
+          "utf8",
+        ),
+      ) as { cwd?: string; targetCwd?: string };
+      assert.equal(diagnostics.cwd, context.tempDir);
+      assert.equal(diagnostics.targetCwd, canonicalTargetDir);
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
     await rm(context.tempDir, { recursive: true, force: true });
   }
 });

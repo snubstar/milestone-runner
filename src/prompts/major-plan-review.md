@@ -12,6 +12,10 @@ Major plan:
 {{majorPlan}}
 ```
 
+Initial context:
+
+{{initialContext}}
+
 Review the plan for:
 
 - Missing steps

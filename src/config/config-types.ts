@@ -18,6 +18,7 @@ export interface CodexExecRunnerOptions {
 export interface RunnerConfig {
   type: RunnerType;
   command?: string;
+  accountLabel?: string;
   options?: CodexExecRunnerOptions | Record<string, unknown>;
 }
 

@@ -1,5 +1,6 @@
 export type DashboardArtifactGroup =
   | "goal"
+  | "inputs"
   | "plans"
   | "milestones"
   | "diffs"
@@ -31,6 +32,27 @@ export interface DashboardArtifactLink {
   source: "state" | "known-path" | "derived";
 }
 
+export interface DashboardRunInputs {
+  goalSource: {
+    type: "argv" | "file";
+    path: string | null;
+  };
+  majorPlanSource: {
+    type: "runner" | "seed";
+    path: string | null;
+    sizeBytes?: number;
+    sha256?: string;
+  };
+  context: Array<{
+    path: string;
+    artifactPath: string;
+    artifact: DashboardArtifactLink | null;
+    sizeBytes: number;
+    sha256: string;
+  }>;
+  manifestArtifact?: DashboardArtifactLink;
+}
+
 export interface DashboardTimelineEvent {
   index: number;
   timestamp: string | null;
@@ -58,6 +80,7 @@ export interface DashboardRunSummary {
 export interface DashboardRunDetail extends DashboardRunSummary {
   milestoneStatuses: Record<string, string>;
   lastError: unknown | null;
+  inputs?: DashboardRunInputs;
   artifacts: Record<DashboardArtifactGroup, DashboardArtifactLink[]>;
   timeline: DashboardTimelineEvent[];
   timingArtifacts: DashboardArtifactLink[];
@@ -79,7 +102,8 @@ export interface DashboardBootstrapResponse {
 }
 
 export interface DashboardLaunchRequest {
-  prompt: string;
+  prompt?: string;
+  goalFilePath?: string;
   runner?: DashboardLaunchRunner;
   dryRun?: boolean;
   milestone?: number;
@@ -88,6 +112,8 @@ export interface DashboardLaunchRequest {
   allowDirty?: boolean;
   allowNonGitPlanning?: boolean;
   artifactRoot?: string;
+  contextPaths?: string[];
+  seedMajorPlanPath?: string;
 }
 
 export interface DashboardLaunchResponse {

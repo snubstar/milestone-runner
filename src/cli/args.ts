@@ -7,8 +7,12 @@ import { isSafeRunId } from "../artifacts/paths.js";
 
 export interface CliOptions {
   goal: string | null;
+  repoPath?: string;
   configPath?: string;
   artifactRoot?: string;
+  goalFile?: string;
+  seedMajorPlanFile?: string;
+  contextPaths?: string[];
   planningOnly: boolean;
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
@@ -93,6 +97,14 @@ export function parseArgs(argv: string[]): ParseArgsResult {
       continue;
     }
 
+    if (arg === "--repo") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      options.repoPath = value.value;
+      index += 1;
+      continue;
+    }
+
     if (arg === "--resume") {
       const value = readOptionValue(argv, index, arg);
       if (!value.ok) return value;
@@ -158,6 +170,30 @@ export function parseArgs(argv: string[]): ParseArgsResult {
       continue;
     }
 
+    if (arg === "--goal-file") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      options.goalFile = value.value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--seed-major-plan") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      options.seedMajorPlanFile = value.value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--context") {
+      const value = readOptionValue(argv, index, arg);
+      if (!value.ok) return value;
+      options.contextPaths = [...(options.contextPaths ?? []), value.value];
+      index += 1;
+      continue;
+    }
+
     if (arg === "--config") {
       const value = readOptionValue(argv, index, arg);
       if (!value.ok) return value;
@@ -218,6 +254,27 @@ export function parseArgs(argv: string[]): ParseArgsResult {
       };
     }
 
+    if (options.goalFile) {
+      return {
+        ok: false,
+        error: "--goal-file cannot be combined with --resume.",
+      };
+    }
+
+    if (options.contextPaths && options.contextPaths.length > 0) {
+      return {
+        ok: false,
+        error: "--context cannot be combined with --resume.",
+      };
+    }
+
+    if (options.seedMajorPlanFile) {
+      return {
+        ok: false,
+        error: "--seed-major-plan cannot be combined with --resume.",
+      };
+    }
+
     return {
       ok: true,
       options: {
@@ -227,7 +284,14 @@ export function parseArgs(argv: string[]): ParseArgsResult {
     };
   }
 
-  if (!goal) {
+  if (goal && options.goalFile) {
+    return {
+      ok: false,
+      error: "Cannot provide both an argv goal and --goal-file.",
+    };
+  }
+
+  if (!goal && !options.goalFile) {
     return { ok: false, error: "Missing goal." };
   }
 
@@ -235,7 +299,7 @@ export function parseArgs(argv: string[]): ParseArgsResult {
     ok: true,
     options: {
       ...options,
-      goal,
+      goal: options.goalFile ? null : goal,
     },
   };
 }
@@ -284,7 +348,12 @@ export function usage(): string {
     "",
     "Options:",
     "  --config <path>         Path to config file.",
+    "  --repo <path>           Target repository/workspace. Default: current directory.",
     "  --artifact-root <path>  Override artifact root.",
+    "  --goal-file <path>      Read the initial goal from a target-repo file.",
+    "  --seed-major-plan <path>",
+    "                          Seed the initial major plan from a target-repo file.",
+    "  --context <path>        Attach a target-repo file as initial context. Repeatable.",
     "  --planning-only         Allow planning-only operation.",
     "  --allow-dirty           Allow dirty Git working tree for implementation runs.",
     "  --allow-non-git-planning",

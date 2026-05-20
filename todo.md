@@ -1,8 +1,13 @@
+
+1. Be sure you can, in the prompt, also reference files, etc.
+2. Perhaps you can also provide the first general plan.
+3. How to use this in any repo? (maybe tonight on a new zizzag feature?)
+
+--- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
+
 Review first successful run here and what might be next steps here.
 
-
-
-
+--- --- --- --- 
 
 Then check this again:
 - Before use maybe also add possibility for plan-specific review and fix.

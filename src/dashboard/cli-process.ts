@@ -19,6 +19,10 @@ export interface DashboardCliDiagnostics {
   command: string;
   args: string[];
   cwd: string;
+  targetCwd?: string;
+  requestedGoalFilePath?: string;
+  requestedContextPaths?: string[];
+  requestedSeedMajorPlanPath?: string;
   exitCode: number | null;
   signal: string | null;
   stdout: string;

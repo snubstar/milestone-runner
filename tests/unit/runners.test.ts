@@ -425,6 +425,7 @@ test("CodexExecRunner includes optional model, profile, JSON events, and output 
   const schemaPath = "/tmp/agent-orchestrator-schema.json";
   const runner = new CodexExecRunner({
     command: "codex",
+    accountLabel: "work-codex",
     options: {
       sandboxForPlanning: "read-only",
       sandboxForImplementation: "workspace-write",
@@ -453,6 +454,8 @@ test("CodexExecRunner includes optional model, profile, JSON events, and output 
   assert.equal(argumentAfter(request.args, "--output-schema"), schemaPath);
   assert.equal(request.args.includes("--json"), true);
   assert.equal(result.metadata?.approvalPolicy, "on-request");
+  assert.equal(result.metadata?.profile, "automation");
+  assert.equal(result.metadata?.accountLabel, "work-codex");
 });
 
 test("CodexExecRunner omits optional args when they are not configured", async () => {
@@ -599,6 +602,7 @@ test("createAgentRunner creates a codex-exec runner", () => {
   const result = createAgentRunner({
     type: "codex-exec",
     command: "codex",
+    accountLabel: "work-codex",
     options: {
       sandboxForPlanning: "read-only",
       sandboxForImplementation: "workspace-write",
@@ -623,6 +627,7 @@ test("createAgentRunner creates a codex-exec runner", () => {
       profile: "automation",
       jsonEvents: true,
     });
+    assert.equal(result.runner.accountLabel, "work-codex");
   }
 });
 

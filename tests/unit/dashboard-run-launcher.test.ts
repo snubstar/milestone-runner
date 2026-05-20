@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { launchDashboardRun } from "../../src/dashboard/run-launcher.js";
+import { goalFileMaxBytes } from "../../src/inputs/initial-inputs.js";
+import { createFixtureRepo } from "../helpers/fixture-repo.js";
 
 test("launchDashboardRun performs a dry run through the built CLI JSON contract", async () => {
   const context = await createLauncherContext();
@@ -227,6 +238,659 @@ test("launchDashboardRun persists live process output before completion", async 
   }
 });
 
+test("launchDashboardRun forwards target repo and validated context paths", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    await mkdir(path.join(targetDir, "docs"), { recursive: true });
+    await writeFile(path.join(targetDir, "README.md"), "# Target\n", "utf8");
+    await writeFile(path.join(targetDir, "docs", "architecture.md"), "# Architecture\n", "utf8");
+    const canonicalTargetDir = await realpath(targetDir);
+
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+        contextPaths: ["README.md", "docs/architecture.md"],
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const args = JSON.parse(
+        await readFile(path.join(context.tempDir, "stub-args.json"), "utf8"),
+      ) as string[];
+      assert.equal(args.includes("--repo"), true);
+      assert.equal(args[args.indexOf("--repo") + 1], canonicalTargetDir);
+      assert.deepEqual(valuesAfterRepeated(args, "--context"), [
+        "README.md",
+        "docs/architecture.md",
+      ]);
+
+      const diagnostics = JSON.parse(
+        await readFile(
+          path.join(targetDir, ".agent-work", result.response.diagnosticsPath),
+          "utf8",
+        ),
+      ) as { cwd?: string; targetCwd?: string; requestedContextPaths?: string[] };
+      assert.equal(diagnostics.cwd, context.tempDir);
+      assert.equal(diagnostics.targetCwd, canonicalTargetDir);
+      assert.deepEqual(diagnostics.requestedContextPaths, [
+        "README.md",
+        "docs/architecture.md",
+      ]);
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun forwards and records a validated seed major plan path", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    await mkdir(path.join(targetDir, "docs"), { recursive: true });
+    await writeFile(
+      path.join(targetDir, "docs", "major-plan.md"),
+      "# Seeded Plan\n\nUse this plan.\n",
+      "utf8",
+    );
+
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+        seedMajorPlanPath: "docs/major-plan.md",
+        contextPaths: ["docs/major-plan.md"],
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const args = JSON.parse(
+      await readFile(path.join(context.tempDir, "stub-args.json"), "utf8"),
+    ) as string[];
+    assert.equal(args.includes("--seed-major-plan"), true);
+    assert.equal(args[args.indexOf("--seed-major-plan") + 1], "docs/major-plan.md");
+    assert.deepEqual(valuesAfterRepeated(args, "--context"), ["docs/major-plan.md"]);
+
+    const report = result.response.report as {
+      details: {
+        majorPlanSource: { type: string; path: string | null };
+      };
+    };
+    assert.deepEqual(report.details.majorPlanSource, {
+      type: "seed",
+      path: "docs/major-plan.md",
+    });
+
+    const diagnostics = JSON.parse(
+      await readFile(
+        path.join(targetDir, ".agent-work", result.response.diagnosticsPath),
+        "utf8",
+      ),
+    ) as {
+      requestedContextPaths?: string[];
+      requestedSeedMajorPlanPath?: string;
+    };
+    assert.deepEqual(diagnostics.requestedContextPaths, ["docs/major-plan.md"]);
+    assert.equal(diagnostics.requestedSeedMajorPlanPath, "docs/major-plan.md");
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun forwards and records a goal file launch", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    await mkdir(path.join(targetDir, "docs"), { recursive: true });
+    await writeFile(path.join(targetDir, "docs", "task.md"), "Goal from file\n", "utf8");
+    await writeFile(
+      path.join(targetDir, "docs", "major-plan.md"),
+      "# Seeded Plan\n\nUse this plan.\n",
+      "utf8",
+    );
+
+    const result = await launchDashboardRun(
+      {
+        goalFilePath: "docs/task.md",
+        runner: "fake",
+        dryRun: true,
+        seedMajorPlanPath: "docs/major-plan.md",
+        contextPaths: ["docs/task.md"],
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const args = JSON.parse(
+      await readFile(path.join(context.tempDir, "stub-args.json"), "utf8"),
+    ) as string[];
+    assert.equal(args.includes("--goal-file"), true);
+    assert.equal(args[args.indexOf("--goal-file") + 1], "docs/task.md");
+    assert.equal(args.includes("--"), false);
+    assert.equal(args.includes("Goal from file"), false);
+    assert.deepEqual(valuesAfterRepeated(args, "--context"), ["docs/task.md"]);
+    assert.equal(args[args.indexOf("--seed-major-plan") + 1], "docs/major-plan.md");
+
+    const report = result.response.report as {
+      nextAction: string;
+      details: {
+        goalSource: string;
+        majorPlanSource: { type: string; path: string | null };
+      };
+    };
+    assert.equal(report.nextAction, "review_seeded_major_plan");
+    assert.equal(report.details.goalSource, "file:docs/task.md");
+    assert.deepEqual(report.details.majorPlanSource, {
+      type: "seed",
+      path: "docs/major-plan.md",
+    });
+
+    const diagnostics = JSON.parse(
+      await readFile(
+        path.join(targetDir, ".agent-work", result.response.diagnosticsPath),
+        "utf8",
+      ),
+    ) as {
+      requestedGoalFilePath?: string;
+      requestedContextPaths?: string[];
+      requestedSeedMajorPlanPath?: string;
+    };
+    assert.equal(diagnostics.requestedGoalFilePath, "docs/task.md");
+    assert.deepEqual(diagnostics.requestedContextPaths, ["docs/task.md"]);
+    assert.equal(diagnostics.requestedSeedMajorPlanPath, "docs/major-plan.md");
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun rejects invalid goal source combinations", async () => {
+  const context = await createLauncherContext();
+  try {
+    for (const input of [
+      {
+        prompt: "Add feature X",
+        goalFilePath: "docs/task.md",
+        runner: "fake",
+      },
+      {
+        runner: "fake",
+      },
+      {
+        prompt: "",
+        goalFilePath: "",
+        runner: "fake",
+      },
+    ]) {
+      const result = await launchDashboardRun(input, {
+        cwd: context.tempDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      });
+
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.statusCode, 400);
+        assert.equal(result.error.code, "invalid_launch_request");
+        assert.match(result.error.message, /exactly one/i);
+      }
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun rejects absolute browser goal file paths", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    const result = await launchDashboardRun(
+      {
+        goalFilePath: path.join(targetDir, "docs", "task.md"),
+        runner: "fake",
+        dryRun: true,
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.error.code, "invalid_launch_request");
+      assert.match(result.error.message, /repository-relative/i);
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "missing",
+    goalFilePath: "docs/missing-task.md",
+    expected: /unavailable/i,
+    setup: async () => {},
+  },
+  {
+    name: "directory",
+    goalFilePath: "docs/task-dir",
+    expected: /regular file/i,
+    setup: async ({ targetDir }: GoalPathScenarioContext) => {
+      await mkdir(path.join(targetDir, "docs", "task-dir"), { recursive: true });
+    },
+  },
+  {
+    name: "invalid UTF-8",
+    goalFilePath: "docs/invalid.md",
+    expected: /valid UTF-8/i,
+    setup: async ({ targetDir }: GoalPathScenarioContext) => {
+      await writeScenarioFile(targetDir, "docs/invalid.md", Buffer.from([0xff, 0xfe]));
+    },
+  },
+  {
+    name: "oversized",
+    goalFilePath: "docs/oversized.md",
+    expected: /size limit/i,
+    setup: async ({ targetDir }: GoalPathScenarioContext) => {
+      await writeScenarioFile(
+        targetDir,
+        "docs/oversized.md",
+        Buffer.alloc(goalFileMaxBytes + 1, 0x61),
+      );
+    },
+  },
+  {
+    name: "outside target",
+    goalFilePath: "../outside-task.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir }: GoalPathScenarioContext) => {
+      await writeFile(path.join(rootDir, "outside-task.md"), "Outside\n", "utf8");
+    },
+  },
+  {
+    name: "sibling-prefix escape",
+    goalFilePath: "../target-other/task.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir }: GoalPathScenarioContext) => {
+      await mkdir(path.join(rootDir, "target-other"), { recursive: true });
+      await writeFile(path.join(rootDir, "target-other", "task.md"), "Outside\n", "utf8");
+    },
+  },
+  {
+    name: "symlink escape",
+    goalFilePath: "docs/escaped.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir, targetDir }: GoalPathScenarioContext) => {
+      await mkdir(path.join(targetDir, "docs"), { recursive: true });
+      await writeFile(path.join(rootDir, "outside-symlink.md"), "Outside\n", "utf8");
+      await symlink(
+        path.join(rootDir, "outside-symlink.md"),
+        path.join(targetDir, "docs", "escaped.md"),
+      );
+    },
+  },
+] satisfies GoalPathScenario[]) {
+  test(`launchDashboardRun rejects ${scenario.name} goal file paths`, async () => {
+    const context = await createLauncherContext();
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "agent-orchestrator-goal-launch-"),
+    );
+    const targetDir = path.join(rootDir, "target");
+    try {
+      await mkdir(targetDir, { recursive: true });
+      await scenario.setup({ rootDir, targetDir });
+
+      const result = await launchDashboardRun(
+        {
+          goalFilePath: scenario.goalFilePath,
+          runner: "fake",
+          dryRun: true,
+        },
+        {
+          cwd: context.tempDir,
+          targetCwd: targetDir,
+          artifactRoot: ".agent-work",
+          cliPath: context.cliPath,
+        } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+      );
+
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.statusCode, 400);
+        assert.equal(result.error.code, "invalid_launch_request");
+        assert.match(result.error.message, scenario.expected);
+      }
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+      await rm(context.tempDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("launchDashboardRun rejects context paths that escape by sibling prefix", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const siblingDir = `${targetDir}-other`;
+  try {
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(path.join(siblingDir, "secret.md"), "outside\n", "utf8");
+
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+        contextPaths: [
+          path.relative(targetDir, path.join(siblingDir, "secret.md")),
+        ],
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.error.code, "invalid_launch_request");
+      assert.match(result.error.message, /context/i);
+    }
+  } finally {
+    await rm(siblingDir, { recursive: true, force: true });
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun rejects absolute browser context paths", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    await writeFile(path.join(targetDir, "README.md"), "# Target\n", "utf8");
+
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+        contextPaths: [path.join(targetDir, "README.md")],
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.error.code, "invalid_launch_request");
+      assert.match(result.error.message, /repository-relative/i);
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun rejects absolute browser seed major plan paths", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+        seedMajorPlanPath: path.join(targetDir, "docs", "major-plan.md"),
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.error.code, "invalid_launch_request");
+      assert.match(result.error.message, /repository-relative/i);
+    }
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "missing",
+    seedMajorPlanPath: "docs/missing-major-plan.md",
+    expected: /unavailable/i,
+    setup: async () => {},
+  },
+  {
+    name: "directory",
+    seedMajorPlanPath: "docs/seed-dir",
+    expected: /regular file/i,
+    setup: async ({ targetDir }: SeedPathScenarioContext) => {
+      await mkdir(path.join(targetDir, "docs", "seed-dir"), { recursive: true });
+    },
+  },
+  {
+    name: "invalid UTF-8",
+    seedMajorPlanPath: "docs/invalid.md",
+    expected: /valid UTF-8/i,
+    setup: async ({ targetDir }: SeedPathScenarioContext) => {
+      await writeScenarioFile(targetDir, "docs/invalid.md", Buffer.from([0xff, 0xfe]));
+    },
+  },
+  {
+    name: "oversized",
+    seedMajorPlanPath: "docs/oversized.md",
+    expected: /size limit/i,
+    setup: async ({ targetDir }: SeedPathScenarioContext) => {
+      await writeScenarioFile(
+        targetDir,
+        "docs/oversized.md",
+        Buffer.alloc(1024 * 1024 + 1, 0x61),
+      );
+    },
+  },
+  {
+    name: "outside target",
+    seedMajorPlanPath: "../outside-major-plan.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir }: SeedPathScenarioContext) => {
+      await writeFile(path.join(rootDir, "outside-major-plan.md"), "# Outside\n", "utf8");
+    },
+  },
+  {
+    name: "sibling-prefix escape",
+    seedMajorPlanPath: "../target-other/seed.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir }: SeedPathScenarioContext) => {
+      await mkdir(path.join(rootDir, "target-other"), { recursive: true });
+      await writeFile(path.join(rootDir, "target-other", "seed.md"), "# Outside\n", "utf8");
+    },
+  },
+  {
+    name: "symlink escape",
+    seedMajorPlanPath: "docs/escaped.md",
+    expected: /inside the target repository/i,
+    setup: async ({ rootDir, targetDir }: SeedPathScenarioContext) => {
+      await mkdir(path.join(targetDir, "docs"), { recursive: true });
+      await writeFile(path.join(rootDir, "outside-symlink.md"), "# Outside\n", "utf8");
+      await symlink(
+        path.join(rootDir, "outside-symlink.md"),
+        path.join(targetDir, "docs", "escaped.md"),
+      );
+    },
+  },
+] satisfies SeedPathScenario[]) {
+  test(`launchDashboardRun rejects ${scenario.name} seed major plan paths`, async () => {
+    const context = await createLauncherContext();
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "agent-orchestrator-seed-launch-"),
+    );
+    const targetDir = path.join(rootDir, "target");
+    try {
+      await mkdir(targetDir, { recursive: true });
+      await scenario.setup({ rootDir, targetDir });
+
+      const result = await launchDashboardRun(
+        {
+          prompt: "Add feature X",
+          runner: "fake",
+          dryRun: true,
+          seedMajorPlanPath: scenario.seedMajorPlanPath,
+        },
+        {
+          cwd: context.tempDir,
+          targetCwd: targetDir,
+          artifactRoot: ".agent-work",
+          cliPath: context.cliPath,
+        } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+      );
+
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.statusCode, 400);
+        assert.equal(result.error.code, "invalid_launch_request");
+        assert.match(result.error.message, scenario.expected);
+      }
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+      await rm(context.tempDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("launchDashboardRun rejects missing target repos before writing diagnostics", async () => {
+  const context = await createLauncherContext();
+  const missingTarget = path.join(context.tempDir, "missing-target");
+  try {
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: missingTarget,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 500);
+      assert.equal(result.error.code, "target_unavailable");
+    }
+    await assert.rejects(stat(missingTarget));
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun allows ignored artifact roots in Git repos", async () => {
+  const context = await createLauncherContext();
+  const repo = await createFixtureRepo();
+  try {
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: repo.path,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+  } finally {
+    await repo.cleanup();
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("launchDashboardRun rejects unignored artifact roots before dirtying Git", async () => {
+  const context = await createLauncherContext();
+  const repo = await createFixtureRepo({ gitignore: false });
+  try {
+    const result = await launchDashboardRun(
+      {
+        prompt: "Add feature X",
+        runner: "fake",
+        dryRun: true,
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: repo.path,
+        artifactRoot: ".agent-work",
+        cliPath: context.cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 400);
+      assert.equal(result.error.code, "invalid_launch_request");
+      assert.match(result.error.message, /ignored by Git/i);
+    }
+    await assert.rejects(stat(path.join(repo.path, ".agent-work")));
+  } finally {
+    await repo.cleanup();
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
 test("launchDashboardRun validates browser launch input before spawning", async () => {
   const context = await createLauncherContext();
   try {
@@ -277,6 +941,37 @@ test("launchDashboardRun reports a missing built CLI clearly", async () => {
   }
 });
 
+interface SeedPathScenarioContext {
+  rootDir: string;
+  targetDir: string;
+}
+
+type GoalPathScenarioContext = SeedPathScenarioContext;
+
+interface GoalPathScenario {
+  name: string;
+  goalFilePath: string;
+  expected: RegExp;
+  setup: (context: GoalPathScenarioContext) => Promise<void>;
+}
+
+interface SeedPathScenario {
+  name: string;
+  seedMajorPlanPath: string;
+  expected: RegExp;
+  setup: (context: SeedPathScenarioContext) => Promise<void>;
+}
+
+async function writeScenarioFile(
+  targetDir: string,
+  relativePath: string,
+  content: string | Buffer,
+): Promise<void> {
+  const filePath = path.join(targetDir, relativePath);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content);
+}
+
 async function createLauncherContext(): Promise<{ tempDir: string; cliPath: string }> {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-launcher-"));
   const cliPath = path.join(tempDir, "stub-cli.mjs");
@@ -287,9 +982,14 @@ async function createLauncherContext(): Promise<{ tempDir: string; cliPath: stri
       'import path from "node:path";',
       "const args = process.argv.slice(2);",
       'writeFileSync(path.join(process.cwd(), "stub-args.json"), JSON.stringify(args));',
-      'const valueAfter = (flag) => args[args.indexOf(flag) + 1];',
+      'const valueAfter = (flag) => {',
+      "  const index = args.indexOf(flag);",
+      "  return index === -1 ? undefined : args[index + 1];",
+      "};",
       'const runId = valueAfter("--run-id");',
       'const artifactRoot = valueAfter("--artifact-root") ?? ".agent-work";',
+      'const goalFilePath = valueAfter("--goal-file");',
+      'const seedMajorPlanPath = valueAfter("--seed-major-plan");',
       "const runDir = path.resolve(process.cwd(), artifactRoot, runId);",
       'if (!args.includes("--dry-run")) {',
       "  mkdirSync(runDir, { recursive: true });",
@@ -299,10 +999,20 @@ async function createLauncherContext(): Promise<{ tempDir: string; cliPath: stri
       '  mode: "new",',
       "  allowed: true,",
       "  exitCode: 0,",
-      '  nextAction: args.includes("--dry-run") ? "run_full_goal" : "ready_for_milestone",',
+      '  nextAction: args.includes("--dry-run")',
+      '    ? seedMajorPlanPath === undefined ? "run_full_goal" : "review_seeded_major_plan"',
+      '    : "ready_for_milestone",',
       "  runId,",
       "  runDir,",
-      "  details: { runId, runDir, runner: valueAfter('--runner') ?? null }",
+      "  details: {",
+      "    runId,",
+      "    runDir,",
+      "    runner: valueAfter('--runner') ?? null,",
+      "    goalSource: goalFilePath === undefined ? 'argv' : `file:${goalFilePath}`,",
+      "    majorPlanSource: seedMajorPlanPath === undefined",
+      "      ? { type: 'runner', path: null }",
+      "      : { type: 'seed', path: seedMajorPlanPath }",
+      "  }",
       "}));",
     ].join("\n"),
     "utf8",
@@ -418,6 +1128,16 @@ async function waitForDiagnostics(
   }
 
   assert.fail(`Timed out waiting for diagnostics ${filePath}: ${String(lastError)}`);
+}
+
+function valuesAfterRepeated(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === flag && index + 1 < args.length) {
+      values.push(args[index + 1] ?? "");
+    }
+  }
+  return values;
 }
 
 async function waitForFile(filePath: string): Promise<void> {

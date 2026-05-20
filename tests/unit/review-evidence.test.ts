@@ -142,10 +142,147 @@ test("buildReviewEvidence normalizes leading dot-slash path claims", async () =>
       runId: "run-1",
       milestoneId: 1,
       reviewRound: { kind: "base" },
-      diff: markdownDiff("Inspect `./reviews/` for review outputs."),
+      diff: markdownDiff(
+        "Inspect `./reviews/` for review outputs.",
+        "Inspect `./.agent-work/dashboard-launches//` for launch diagnostics.",
+      ),
     });
 
     assertStructuredBacked(result, "reviews/", "src/artifacts/paths.ts");
+    assertSnippetExtracted(result, ".agent-work/dashboard-launches/");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("buildReviewEvidence backs dashboard diagnostic artifact path claims", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  try {
+    await writeValidatorRepo(repo);
+
+    const validClaims = [
+      ".agent-work/dashboard-resumes/<resume-id>.json",
+      ".agent-work/dashboard-resumes/<resume-id>-diagnostics.json",
+      ".agent-work/dashboard-resumes/<resume-id>.claim",
+      ".agent-work/dashboard-launches/",
+      ".agent-work/dashboard-launches/<launch-id>.json",
+      ".agent-work/dashboard-launches/<resume-launch-id>.json",
+    ];
+    const result = await buildReviewEvidence({
+      cwd: repo,
+      gitRoot: repo,
+      runDir: path.join(repo, ".agent-work", "run-1"),
+      runId: "run-1",
+      milestoneId: 1,
+      reviewRound: { kind: "base" },
+      diff: markdownDiff(
+        "Inspect dashboard diagnostic artifacts:",
+        ...validClaims.map((claim) => `- \`${claim}\``),
+      ),
+    });
+
+    assertStructuredBacked(result, ".agent-work", "src/dashboard/server.ts");
+    assertStructuredBacked(result, "dashboard-resumes/", "src/dashboard/run-resumer.ts");
+    assertStructuredBacked(
+      result,
+      "dashboard-resumes/<resume-id>.json",
+      "src/dashboard/run-resumer.ts",
+    );
+    assertStructuredBacked(
+      result,
+      "dashboard-resumes/<resume-id>-diagnostics.json",
+      "src/dashboard/run-resumer.ts",
+    );
+    assertStructuredBacked(
+      result,
+      "dashboard-resumes/<resume-id>.claim",
+      "src/dashboard/run-resumer.ts",
+    );
+    assertStructuredBacked(result, "dashboard-launches/", "src/dashboard/run-launcher.ts");
+    assertStructuredBacked(
+      result,
+      "dashboard-launches/<launch-id>.json",
+      "src/dashboard/run-launcher.ts",
+    );
+    assertStructuredBacked(
+      result,
+      "dashboard-launches/<resume-launch-id>.json",
+      "src/dashboard/run-resumer.ts",
+    );
+
+    for (const claim of validClaims) {
+      assertBackedOrDecomposedWithoutUnmatchedWarning(result, claim);
+    }
+    assert.match(
+      result.markdown,
+      /### `\.agent-work\/dashboard-resumes\/<resume-id>\.json`[\s\S]*- Status: decomposed[\s\S]*- Derived child claims:[\s\S]*`\.agent-work`: backed \(src\/dashboard\/server\.ts:\d+\)[\s\S]*`dashboard-resumes\/<resume-id>\.json`: backed \(src\/dashboard\/run-resumer\.ts:\d+/,
+    );
+    assert.match(
+      result.markdown,
+      /### `\.agent-work\/dashboard-launches\/<launch-id>\.json`[\s\S]*- Status: decomposed[\s\S]*`dashboard-launches\/<launch-id>\.json`: backed \(src\/dashboard\/run-launcher\.ts:\d+/,
+    );
+    assert.match(
+      result.markdown,
+      /### `\.agent-work\/dashboard-launches\/<resume-launch-id>\.json`[\s\S]*- Status: decomposed[\s\S]*`dashboard-launches\/<resume-launch-id>\.json`: backed \(src\/dashboard\/run-resumer\.ts:\d+/,
+    );
+    assert.match(result.markdown, /- Matches: none directly; see derived child claims\./);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("buildReviewEvidence rejects unsupported dashboard diagnostic artifact suffixes", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  try {
+    await writeValidatorRepo(repo);
+
+    const unsupportedClaims = [
+      ".agent-work/dashboard-resumes/<resume-id>-audit.json",
+      ".agent-work/dashboard-launches/<launch-id>-audit.json",
+      ".agent-work/dashboard-launches/<unknown-id>.json",
+    ];
+    const result = await buildReviewEvidence({
+      cwd: repo,
+      gitRoot: repo,
+      runDir: path.join(repo, ".agent-work", "run-1"),
+      runId: "run-1",
+      milestoneId: 1,
+      reviewRound: { kind: "base" },
+      diff: markdownDiff(
+        "Reject unsupported dashboard diagnostic artifacts:",
+        ...unsupportedClaims.map((claim) => `- \`${claim}\``),
+      ),
+    });
+
+    for (const claim of unsupportedClaims) {
+      const snippet = result.snippets.find((item) => item.normalized === claim);
+      assert.ok(snippet, `Expected snippet for ${claim}`);
+      assert.equal(snippet.status, "unmatched");
+      assert.equal(
+        result.warnings.some(
+          (warning) => warning.code === "snippet_unmatched" && warning.snippet === claim,
+        ),
+        true,
+      );
+    }
+    assert.equal(
+      result.snippets.some(
+        (item) => item.normalized === "dashboard-resumes/<resume-id>-audit.json",
+      ),
+      false,
+    );
+    assert.equal(
+      result.snippets.some(
+        (item) => item.normalized === "dashboard-launches/<launch-id>-audit.json",
+      ),
+      false,
+    );
+    assert.equal(
+      result.snippets.some(
+        (item) => item.normalized === "dashboard-launches/<unknown-id>.json",
+      ),
+      false,
+    );
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -252,6 +389,60 @@ async function writeValidatorRepo(repo: string): Promise<void> {
       "",
     ].join("\n"),
   );
+  await writeRepoFile(
+    repo,
+    "src/dashboard/run-launcher.ts",
+    [
+      'import path from "node:path";',
+      "",
+      "export async function launchDashboardRun(artifactRoot: string, now: Date): Promise<string> {",
+      "  const launchId = createLaunchId(now);",
+      '  const diagnosticsPath = path.join("dashboard-launches", `${launchId}.json`);',
+      "  return path.join(artifactRoot, diagnosticsPath);",
+      "}",
+      "",
+      "function createLaunchId(date: Date): string {",
+      '  return `launch-${date.toISOString()}`;',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeRepoFile(
+    repo,
+    "src/dashboard/run-resumer.ts",
+    [
+      'import path from "node:path";',
+      "",
+      "export async function dryRunDashboardResume(artifactRoot: string, now: Date): Promise<string> {",
+      "  const resumeId = createResumeId(now);",
+      '  const diagnosticsPath = path.join("dashboard-resumes", `${resumeId}-diagnostics.json`);',
+      "  return path.join(artifactRoot, diagnosticsPath);",
+      "}",
+      "",
+      "export async function resumeDashboardRun(artifactRoot: string, now: Date): Promise<string> {",
+      "  const launchId = createResumeLaunchId(now);",
+      '  const diagnosticsPath = path.join("dashboard-launches", `${launchId}.json`);',
+      "  return path.join(artifactRoot, diagnosticsPath);",
+      "}",
+      "",
+      "export function resumeDryRunRecordPath(artifactRoot: string, resumeId: string): string {",
+      '  return path.join(artifactRoot, "dashboard-resumes", `${resumeId}.json`);',
+      "}",
+      "",
+      "export function resumeDryRunClaimPath(artifactRoot: string, resumeId: string): string {",
+      '  return path.join(artifactRoot, "dashboard-resumes", `${resumeId}.claim`);',
+      "}",
+      "",
+      "function createResumeId(date: Date): string {",
+      '  return `resume-${date.toISOString()}`;',
+      "}",
+      "",
+      "function createResumeLaunchId(date: Date): string {",
+      '  return `resume-launch-${date.toISOString()}`;',
+      "}",
+      "",
+    ].join("\n"),
+  );
 }
 
 function assertStructuredBacked(
@@ -275,6 +466,31 @@ function assertBacked(
   assert.ok(snippet, `Expected snippet for ${normalized}`);
   assert.equal(snippet.status, "backed");
   assert.equal(snippet.matches.some((match) => match.file === file), true);
+  return snippet;
+}
+
+function assertBackedOrDecomposedWithoutUnmatchedWarning(
+  result: ReviewEvidenceResult,
+  normalized: string,
+): NonNullable<ReviewEvidenceResult["snippets"][number]> {
+  const snippet = assertSnippetExtracted(result, normalized);
+  assert.notEqual(snippet.status, "self_match_only");
+  assert.notEqual(snippet.status, "unmatched");
+  assert.equal(
+    result.warnings.some(
+      (warning) => warning.code === "snippet_unmatched" && warning.snippet === snippet.original,
+    ),
+    false,
+  );
+  return snippet;
+}
+
+function assertSnippetExtracted(
+  result: ReviewEvidenceResult,
+  normalized: string,
+): NonNullable<ReviewEvidenceResult["snippets"][number]> {
+  const snippet = result.snippets.find((item) => item.normalized === normalized);
+  assert.ok(snippet, `Expected snippet for ${normalized}`);
   return snippet;
 }
 

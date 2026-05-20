@@ -70,6 +70,56 @@ test("parseArgs accepts supported options", () => {
   }
 });
 
+test("parseArgs accepts target repo, goal file, and repeated context files", () => {
+  const result = parseArgs([
+    "--repo",
+    "../target-repo",
+    "--goal-file",
+    "docs/task.md",
+    "--seed-major-plan",
+    "docs/major-plan.md",
+    "--context",
+    "README.md",
+    "--context",
+    "docs/architecture.md",
+    "--runner",
+    "fake",
+  ]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const options = result.options as typeof result.options & {
+      repoPath?: string;
+      goalFile?: string;
+      contextPaths?: string[];
+      seedMajorPlanFile?: string;
+    };
+    assert.equal(options.goal, null);
+    assert.equal(options.repoPath, "../target-repo");
+    assert.equal(options.goalFile, "docs/task.md");
+    assert.equal(options.seedMajorPlanFile, "docs/major-plan.md");
+    assert.deepEqual(options.contextPaths, [
+      "README.md",
+      "docs/architecture.md",
+    ]);
+    assert.equal(options.runner, "fake");
+  }
+});
+
+test("parseArgs accepts seed major plan with argv goal", () => {
+  const result = parseArgs([
+    "--seed-major-plan",
+    "tasks/major-plan.md",
+    "Add feature X",
+  ]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.options.goal, "Add feature X");
+    assert.equal(result.options.seedMajorPlanFile, "tasks/major-plan.md");
+  }
+});
+
 test("parseArgs accepts resume without a goal", () => {
   const result = parseArgs(["--resume", ".agent-work/run-1"]);
 
@@ -123,10 +173,77 @@ test("parseArgs accepts milestone plan review policy with resume", () => {
   }
 });
 
+test("parseArgs accepts repo with resume", () => {
+  const result = parseArgs(["--repo", "../target-repo", "--resume", "run-1"]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const options = result.options as typeof result.options & { repoPath?: string };
+    assert.equal(options.goal, null);
+    assert.equal(options.repoPath, "../target-repo");
+    assert.equal(options.resume, "run-1");
+  }
+});
+
 test("parseArgs rejects missing goal", () => {
   const result = parseArgs(["--planning-only"]);
 
   assert.deepEqual(result, { ok: false, error: "Missing goal." });
+});
+
+test("parseArgs rejects argv goal combined with goal file", () => {
+  const result = parseArgs([
+    "--goal-file",
+    "docs/task.md",
+    "Add feature X",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Cannot provide both an argv goal and --goal-file.",
+  });
+});
+
+test("parseArgs rejects goal file with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    "run-1",
+    "--goal-file",
+    "docs/task.md",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "--goal-file cannot be combined with --resume.",
+  });
+});
+
+test("parseArgs rejects context files with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    "run-1",
+    "--context",
+    "README.md",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "--context cannot be combined with --resume.",
+  });
+});
+
+test("parseArgs rejects seed major plan with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    "run-1",
+    "--seed-major-plan",
+    "tasks/major-plan.md",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "--seed-major-plan cannot be combined with --resume.",
+  });
 });
 
 test("parseArgs rejects goal with resume", () => {
@@ -172,6 +289,15 @@ test("parseArgs rejects missing resume value", () => {
   const result = parseArgs(["--resume"]);
 
   assert.deepEqual(result, { ok: false, error: "Missing value for --resume." });
+});
+
+test("parseArgs rejects missing seed major plan value", () => {
+  const result = parseArgs(["--seed-major-plan", "--context", "README.md", "Goal"]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Missing value for --seed-major-plan.",
+  });
 });
 
 test("parseArgs rejects invalid max fix attempts", () => {

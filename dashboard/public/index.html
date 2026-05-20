@@ -24,9 +24,20 @@
               <span id="launchState" class="muted">Ready</span>
             </div>
             <div class="launch-fields">
-              <label class="field field-full">
+              <label class="field">
+                <span>Goal source</span>
+                <select id="launchGoalSourceMode">
+                  <option value="prompt">Prompt</option>
+                  <option value="goalFile">Goal file</option>
+                </select>
+              </label>
+              <label id="launchPromptField" class="field field-full">
                 <span>Prompt</span>
                 <textarea id="launchPrompt" rows="4" required></textarea>
+              </label>
+              <label id="launchGoalFileField" class="field field-full hidden">
+                <span>Goal file</span>
+                <input id="launchGoalFilePath" type="text" autocomplete="off">
               </label>
               <label class="field">
                 <span>Runner</span>
@@ -55,6 +66,14 @@
                   <option value="normal">normal</option>
                   <option value="scrupulous">scrupulous</option>
                 </select>
+              </label>
+              <label class="field field-full">
+                <span>Context paths</span>
+                <textarea id="launchContextPaths" class="compact-textarea" rows="3"></textarea>
+              </label>
+              <label class="field field-full">
+                <span>Seed plan</span>
+                <input id="launchSeedMajorPlanPath" type="text" autocomplete="off">
               </label>
               <label class="check-field">
                 <input id="launchDryRun" type="checkbox" checked>
@@ -125,6 +144,13 @@
                 <h3>Last Error</h3>
               </div>
               <pre id="lastError" class="code-block"></pre>
+            </section>
+
+            <section class="section">
+              <div class="section-header">
+                <h3>Inputs</h3>
+              </div>
+              <div id="inputsSummary" class="input-summary"></div>
             </section>
 
             <section id="resumeSection" class="section">
@@ -225,6 +251,6 @@
       </main>
     </div>
 
-    <script src="/app.js" defer></script>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

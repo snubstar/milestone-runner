@@ -24,6 +24,7 @@ export interface RunPaths {
     checks: string;
     diffs: string;
     fixes: string;
+    inputs: string;
     runner: string;
   };
   files: {
@@ -73,6 +74,7 @@ function buildRunPathsFromResolvedParts(options: {
     checks: path.join(options.runDir, "checks"),
     diffs: path.join(options.runDir, "diffs"),
     fixes: path.join(options.runDir, "fixes"),
+    inputs: path.join(options.runDir, "inputs"),
     runner: path.join(options.runDir, "runner"),
   };
 

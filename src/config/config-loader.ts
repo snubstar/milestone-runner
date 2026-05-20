@@ -117,6 +117,14 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     return { ok: false, error: '`runner.type` must be "fake" or "codex-exec".' };
   }
 
+  const accountLabel = runner.accountLabel;
+  if (accountLabel !== undefined && !isNonBlankString(accountLabel)) {
+    return {
+      ok: false,
+      error: "`runner.accountLabel` must be a non-empty string when provided.",
+    };
+  }
+
   let runnerConfig: OrchestratorConfig["runner"];
   if (runner.type === "codex-exec") {
     const command = runner.command;
@@ -206,6 +214,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     runnerConfig = {
       type: "codex-exec",
       command,
+      ...(accountLabel === undefined ? {} : { accountLabel }),
       options: {
         sandboxForPlanning,
         sandboxForImplementation,
@@ -219,6 +228,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
   } else {
     runnerConfig = {
       type: "fake",
+      ...(accountLabel === undefined ? {} : { accountLabel }),
     };
   }
 
@@ -307,6 +317,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isSandboxMode(value: unknown): value is SandboxMode {

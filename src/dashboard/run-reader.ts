@@ -16,6 +16,7 @@ import type {
   DashboardArtifactGroup,
   DashboardArtifactLink,
   DashboardError,
+  DashboardRunInputs,
   DashboardRunDetail,
   DashboardRunSummary,
   DashboardTimelineEvent,
@@ -37,6 +38,7 @@ export type ReadDashboardRunResult =
 
 const artifactGroups: DashboardArtifactGroup[] = [
   "goal",
+  "inputs",
   "plans",
   "milestones",
   "diffs",
@@ -110,6 +112,7 @@ export async function readDashboardRun(
     state,
     warnings,
   });
+  const inputs = buildInputSummary(state, artifacts.byGroup.inputs);
   const timeline = await readRunTimeline(paths, warnings);
 
   return {
@@ -118,6 +121,7 @@ export async function readDashboardRun(
       ...summaryFromState(state, paths.runDir, warnings),
       milestoneStatuses: normalizeStringRecord(state.milestoneStatuses),
       lastError: state.lastError ?? null,
+      ...(inputs === undefined ? {} : { inputs }),
       artifacts: artifacts.byGroup,
       timeline,
       timingArtifacts: artifacts.timingArtifacts,
@@ -251,6 +255,117 @@ async function readRunArtifacts(options: {
     timingArtifacts: byGroup.logs.filter((link) => timingPaths.has(link.relativePath)),
     runnerDiagnostics: byGroup.runner,
   };
+}
+
+function buildInputSummary(
+  state: RunState,
+  inputArtifactLinks: DashboardArtifactLink[],
+): DashboardRunInputs | undefined {
+  const inputs = state.inputs;
+  if (!isRecord(inputs)) return undefined;
+
+  const inputLinksByPath = new Map(
+    inputArtifactLinks.map((link) => [link.relativePath, link]),
+  );
+  const manifestPath = isRecord(state.artifacts.inputs)
+    ? stringField(state.artifacts.inputs.manifest)
+    : null;
+  const manifestArtifact =
+    manifestPath === null ? null : inputArtifactForPath(inputLinksByPath, manifestPath);
+
+  return {
+    goalSource: normalizeInputGoalSource(inputs.goalSource),
+    majorPlanSource: normalizeInputMajorPlanSource(inputs.majorPlanSource),
+    context: normalizeInputContext(inputs.context, inputLinksByPath),
+    ...(manifestArtifact === null ? {} : { manifestArtifact }),
+  };
+}
+
+function normalizeInputGoalSource(value: unknown): DashboardRunInputs["goalSource"] {
+  if (!isRecord(value)) {
+    return { type: "argv", path: null };
+  }
+  return {
+    type: value.type === "file" ? "file" : "argv",
+    path: stringField(value.path),
+  };
+}
+
+function normalizeInputMajorPlanSource(
+  value: unknown,
+): DashboardRunInputs["majorPlanSource"] {
+  if (!isRecord(value)) {
+    return { type: "runner", path: null };
+  }
+
+  const sizeBytes = numberField(value.sizeBytes);
+  return {
+    type: value.type === "seed" ? "seed" : "runner",
+    path: stringField(value.path),
+    ...(sizeBytes === null ? {} : { sizeBytes }),
+    ...(typeof value.sha256 === "string" && value.sha256.length > 0
+      ? { sha256: value.sha256 }
+      : {}),
+  };
+}
+
+function normalizeInputContext(
+  value: unknown,
+  inputLinksByPath: Map<string, DashboardArtifactLink>,
+): DashboardRunInputs["context"] {
+  if (!Array.isArray(value)) return [];
+
+  const context: DashboardRunInputs["context"] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+
+    const inputPath = stringField(entry.path);
+    const artifactPath = stringField(entry.artifactPath);
+    const sizeBytes = numberField(entry.sizeBytes);
+    const sha256 = stringField(entry.sha256);
+    if (
+      inputPath === null ||
+      artifactPath === null ||
+      sizeBytes === null ||
+      sha256 === null
+    ) {
+      continue;
+    }
+
+    context.push({
+      path: inputPath,
+      artifactPath,
+      artifact: inputArtifactForPath(inputLinksByPath, artifactPath),
+      sizeBytes,
+      sha256,
+    });
+  }
+
+  return context;
+}
+
+function inputArtifactForPath(
+  inputLinksByPath: Map<string, DashboardArtifactLink>,
+  artifactPath: string,
+): DashboardArtifactLink | null {
+  const exact = inputLinksByPath.get(artifactPath);
+  if (exact) return exact;
+  const normalized = normalizeArtifactLookupPath(artifactPath);
+  return normalized === null ? null : inputLinksByPath.get(normalized) ?? null;
+}
+
+function normalizeArtifactLookupPath(artifactPath: string): string | null {
+  const trimmed = artifactPath.trim();
+  if (trimmed.length === 0 || path.isAbsolute(trimmed)) return null;
+
+  const segments = trimmed.split(/[\\/]+/);
+  if (
+    segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+
+  return segments.join("/");
 }
 
 async function collectKnownArtifacts(
@@ -707,6 +822,8 @@ function groupForStateArtifact(field: string): DashboardArtifactGroup | null {
   switch (field) {
     case "goal":
       return "goal";
+    case "inputs":
+      return "inputs";
     case "majorPlan":
     case "majorPlanReview":
     case "finalMajorPlanMarkdown":
@@ -843,6 +960,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function isNoEntryError(error: unknown): boolean {

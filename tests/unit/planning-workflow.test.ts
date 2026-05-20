@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +8,7 @@ import test from "node:test";
 import { createRunDirectory } from "../../src/artifacts/run-directory.js";
 import { buildRunPaths, type RunPaths } from "../../src/artifacts/paths.js";
 import type { OrchestratorConfig } from "../../src/config/config-types.js";
+import type { ResolvedSeedMajorPlan } from "../../src/inputs/initial-inputs.js";
 import type { AgentRunner, AgentRunRequest, AgentRunResult } from "../../src/runners/agent-runner.js";
 import { FakeRunner } from "../../src/runners/fake/fake-runner.js";
 import { createInitialState } from "../../src/state/initial-state.js";
@@ -169,6 +171,448 @@ test("runPlanningWorkflow passes target cwd to every runner phase", async () => 
       finalPlanDiagnostic.outputSchemaPath,
       path.resolve(context.workflowOptions.cwd, "schemas", "milestones.schema.json"),
     );
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow includes initial context in major plan prompt and artifacts", async () => {
+  const context = await createWorkflowContext();
+  const initialState: RunState = {
+    ...context.workflowOptions.initialState,
+    inputs: {
+      goalSource: { type: "file", path: "docs/task.md" },
+      context: [
+        {
+          path: "README.md",
+          artifactPath: "inputs/context/01-README.md",
+          sizeBytes: 12,
+          sha256: "readme-sha",
+        },
+        {
+          path: "docs/architecture.md",
+          artifactPath: "inputs/context/02-architecture.md",
+          sizeBytes: 18,
+          sha256: "architecture-sha",
+        },
+      ],
+    },
+    artifacts: {
+      ...context.workflowOptions.initialState.artifacts,
+      inputs: {
+        manifest: "inputs/01-inputs.json",
+        context: {
+          "README.md": "inputs/context/01-README.md",
+          "docs/architecture.md": "inputs/context/02-architecture.md",
+        },
+      },
+    },
+  };
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan",
+      text: "# Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "major_plan_review",
+      text: "# Major Plan Review",
+      exitCode: 0,
+    },
+    {
+      phase: "final_major_plan",
+      text: "# Final Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "final_plan_json",
+      text: JSON.stringify({
+        milestones: [
+          {
+            id: 1,
+            title: "First milestone",
+            summary: "Implement the first milestone.",
+            scope: ["Create a fixture output file"],
+            acceptanceCriteria: ["A fixture output file exists"],
+            verification: ["Configured checks pass"],
+            dependencies: [],
+            status: "pending",
+          },
+        ],
+      }),
+      exitCode: 0,
+    },
+  ]);
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    const majorPlanRequest = runner.requests[0];
+    assert.equal(majorPlanRequest?.phase, "major_plan");
+    assert.match(majorPlanRequest?.prompt ?? "", /Initial context files:/);
+    assert.match(majorPlanRequest?.prompt ?? "", /README\.md/);
+    assert.match(majorPlanRequest?.prompt ?? "", /docs\/architecture\.md/);
+    assert.match(majorPlanRequest?.prompt ?? "", /snapshot artifact/);
+    assert.deepEqual(majorPlanRequest?.artifacts, {
+      goal: "00-goal.txt",
+      initialInputsManifest: "inputs/01-inputs.json",
+      initialContext1: "inputs/context/01-README.md",
+      initialContext2: "inputs/context/02-architecture.md",
+    });
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow uses a seeded major plan and skips the major_plan runner phase", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/seeded-major-plan.md",
+    "# Seeded Major Plan\n\nUse this operator-drafted plan.",
+  );
+  const initialState = withSeededMajorPlanSource(
+    context.workflowOptions.initialState,
+    seed,
+    {
+      withContext: true,
+    },
+  );
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan_review",
+      text: "# Major Plan Review",
+      exitCode: 0,
+    },
+    {
+      phase: "final_major_plan",
+      text: "# Final Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "final_plan_json",
+      text: singlePendingMilestoneJson(),
+      exitCode: 0,
+    },
+  ], "codex-exec");
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState,
+      resolvedSeedMajorPlan: seed,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), [
+      "major_plan_review",
+      "final_major_plan",
+      "final_plan_json",
+    ]);
+
+    assert.equal(
+      await readFile(path.join(context.paths.dirs.plans, "01-major-plan.md"), "utf8"),
+      `${seed.text.trimEnd()}\n`,
+    );
+
+    const reviewRequest = runner.requests[0];
+    assert.equal(reviewRequest?.phase, "major_plan_review");
+    assert.match(reviewRequest?.prompt ?? "", /# Seeded Major Plan/);
+    assert.match(reviewRequest?.prompt ?? "", /Initial context files:/);
+    assert.match(reviewRequest?.prompt ?? "", /README\.md/);
+    assert.match(reviewRequest?.prompt ?? "", /reviewing or finalizing/);
+    assert.deepEqual(reviewRequest?.artifacts, {
+      goal: "00-goal.txt",
+      majorPlan: "plans/01-major-plan.md",
+      initialInputsManifest: "inputs/01-inputs.json",
+      initialContext1: "inputs/context/01-README.md",
+    });
+
+    assert.deepEqual((await readdir(context.paths.dirs.runner)).sort(), [
+      "final_major_plan-02.json",
+      "final_plan_json-03.json",
+      "major_plan_review-01.json",
+    ]);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow rejects a seed cache that does not match run state", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan("docs/seeded-major-plan.md", "# Seeded Plan");
+  const mismatchedSeed: ResolvedSeedMajorPlan = {
+    ...seed,
+    sha256: "0".repeat(64),
+  };
+  const runner = new ScenarioRunner([]);
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState: withSeededMajorPlanSource(
+        context.workflowOptions.initialState,
+        seed,
+      ),
+      resolvedSeedMajorPlan: mismatchedSeed,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /does not match saved seeded major plan source/);
+    assert.deepEqual(runner.phases(), []);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "planning");
+    assert.equal(result.state.artifacts.majorPlan, undefined);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow rejects a seed cache when run state is not seeded", async () => {
+  const context = await createWorkflowContext();
+  const runner = new ScenarioRunner([]);
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      resolvedSeedMajorPlan: resolvedSeedMajorPlan(
+        "docs/seeded-major-plan.md",
+        "# Seeded Plan",
+      ),
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /run state does not mark the major plan source as seed/i);
+    assert.deepEqual(runner.phases(), []);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "planning");
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow fails seeded plan review as plan_reviewing", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan("docs/seeded-major-plan.md", "# Seeded Plan");
+  const runner = new ScenarioRunner([
+    {
+      phase: "major_plan_review",
+      text: "review failed",
+      exitCode: 7,
+    },
+  ]);
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState: withSeededMajorPlanSource(
+        context.workflowOptions.initialState,
+        seed,
+      ),
+      resolvedSeedMajorPlan: seed,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /major_plan_review failed with exit code 7/);
+    assert.deepEqual(runner.phases(), ["major_plan_review"]);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "plan_reviewing");
+    assert.equal(result.state.lastError?.phase, "plan_reviewing");
+    assert.equal(result.state.artifacts.majorPlan, "plans/01-major-plan.md");
+    assert.equal(result.state.artifacts.majorPlanReview, undefined);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow resumes seeded planning from an existing major plan artifact", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/seeded-major-plan.md",
+    "# Seeded Resume Plan\n\nContinue reviewing this plan.\n",
+  );
+  const initialState = withMajorPlanArtifact(
+    asResumedPlanningState(
+      withSeededMajorPlanSource(context.workflowOptions.initialState, seed),
+    ),
+    "plans/01-major-plan.md",
+  );
+  const runner = seededResumeRunner();
+
+  try {
+    await writeRunArtifact(
+      context.paths,
+      "plans/01-major-plan.md",
+      `${seed.text.trimEnd()}\n`,
+    );
+
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(runner.phases(), [
+      "major_plan_review",
+      "final_major_plan",
+      "final_plan_json",
+    ]);
+    assert.equal(runner.requests[0]?.phase, "major_plan_review");
+    assert.match(runner.requests[0]?.prompt ?? "", /# Seeded Resume Plan/);
+    assert.equal(
+      await readFile(path.join(context.paths.dirs.plans, "01-major-plan.md"), "utf8"),
+      `${seed.text.trimEnd()}\n`,
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow resumes seeded planning by recreating a missing major plan artifact from source", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/seeded-major-plan.md",
+    "# Seeded Source Plan\n\nRecreate the artifact from this file.\n",
+  );
+  const runner = seededResumeRunner();
+
+  try {
+    await writeTargetRepositoryFile(context, seed.path, seed.text);
+
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      ...targetWorkflowOptions(context),
+      initialState: asResumedPlanningState(
+        withSeededMajorPlanSource(context.workflowOptions.initialState, seed),
+      ),
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), [
+      "major_plan_review",
+      "final_major_plan",
+      "final_plan_json",
+    ]);
+    assert.equal(result.state.artifacts.majorPlan, "plans/01-major-plan.md");
+    assert.equal(
+      await readFile(path.join(context.paths.dirs.plans, "01-major-plan.md"), "utf8"),
+      `${seed.text.trimEnd()}\n`,
+    );
+    assert.match(runner.requests[0]?.prompt ?? "", /# Seeded Source Plan/);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow blocks seeded resume when the source file hash changed", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/seeded-major-plan.md",
+    "# Original Seed Plan\n",
+  );
+  const runner = new ScenarioRunner([]);
+
+  try {
+    await writeTargetRepositoryFile(context, seed.path, "# Changed Seed Plan\n");
+
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      ...targetWorkflowOptions(context),
+      initialState: asResumedPlanningState(
+        withSeededMajorPlanSource(context.workflowOptions.initialState, seed),
+      ),
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /changed since the run was initialized/);
+    assert.deepEqual(runner.phases(), []);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "planning");
+    assert.equal(result.state.artifacts.majorPlan, undefined);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow blocks seeded resume when both artifact and source are unavailable", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/missing-seeded-major-plan.md",
+    "# Missing Seed Plan\n",
+  );
+  const runner = new ScenarioRunner([]);
+
+  try {
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      ...targetWorkflowOptions(context),
+      initialState: asResumedPlanningState(
+        withSeededMajorPlanSource(context.workflowOptions.initialState, seed),
+      ),
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Seed major plan file is unavailable/);
+    assert.deepEqual(runner.phases(), []);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "planning");
+    assert.equal(result.state.artifacts.majorPlan, undefined);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runPlanningWorkflow blocks seeded resume when the saved major plan artifact is invalid UTF-8", async () => {
+  const context = await createWorkflowContext();
+  const seed = resolvedSeedMajorPlan(
+    "docs/seeded-major-plan.md",
+    "# Seeded Resume Plan\n",
+  );
+  const initialState = withMajorPlanArtifact(
+    asResumedPlanningState(
+      withSeededMajorPlanSource(context.workflowOptions.initialState, seed),
+    ),
+    "plans/01-major-plan.md",
+  );
+  const runner = new ScenarioRunner([]);
+
+  try {
+    await writeRunArtifact(
+      context.paths,
+      "plans/01-major-plan.md",
+      Buffer.from([0xff, 0xfe, 0xfd]),
+    );
+
+    const result = await runPlanningWorkflow({
+      ...context.workflowOptions,
+      initialState,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Seeded major plan artifact must be valid UTF-8 text/);
+    assert.deepEqual(runner.phases(), []);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "planning");
   } finally {
     await context.cleanup();
   }
@@ -407,6 +851,154 @@ test("runPlanningWorkflow preserves earlier artifacts when milestone JSON is inv
     await context.cleanup();
   }
 });
+
+function resolvedSeedMajorPlan(
+  filePath: string,
+  text: string,
+): ResolvedSeedMajorPlan {
+  return {
+    text,
+    path: filePath,
+    canonicalPath: path.resolve("/repo", filePath),
+    sizeBytes: Buffer.byteLength(text),
+    sha256: createHash("sha256").update(text).digest("hex"),
+  };
+}
+
+function withSeededMajorPlanSource(
+  state: RunState,
+  seed: ResolvedSeedMajorPlan,
+  options: { withContext?: boolean } = {},
+): RunState {
+  const context = options.withContext
+    ? [
+        {
+          path: "README.md",
+          artifactPath: "inputs/context/01-README.md",
+          sizeBytes: 12,
+          sha256: "readme-sha",
+        },
+      ]
+    : [];
+
+  return {
+    ...state,
+    inputs: {
+      goalSource: { type: "argv", path: null },
+      majorPlanSource: {
+        type: "seed",
+        path: seed.path,
+        sizeBytes: seed.sizeBytes,
+        sha256: seed.sha256,
+      },
+      context,
+    },
+    artifacts: {
+      ...state.artifacts,
+      inputs: {
+        manifest: "inputs/01-inputs.json",
+        ...(context.length === 0
+          ? {}
+          : { context: { "README.md": "inputs/context/01-README.md" } }),
+      },
+    },
+  };
+}
+
+function asResumedPlanningState(
+  state: RunState,
+  phase: "planning" | "plan_reviewing" = "planning",
+): RunState {
+  return {
+    ...state,
+    currentPhase: phase,
+    status: phase,
+  };
+}
+
+function withMajorPlanArtifact(
+  state: RunState,
+  artifactPath: string,
+): RunState {
+  return {
+    ...state,
+    artifacts: {
+      ...state.artifacts,
+      majorPlan: artifactPath,
+    },
+  };
+}
+
+function seededResumeRunner(): ScenarioRunner {
+  return new ScenarioRunner([
+    {
+      phase: "major_plan_review",
+      text: "# Major Plan Review",
+      exitCode: 0,
+    },
+    {
+      phase: "final_major_plan",
+      text: "# Final Major Plan",
+      exitCode: 0,
+    },
+    {
+      phase: "final_plan_json",
+      text: singlePendingMilestoneJson(),
+      exitCode: 0,
+    },
+  ], "codex-exec");
+}
+
+function targetWorkflowOptions(
+  context: WorkflowContext,
+): { cwd: string; promptDir: string; schemaRoot: string } {
+  return {
+    cwd: targetRoot(context),
+    promptDir: path.resolve(process.cwd(), "src", "prompts"),
+    schemaRoot: path.resolve(process.cwd(), "schemas"),
+  };
+}
+
+function targetRoot(context: WorkflowContext): string {
+  return path.dirname(context.paths.artifactRoot);
+}
+
+async function writeTargetRepositoryFile(
+  context: WorkflowContext,
+  relativePath: string,
+  content: string,
+): Promise<void> {
+  const filePath = path.join(targetRoot(context), relativePath);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content, "utf8");
+}
+
+async function writeRunArtifact(
+  paths: RunPaths,
+  artifactPath: string,
+  content: string | Buffer,
+): Promise<void> {
+  const filePath = path.resolve(paths.runDir, ...artifactPath.split("/"));
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content);
+}
+
+function singlePendingMilestoneJson(): string {
+  return JSON.stringify({
+    milestones: [
+      {
+        id: 1,
+        title: "First milestone",
+        summary: "Implement the first milestone.",
+        scope: ["Create a fixture output file"],
+        acceptanceCriteria: ["A fixture output file exists"],
+        verification: ["Configured checks pass"],
+        dependencies: [],
+        status: "pending",
+      },
+    ],
+  });
+}
 
 interface WorkflowContext {
   paths: RunPaths;

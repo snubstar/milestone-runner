@@ -114,6 +114,8 @@ function buildRunnerDiagnostic(options: {
     timedOut: booleanField(metadata.timedOut),
     sandbox: stringField(metadata.sandbox),
     approvalPolicy: stringField(metadata.approvalPolicy),
+    accountLabel: stringField(metadata.accountLabel),
+    profile: stringField(metadata.profile),
     timeoutMs: numberField(metadata.timeoutMs),
     stdout: stringField(metadata.stdout),
     stderr: stringField(metadata.stderr),

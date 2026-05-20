@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeArtifactRoot } from "../artifacts/artifact-root.js";
 import { buildRunPaths, createRunId, isSafeRunId } from "../artifacts/paths.js";
+import { resolveInitialInputs } from "../inputs/initial-inputs.js";
 import type {
   DashboardError,
   DashboardLaunchResponse,
@@ -12,15 +14,19 @@ import type {
 } from "./api-types.js";
 import {
   type DashboardCliDiagnostics,
-  formatError,
   parseCliJsonReport,
   runDashboardCliToCompletion,
   spawnDashboardCliProcess,
   writeDashboardCliDiagnostics,
 } from "./cli-process.js";
+import {
+  resolveDashboardTargetCwd,
+  validateDashboardArtifactRootForWrite,
+} from "./dashboard-safety.js";
 
 export interface DashboardRunLauncherOptions {
   cwd: string;
+  targetCwd?: string;
   artifactRoot: string;
   cliPath?: string;
   nodePath?: string;
@@ -39,8 +45,7 @@ export type DashboardRunLauncherResult =
       error: DashboardError;
     };
 
-interface NormalizedLaunchRequest {
-  prompt: string;
+type NormalizedLaunchRequest = NormalizedLaunchGoal & {
   runner?: DashboardLaunchRunner;
   dryRun: boolean;
   milestone?: number;
@@ -49,7 +54,13 @@ interface NormalizedLaunchRequest {
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
   artifactRoot: string;
-}
+  contextPaths: string[];
+  seedMajorPlanPath?: string;
+};
+
+type NormalizedLaunchGoal =
+  | { prompt: string; goalFilePath?: undefined }
+  | { prompt?: undefined; goalFilePath: string };
 
 const runners = new Set<DashboardLaunchRunner>(["fake", "codex-exec"]);
 const milestonePlanPolicies = new Set<DashboardMilestonePlanPolicy>([
@@ -69,6 +80,35 @@ export async function launchDashboardRun(
   const request = normalizeLaunchRequest(input, options.artifactRoot);
   if (!request.ok) return request;
 
+  const targetResult = await resolveDashboardTargetCwd(options);
+  if (!targetResult.ok) {
+    return {
+      ok: false,
+      statusCode: 500,
+      error: {
+        code: "target_unavailable",
+        message: targetResult.error,
+      },
+    };
+  }
+  const targetCwd = targetResult.value;
+  const artifactRootSafety = await validateDashboardArtifactRootForWrite({
+    targetCwd,
+    artifactRoot: request.value.artifactRoot,
+    allowDirty: request.value.allowDirty,
+  });
+  if (!artifactRootSafety.ok) return invalidLaunch(artifactRootSafety.error);
+  request.value.artifactRoot = artifactRootSafety.value;
+
+  const initialInputs = await resolveInitialInputs({
+    targetCwd,
+    argvGoal: request.value.prompt ?? null,
+    goalFile: request.value.goalFilePath,
+    seedMajorPlanFile: request.value.seedMajorPlanPath,
+    contextPaths: request.value.contextPaths,
+  });
+  if (!initialInputs.ok) return invalidLaunch(initialInputs.error);
+
   const cliPath = path.resolve(options.cwd, options.cliPath ?? "dist/cli/main.js");
   if (!(await fileExists(cliPath))) {
     return {
@@ -83,24 +123,24 @@ export async function launchDashboardRun(
   }
 
   const runId = await createUniqueRunId({
-    cwd: options.cwd,
+    cwd: targetCwd,
     artifactRoot: request.value.artifactRoot,
     now: options.now,
   });
   const paths = buildRunPaths({
-    cwd: options.cwd,
+    cwd: targetCwd,
     artifactRoot: request.value.artifactRoot,
     runId,
   });
   const launchId = createLaunchId(options.now?.() ?? new Date());
   const diagnosticsPath = path.join("dashboard-launches", `${launchId}.json`);
   const diagnosticsFile = path.resolve(
-    options.cwd,
+    targetCwd,
     request.value.artifactRoot,
     diagnosticsPath,
   );
   const command = options.nodePath ?? process.execPath;
-  const cliArgs = buildCliArgs(request.value, runId);
+  const cliArgs = buildCliArgs(request.value, runId, targetCwd);
   const args = [cliPath, ...cliArgs];
   const diagnostics: DashboardCliDiagnostics = {
     launchId,
@@ -113,6 +153,14 @@ export async function launchDashboardRun(
     command,
     args,
     cwd: options.cwd,
+    targetCwd,
+    ...(request.value.goalFilePath === undefined
+      ? {}
+      : { requestedGoalFilePath: request.value.goalFilePath }),
+    requestedContextPaths: request.value.contextPaths,
+    ...(request.value.seedMajorPlanPath === undefined
+      ? {}
+      : { requestedSeedMajorPlanPath: request.value.seedMajorPlanPath }),
     exitCode: null,
     signal: null,
     stdout: "",
@@ -179,10 +227,18 @@ function normalizeLaunchRequest(
   }
 
   const prompt = stringField(input.prompt)?.trim();
-  if (!prompt) return invalidLaunch("Launch prompt is required.");
-  if (prompt.length > 20_000) {
+  const goalFilePath = optionalRepositoryRelativePath(input.goalFilePath, "goalFilePath");
+  if (!goalFilePath.ok) return invalidLaunch(goalFilePath.error);
+  if ((prompt ? 1 : 0) + (goalFilePath.value === undefined ? 0 : 1) !== 1) {
+    return invalidLaunch("Provide exactly one of prompt or goalFilePath.");
+  }
+  if (prompt && prompt.length > 20_000) {
     return invalidLaunch("Launch prompt is too long.", { maxLength: 20_000 });
   }
+  const goalSource: NormalizedLaunchGoal =
+    goalFilePath.value === undefined
+      ? { prompt: prompt ?? "" }
+      : { goalFilePath: goalFilePath.value };
 
   const runner = optionalEnum(input.runner, runners, "runner");
   if (!runner.ok) return invalidLaunch(runner.error);
@@ -211,10 +267,19 @@ function normalizeLaunchRequest(
   );
   if (!artifactRootResult.ok) return invalidLaunch(artifactRootResult.error);
 
+  const contextPaths = optionalStringArray(input.contextPaths, "contextPaths");
+  if (!contextPaths.ok) return invalidLaunch(contextPaths.error);
+
+  const seedMajorPlanPath = optionalRepositoryRelativePath(
+    input.seedMajorPlanPath,
+    "seedMajorPlanPath",
+  );
+  if (!seedMajorPlanPath.ok) return invalidLaunch(seedMajorPlanPath.error);
+
   return {
     ok: true,
     value: {
-      prompt,
+      ...goalSource,
       runner: runner.value,
       dryRun: booleanField(input.dryRun, false),
       milestone: milestone.value,
@@ -223,13 +288,23 @@ function normalizeLaunchRequest(
       allowDirty: booleanField(input.allowDirty, false),
       allowNonGitPlanning: booleanField(input.allowNonGitPlanning, false),
       artifactRoot: artifactRootResult.value,
+      contextPaths: contextPaths.value,
+      ...(seedMajorPlanPath.value === undefined
+        ? {}
+        : { seedMajorPlanPath: seedMajorPlanPath.value }),
     },
   };
 }
 
-function buildCliArgs(request: NormalizedLaunchRequest, runId: string): string[] {
+function buildCliArgs(
+  request: NormalizedLaunchRequest,
+  runId: string,
+  targetCwd: string,
+): string[] {
   const args = [
     "--json",
+    "--repo",
+    targetCwd,
     "--run-id",
     runId,
     "--artifact-root",
@@ -247,8 +322,18 @@ function buildCliArgs(request: NormalizedLaunchRequest, runId: string): string[]
   if (request.milestonePlanReviewPolicy) {
     args.push("--milestone-plan-review-policy", request.milestonePlanReviewPolicy);
   }
+  if (request.seedMajorPlanPath) {
+    args.push("--seed-major-plan", request.seedMajorPlanPath);
+  }
+  for (const contextPath of request.contextPaths) {
+    args.push("--context", contextPath);
+  }
 
-  args.push("--", request.prompt);
+  if (request.goalFilePath !== undefined) {
+    args.push("--goal-file", request.goalFilePath);
+  } else {
+    args.push("--", request.prompt);
+  }
   return args;
 }
 
@@ -364,32 +449,6 @@ function createLaunchId(date: Date): string {
   return `launch-${date.toISOString().replace(/\D/g, "")}-${randomBytes(4).toString("hex")}`;
 }
 
-function normalizeArtifactRoot(
-  artifactRoot: string,
-): { ok: true; value: string } | { ok: false; error: string } {
-  const trimmed = artifactRoot.trim();
-  if (!trimmed) return { ok: false, error: "artifactRoot must not be empty." };
-  if (path.isAbsolute(trimmed)) {
-    return { ok: false, error: "artifactRoot must be a relative path." };
-  }
-
-  const normalized = path.normalize(trimmed).replace(/\\/g, "/");
-  const segments = normalized.split("/");
-  if (
-    normalized === "." ||
-    normalized === ".." ||
-    normalized.startsWith("../") ||
-    segments.some((segment) => segment === ".." || segment.length === 0)
-  ) {
-    return {
-      ok: false,
-      error: "artifactRoot must stay inside the dashboard working directory.",
-    };
-  }
-
-  return { ok: true, value: normalized };
-}
-
 function invalidLaunch(
   message: string,
   details?: unknown,
@@ -440,6 +499,63 @@ function optionalPositiveInteger(
 
 function booleanField(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function optionalStringArray(
+  value: unknown,
+  fieldName: string,
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      error: `${fieldName} must be an array of paths.`,
+    };
+  }
+
+  const paths: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      return {
+        ok: false,
+        error: `${fieldName} must contain only paths.`,
+      };
+    }
+    if (item.trim().length === 0 || path.isAbsolute(item)) {
+      return {
+        ok: false,
+        error: `${fieldName} must contain repository-relative paths.`,
+      };
+    }
+    paths.push(item);
+  }
+  return { ok: true, value: paths };
+}
+
+function optionalRepositoryRelativePath(
+  value: unknown,
+  fieldName: string,
+): { ok: true; value?: string } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true };
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      error: `${fieldName} must be a repository-relative path.`,
+    };
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { ok: true };
+  }
+  if (path.isAbsolute(trimmed)) {
+    return {
+      ok: false,
+      error: `${fieldName} must be a repository-relative path.`,
+    };
+  }
+
+  return { ok: true, value: trimmed };
 }
 
 function stringField(value: unknown): string | undefined {

@@ -125,6 +125,65 @@ test("findPromptVariables returns unique sorted variable names", () => {
   ]);
 });
 
+test("major plan prompt exposes and renders initial context", async () => {
+  const prompt = await loadPrompt("major-plan", { cwd: process.cwd() });
+
+  assert.equal(prompt.ok, true);
+  if (!prompt.ok) return;
+
+  assert.deepEqual(findPromptVariables(prompt.value.text), [
+    "config",
+    "goal",
+    "initialContext",
+  ]);
+
+  const rendered = renderPrompt(prompt.value.text, {
+    goal: "Add feature X",
+    config: { checks: ["npm test"], runner: { type: "fake" } },
+    initialContext: [
+      "Initial context files:",
+      "- README.md",
+      "- docs/architecture.md",
+    ].join("\n"),
+  });
+
+  assert.equal(rendered.ok, true);
+  if (rendered.ok) {
+    assert.match(rendered.value, /Initial context files:/);
+    assert.match(rendered.value, /README\.md/);
+    assert.match(rendered.value, /docs\/architecture\.md/);
+  }
+});
+
+test("major plan review prompt exposes and renders initial context", async () => {
+  const prompt = await loadPrompt("major-plan-review", { cwd: process.cwd() });
+
+  assert.equal(prompt.ok, true);
+  if (!prompt.ok) return;
+
+  assert.deepEqual(findPromptVariables(prompt.value.text), [
+    "goal",
+    "initialContext",
+    "majorPlan",
+  ]);
+
+  const rendered = renderPrompt(prompt.value.text, {
+    goal: "Add feature X",
+    majorPlan: "# Major Plan",
+    initialContext: [
+      "Initial context files:",
+      "- README.md",
+    ].join("\n"),
+  });
+
+  assert.equal(rendered.ok, true);
+  if (rendered.ok) {
+    assert.match(rendered.value, /Initial context files:/);
+    assert.match(rendered.value, /README\.md/);
+    assert.match(rendered.value, /# Major Plan/);
+  }
+});
+
 test("milestone prompts expose the expected implementation variables", async () => {
   const prompts = await loadPrompts([
     "milestone-plan",

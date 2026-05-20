@@ -5,6 +5,7 @@ import {
   buildRunPathsFromRunDir,
   type RunPaths,
 } from "../artifacts/paths.js";
+import { assertArtifactRootPathSafe } from "../artifacts/artifact-root.js";
 import { validateConfig } from "../config/config-loader.js";
 import type { OrchestratorConfig } from "../config/config-types.js";
 import type { CommandRunner } from "../shell/command-runner.js";
@@ -12,6 +13,9 @@ import type { RunState } from "../state/state-types.js";
 
 export interface LoadResumeRunOptions {
   cwd: string;
+  targetCwd?: string;
+  repoExplicit?: boolean;
+  invocationCwd?: string;
   artifactRoot: string;
   resumeValue: string;
   commandRunner: CommandRunner;
@@ -40,7 +44,12 @@ const planningOnlyResumePhases = new Set([
 export async function loadResumeRun(
   options: LoadResumeRunOptions,
 ): Promise<LoadResumeRunResult> {
-  const statePathResult = await resolveResumeStatePath(options);
+  const selectedTargetCwd = path.resolve(options.targetCwd ?? options.cwd);
+  const invocationCwd = await canonicalPath(options.invocationCwd ?? options.cwd);
+  const statePathResult = await resolveResumeStatePath({
+    ...options,
+    targetCwd: selectedTargetCwd,
+  });
   if (!statePathResult.ok) return statePathResult;
 
   let raw: string;
@@ -71,6 +80,14 @@ export async function loadResumeRun(
   }
 
   const state = parsed;
+  const malformedSeedSourceError = validateSavedMajorPlanSource(state.inputs);
+  if (malformedSeedSourceError) {
+    return {
+      ok: false,
+      error: malformedSeedSourceError,
+    };
+  }
+
   const configResult = validateConfig(state.config.snapshot);
   if (!configResult.ok) {
     return {
@@ -110,7 +127,9 @@ export async function loadResumeRun(
   }
 
   const targetResult = await resolveTargetCwd({
-    cwd: options.cwd,
+    selectedTargetCwd,
+    repoExplicit: options.repoExplicit ?? false,
+    directPath: statePathResult.directPath,
     state,
     commandRunner: options.commandRunner,
   });
@@ -120,11 +139,12 @@ export async function loadResumeRun(
     runDir,
     runId: state.runId,
   });
-  const normalizedState: RunState = {
-    ...state,
-    artifactRoot: paths.artifactRoot,
-    runDir: paths.runDir,
-  };
+  const normalizedState = normalizeLoadedState({
+    state,
+    paths,
+    targetCwd: targetResult.targetCwd,
+    invocationCwd,
+  });
 
   return {
     ok: true,
@@ -139,7 +159,7 @@ export async function loadResumeRun(
 }
 
 async function resolveResumeStatePath(
-  options: LoadResumeRunOptions,
+  options: LoadResumeRunOptions & { targetCwd: string },
 ): Promise<
   | { ok: true; statePath: string; directPath: boolean }
   | { ok: false; error: string }
@@ -154,9 +174,20 @@ async function resolveResumeStatePath(
     };
   }
 
+  const artifactRootSafety = await assertArtifactRootPathSafe({
+    targetCwd: options.targetCwd,
+    artifactRoot: options.artifactRoot,
+  });
+  if (!artifactRootSafety.ok) {
+    return {
+      ok: false,
+      error: `Invalid artifactRoot: ${artifactRootSafety.error}`,
+    };
+  }
+
   const byRunId = path.resolve(
-    options.cwd,
-    options.artifactRoot,
+    options.targetCwd,
+    artifactRootSafety.value,
     options.resumeValue,
     "state.json",
   );
@@ -193,10 +224,27 @@ async function statePathFromDirectValue(resumePath: string): Promise<string | nu
 }
 
 async function resolveTargetCwd(options: {
-  cwd: string;
+  selectedTargetCwd: string;
+  repoExplicit: boolean;
+  directPath: boolean;
   state: RunState;
   commandRunner: CommandRunner;
 }): Promise<{ ok: true; targetCwd: string } | { ok: false; error: string }> {
+  const canonicalSelectedTargetCwd = await canonicalPath(options.selectedTargetCwd);
+  const savedWorkspaceTarget = await savedWorkspaceTargetCwd(options.state);
+  if (savedWorkspaceTarget) {
+    if (!options.directPath || options.repoExplicit) {
+      if (savedWorkspaceTarget !== canonicalSelectedTargetCwd) {
+        return {
+          ok: false,
+          error: `Selected target repository "${canonicalSelectedTargetCwd}" does not match saved workspace target "${savedWorkspaceTarget}". Use the saved workspace target when resuming this run.`,
+        };
+      }
+    }
+
+    return { ok: true, targetCwd: savedWorkspaceTarget };
+  }
+
   const savedRoot = options.state.git.root;
   if (!savedRoot) {
     if (
@@ -204,7 +252,7 @@ async function resolveTargetCwd(options: {
       options.state.git.planningOnly === true &&
       planningOnlyResumePhases.has(options.state.currentPhase)
     ) {
-      return { ok: true, targetCwd: path.resolve(options.cwd) };
+      return { ok: true, targetCwd: options.selectedTargetCwd };
     }
 
     return {
@@ -229,10 +277,24 @@ async function resolveTargetCwd(options: {
     };
   }
 
-  const currentRoot = await gitRootForCwd(options.commandRunner, options.cwd);
+  const canonicalSavedRoot = await canonicalPath(savedRootPath);
+  if (options.repoExplicit) {
+    if (canonicalSavedRoot !== canonicalSelectedTargetCwd) {
+      return {
+        ok: false,
+        error: `Selected target repository "${canonicalSelectedTargetCwd}" does not match saved Git root "${canonicalSavedRoot}". Use the saved repository when resuming this run.`,
+      };
+    }
+
+    return { ok: true, targetCwd: canonicalSavedRoot };
+  }
+
+  const currentRoot = await gitRootForCwd(
+    options.commandRunner,
+    options.selectedTargetCwd,
+  );
   if (!currentRoot.ok) return currentRoot;
 
-  const canonicalSavedRoot = await canonicalPath(savedRootPath);
   const canonicalCurrentRoot = await canonicalPath(currentRoot.root);
   if (canonicalSavedRoot !== canonicalCurrentRoot) {
     return {
@@ -262,6 +324,137 @@ async function gitRootForCwd(
   }
 
   return { ok: true, root: result.stdout.trim() };
+}
+
+async function savedWorkspaceTargetCwd(state: RunState): Promise<string | null> {
+  const targetCwd = state.workspace?.targetCwd;
+  if (typeof targetCwd !== "string" || targetCwd.length === 0) return null;
+
+  const targetPath = path.resolve(targetCwd);
+  try {
+    const targetStat = await stat(targetPath);
+    if (!targetStat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  return canonicalPath(targetPath);
+}
+
+function normalizeLoadedState(options: {
+  state: RunState;
+  paths: RunPaths;
+  targetCwd: string;
+  invocationCwd: string;
+}): RunState {
+  return {
+    ...options.state,
+    workspace: {
+      invocationCwd:
+        stringField(options.state.workspace?.invocationCwd) ?? options.invocationCwd,
+      targetCwd: options.targetCwd,
+    },
+    inputs: normalizeStateInputs(options.state.inputs),
+    artifactRoot: options.paths.artifactRoot,
+    runDir: options.paths.runDir,
+  };
+}
+
+function normalizeStateInputs(inputs: RunState["inputs"] | undefined): RunState["inputs"] {
+  if (!isRecord(inputs)) {
+    return {
+      goalSource: { type: "argv", path: null },
+      context: [],
+    };
+  }
+
+  const goalSource: Record<string, unknown> = isRecord(inputs.goalSource)
+    ? inputs.goalSource
+    : {};
+  const goalSourceType = goalSource.type === "file" ? "file" : "argv";
+  const goalSourcePath =
+    typeof goalSource.path === "string" && goalSource.path.length > 0
+      ? goalSource.path
+      : null;
+  const context = Array.isArray(inputs.context)
+    ? inputs.context.filter(isStateInputContextEntry)
+    : [];
+  const majorPlanSource = normalizeMajorPlanSource(inputs.majorPlanSource);
+
+  return {
+    goalSource: {
+      type: goalSourceType,
+      path: goalSourceType === "file" ? goalSourcePath : null,
+    },
+    ...(majorPlanSource === undefined ? {} : { majorPlanSource }),
+    context,
+  };
+}
+
+function normalizeMajorPlanSource(
+  value: unknown,
+): NonNullable<RunState["inputs"]>["majorPlanSource"] | undefined {
+  if (!isRecord(value)) return undefined;
+
+  if (value.type === "runner") {
+    return { type: "runner", path: null };
+  }
+
+  if (
+    value.type === "seed" &&
+    typeof value.path === "string" &&
+    value.path.length > 0 &&
+    typeof value.sizeBytes === "number" &&
+    Number.isFinite(value.sizeBytes) &&
+    value.sizeBytes >= 0 &&
+    typeof value.sha256 === "string" &&
+    value.sha256.length > 0
+  ) {
+    return {
+      type: "seed",
+      path: value.path,
+      sizeBytes: value.sizeBytes,
+      sha256: value.sha256,
+    };
+  }
+
+  return undefined;
+}
+
+function validateSavedMajorPlanSource(inputs: unknown): string | null {
+  if (!isRecord(inputs)) return null;
+  const source = inputs.majorPlanSource;
+  if (!isRecord(source) || source.type !== "seed") return null;
+
+  if (
+    typeof source.path === "string" &&
+    source.path.length > 0 &&
+    typeof source.sizeBytes === "number" &&
+    Number.isFinite(source.sizeBytes) &&
+    source.sizeBytes >= 0 &&
+    typeof source.sha256 === "string" &&
+    source.sha256.length > 0
+  ) {
+    return null;
+  }
+
+  return (
+    "Resume state records a seeded major plan source with incomplete metadata. " +
+    "Expected majorPlanSource.path, sizeBytes, and sha256."
+  );
+}
+
+function isStateInputContextEntry(
+  value: unknown,
+): value is NonNullable<RunState["inputs"]>["context"][number] {
+  return (
+    isRecord(value) &&
+    typeof value.path === "string" &&
+    typeof value.artifactPath === "string" &&
+    typeof value.sizeBytes === "number" &&
+    Number.isFinite(value.sizeBytes) &&
+    typeof value.sha256 === "string"
+  );
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -319,6 +512,10 @@ function artifactPathValues(value: unknown): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function formatError(error: unknown): string {
