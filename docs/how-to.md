@@ -10,18 +10,46 @@ npm run build
 
 ## Target Repositories
 
+The target repository must have an orchestrator config available. For a fresh
+target that does not contain `orchestrator.config.json` or
+`orchestrator.config.example.json`, pass an absolute `--config` path from this
+orchestrator checkout.
+
+Recommended first dry run against a separate target:
+
+```bash
+cd /path/to/orchestrator
+npm run build
+
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner codex-exec \
+  --milestone 1 \
+  --dry-run \
+  "Add a docs note explaining how to run the orchestrator manually"
+```
+
+If you prefer a target-local config, copy or create
+`/path/to/target-repo/orchestrator.config.json` first and omit `--config`.
+
 Run from the repository you want the orchestrator to operate on:
 
 ```bash
 cd /path/to/target-repo
-node /path/to/orchestrator/dist/cli/main.js --runner fake \
+node /path/to/orchestrator/dist/cli/main.js \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
   "Add a docs note explaining how to run the orchestrator manually"
 ```
 
 Or run from the orchestrator checkout and select the target explicitly:
 
 ```bash
-node dist/cli/main.js --repo /path/to/target-repo --runner fake \
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
   "Add a docs note explaining how to run the orchestrator manually"
 ```
 
@@ -42,14 +70,20 @@ Use `--goal-file` instead of an argv goal when the prompt should live in the
 target repository:
 
 ```bash
-node dist/cli/main.js --repo /path/to/target-repo --runner fake \
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
   --goal-file tasks/goal.md
 ```
 
 Attach target-repository files to planning with repeated `--context` flags:
 
 ```bash
-node dist/cli/main.js --repo /path/to/target-repo --runner fake \
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
   --context README.md \
   --context docs/architecture.md \
   "Update the documented architecture"
@@ -65,11 +99,20 @@ resolution. The goal file limit is 1 MiB, each context file is limited to
 Use `--seed-major-plan` when the operator has already drafted the first major
 plan and wants the workflow to start runner planning at plan review.
 
+Seeded plan mode is not an import path for a finalized orchestration plan. It
+seeds only the draft major-plan artifact. The orchestrator still reviews that
+draft, rewrites the final major plan, converts it to milestone JSON, and then
+runs the normal milestone implementation workflow. There is currently no CLI
+flag for starting from an already-finalized `milestones/05-milestones.json` or
+skipping directly to implementation from an external plan.
+
 From inside the target repository:
 
 ```bash
 cd /path/to/target-repo
-node /path/to/orchestrator/dist/cli/main.js --runner fake \
+node /path/to/orchestrator/dist/cli/main.js \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
   --goal-file tasks/goal.md \
   --seed-major-plan tasks/major-plan.md
 ```
@@ -77,7 +120,10 @@ node /path/to/orchestrator/dist/cli/main.js --runner fake \
 From the orchestrator checkout, point at the target explicitly:
 
 ```bash
-node dist/cli/main.js --repo /path/to/target-repo --runner codex-exec \
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner codex-exec \
   --goal-file tasks/goal.md \
   --context README.md \
   --seed-major-plan tasks/major-plan.md
@@ -144,6 +190,10 @@ Prerequisites:
 - The working tree is clean unless you pass `--allow-dirty`.
 - `orchestrator.config.json` exists in the target repository, an absolute
   `--config` is supplied, or the target repository's example config is acceptable.
+
+The examples below assume you are running inside a configured target repository.
+When operating on a separate fresh target, add the `--repo` and absolute
+`--config` flags from the Target Repositories section.
 
 Run a real one-milestone task from a clean tree:
 

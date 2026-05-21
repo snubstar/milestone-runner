@@ -527,13 +527,20 @@ inspect or edit:
 
 ```bash
 cd /path/to/target-repo
-node /path/to/orchestrator/dist/cli/main.js --runner fake "example goal"
+node /path/to/orchestrator/dist/cli/main.js \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
+  "example goal"
 ```
 
 You can also run from the orchestrator checkout and point at a separate target:
 
 ```bash
-node dist/cli/main.js --repo /path/to/target-repo --runner fake "example goal"
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner fake \
+  "example goal"
 ```
 
 Runner work, Git preflight checks, configured checks, fake-runner output,
@@ -543,6 +550,26 @@ target repository.
 Bundled prompts and JSON schemas still come from the orchestrator checkout or
 installed package, so the target repository does not need a copy of
 `src/prompts/` or `schemas/`.
+
+The target repository does need a config source. By default the loader searches
+the selected target for `orchestrator.config.json` and then
+`orchestrator.config.example.json`. For a fresh external repo, either pass an
+absolute central config path with `--config`, as shown above, or create a
+target-local `/path/to/target-repo/orchestrator.config.json`.
+
+Recommended first dry run from this checkout against a separate target:
+
+```bash
+npm run build
+
+node dist/cli/main.js \
+  --repo /path/to/target-repo \
+  --config /path/to/orchestrator/orchestrator.config.example.json \
+  --runner codex-exec \
+  --milestone 1 \
+  --dry-run \
+  "Add a short manual testing section to README.md"
+```
 
 Resume by run id looks under `<target-repo>/<artifactRoot>/<run-id>/state.json`.
 Direct-path resume uses the saved `workspace.targetCwd` when present, and an
@@ -599,6 +626,13 @@ visible in dry-run and final reports. Seeded mode skips only the
 runner-generated `major_plan` phase. The seeded draft still goes through
 `major_plan_review`, final major-plan generation, milestone JSON generation,
 and the normal milestone workflow.
+
+Seeded mode is not a direct import of a finalized orchestration plan. There is
+currently no CLI flag for starting from an externally prepared
+`milestones/05-milestones.json`, or for skipping directly to implementation
+from a pre-finalized plan. Use `--seed-major-plan` for an operator-authored
+draft major plan, or `--resume` for a run that the orchestrator already
+initialized.
 
 Resume does not accept a new `--seed-major-plan` value. Seeded runs resume from
 saved state: if `plans/01-major-plan.md` exists, it is reused; otherwise the
@@ -731,8 +765,16 @@ Prerequisites for `codex-exec`:
 Create a local config when you want to customize checks, timeouts, model/profile, or artifact root:
 
 ```bash
-cp orchestrator.config.example.json orchestrator.config.json
+cp /path/to/orchestrator/orchestrator.config.example.json \
+  /path/to/target-repo/orchestrator.config.json
 ```
+
+For one-off runs, you can instead keep the config in this checkout and pass its
+absolute path with `--config /path/to/orchestrator/orchestrator.config.example.json`.
+
+The commands below assume you are running inside a configured target repository.
+When operating on a separate fresh target, add the `--repo` and absolute
+`--config` flags shown in Target Repositories.
 
 Run a read-only real planning pass:
 
