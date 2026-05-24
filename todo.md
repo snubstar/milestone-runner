@@ -1,3 +1,5 @@
+Use it on real feature/plan for a real app. Tonight, on feature branch, using the second account. See what happens.
+
 
 1. Be sure you can, in the prompt, also reference files, etc.
 2. Perhaps you can also provide the first general plan.

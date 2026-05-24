@@ -76,7 +76,8 @@ test("runImplementationWorkflow implements one fake milestone and stops ready fo
       "utf8",
     );
     assert.match(summary, /^# Milestone 1 Summary/);
-    assert.match(summary, /Milestone 5 must review/);
+    assert.match(summary, /Milestone 1 must review/);
+    assert.doesNotMatch(summary, /Milestone 5 must review/);
 
     assert.deepEqual(await readState(context.paths.files.state), result.state);
     const checkTimings = checkTimingCollector.list();
@@ -535,6 +536,13 @@ test("runImplementationWorkflow auto-selects full for dependency-bearing milesto
     assert.match(plan, /- Decision: auto: milestone has dependencies/);
     assert.match(plan, /## Runner Plan\n\n# Runner Full Plan\n\nUse the runner-backed plan\./);
     assert.match(runner.requests[1]?.prompt ?? "", /- Mode: full/);
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "14-milestone-2-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /^# Milestone 2 Summary/);
+    assert.match(summary, /Milestone 2 must review/);
   } finally {
     await context.cleanup();
   }

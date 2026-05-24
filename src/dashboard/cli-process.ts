@@ -41,7 +41,8 @@ export type DashboardCliProcessResult =
     }
   | { ok: false; error: string };
 
-const maxCapturedOutputBytes = 64 * 1024;
+const maxLiveCapturedOutputBytes = 64 * 1024;
+const maxCompletedCapturedOutputBytes = 8 * 1024 * 1024;
 const diagnosticsPersistDelayMs = 100;
 
 export function spawnDashboardCliProcess(options: {
@@ -109,7 +110,7 @@ export function spawnDashboardCliProcess(options: {
 
       child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
-        stdout = appendBounded(stdout, text);
+        stdout = appendBounded(stdout, text, maxLiveCapturedOutputBytes);
         options.diagnostics.updatedAt = new Date().toISOString();
         options.diagnostics.stdout = stdout;
         options.diagnostics.stderr = stderr;
@@ -125,7 +126,7 @@ export function spawnDashboardCliProcess(options: {
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8");
-        stderr = appendBounded(stderr, text);
+        stderr = appendBounded(stderr, text, maxLiveCapturedOutputBytes);
         options.diagnostics.updatedAt = new Date().toISOString();
         options.diagnostics.stdout = stdout;
         options.diagnostics.stderr = stderr;
@@ -229,10 +230,18 @@ export function runDashboardCliToCompletion(options: {
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout = appendBounded(stdout, chunk.toString("utf8"));
+      stdout = appendBounded(
+        stdout,
+        chunk.toString("utf8"),
+        maxCompletedCapturedOutputBytes,
+      );
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = appendBounded(stderr, chunk.toString("utf8"));
+      stderr = appendBounded(
+        stderr,
+        chunk.toString("utf8"),
+        maxCompletedCapturedOutputBytes,
+      );
     });
     child.on("error", (error) => {
       settle({ ok: false, error: formatError(error) });
@@ -271,10 +280,10 @@ export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function appendBounded(current: string, next: string): string {
+function appendBounded(current: string, next: string, maxBytes: number): string {
   const combined = current + next;
-  if (Buffer.byteLength(combined, "utf8") <= maxCapturedOutputBytes) {
+  if (Buffer.byteLength(combined, "utf8") <= maxBytes) {
     return combined;
   }
-  return combined.slice(-maxCapturedOutputBytes);
+  return combined.slice(-maxBytes);
 }

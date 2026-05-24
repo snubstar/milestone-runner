@@ -715,7 +715,7 @@ function formatMilestoneSummary(options: {
     "",
     "## Remaining",
     "",
-    "Milestone 5 must review the diff and decide whether fixes are required.",
+    `Milestone ${options.milestone.id} must review the diff and decide whether fixes are required.`,
   ].join("\n");
 }
 

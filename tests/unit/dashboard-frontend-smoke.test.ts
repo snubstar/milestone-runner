@@ -201,6 +201,17 @@ test("dashboard launch request helpers build prompt and goal-file payloads", asy
   );
 });
 
+test("static dashboard scopes resume results to the selected run", async () => {
+  const appJs = await readFile(
+    path.join(process.cwd(), "dashboard", "public", "app.js"),
+    "utf8",
+  );
+
+  assert.match(appJs, /function markResumeResultForRun/);
+  assert.match(appJs, /elements\.resumeResult\.dataset\.runId !== run\.runId/);
+  assert.match(appJs, /clearResumeResult\(\)/);
+});
+
 function checkJavaScriptSyntax(filePath: string): string {
   const result = spawnSync(process.execPath, ["--check", filePath], {
     encoding: "utf8",

@@ -431,6 +431,53 @@ test("launchDashboardRun forwards and records a goal file launch", async () => {
   }
 });
 
+test("launchDashboardRun parses dry-run reports for large valid goal files", async () => {
+  const context = await createLauncherContext();
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  try {
+    const cliPath = await writeLargeGoalDryRunCli(context.tempDir);
+    const largeGoal = `Large goal\n${"a".repeat(80 * 1024)}`;
+    await mkdir(path.join(targetDir, "docs"), { recursive: true });
+    await writeFile(path.join(targetDir, "docs", "task.md"), largeGoal, "utf8");
+
+    const result = await launchDashboardRun(
+      {
+        goalFilePath: "docs/task.md",
+        runner: "fake",
+        dryRun: true,
+      },
+      {
+        cwd: context.tempDir,
+        targetCwd: targetDir,
+        artifactRoot: ".agent-work",
+        cliPath,
+      } as Parameters<typeof launchDashboardRun>[1] & { targetCwd: string },
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const report = result.response.report as {
+      details: { goal: string; goalSource: string };
+    };
+    assert.equal(report.details.goal, largeGoal);
+    assert.equal(report.details.goalSource, "file:docs/task.md");
+
+    const diagnostics = JSON.parse(
+      await readFile(
+        path.join(targetDir, ".agent-work", result.response.diagnosticsPath),
+        "utf8",
+      ),
+    ) as { status: string; stdout: string; report?: unknown };
+    assert.equal(diagnostics.status, "completed");
+    assert.equal(diagnostics.stdout.length > 64 * 1024, true);
+    assert.equal(typeof diagnostics.report, "object");
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
 test("launchDashboardRun rejects invalid goal source combinations", async () => {
   const context = await createLauncherContext();
   try {
@@ -1071,6 +1118,46 @@ async function writeBlockedDryRunCli(cwd: string): Promise<string> {
       "  details: { runId, runDir, runner: valueAfter('--runner') ?? null, gitDirty: true }",
       "}));",
       "process.exitCode = 1;",
+    ].join("\n"),
+    "utf8",
+  );
+  return cliPath;
+}
+
+async function writeLargeGoalDryRunCli(cwd: string): Promise<string> {
+  const cliPath = path.join(cwd, "large-goal-dry-run-cli.mjs");
+  await writeFile(
+    cliPath,
+    [
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      'import path from "node:path";',
+      "const args = process.argv.slice(2);",
+      "const valueAfter = (flag) => {",
+      "  const index = args.indexOf(flag);",
+      "  return index === -1 ? undefined : args[index + 1];",
+      "};",
+      'writeFileSync(path.join(process.cwd(), "stub-args.json"), JSON.stringify(args));',
+      'const runId = valueAfter("--run-id");',
+      'const targetCwd = valueAfter("--repo") ?? process.cwd();',
+      'const artifactRoot = valueAfter("--artifact-root") ?? ".agent-work";',
+      'const goalFilePath = valueAfter("--goal-file");',
+      "const runDir = path.resolve(targetCwd, artifactRoot, runId);",
+      'const goal = readFileSync(path.resolve(targetCwd, goalFilePath), "utf8");',
+      "console.log(JSON.stringify({",
+      '  mode: "new",',
+      "  allowed: true,",
+      "  exitCode: 0,",
+      '  nextAction: "run_full_goal",',
+      "  warnings: [],",
+      "  runId,",
+      "  runDir,",
+      "  details: {",
+      "    runId,",
+      "    runDir,",
+      "    goal,",
+      "    goalSource: `file:${goalFilePath}`",
+      "  }",
+      "}));",
     ].join("\n"),
     "utf8",
   );

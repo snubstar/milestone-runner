@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { lstat, open, readFile, stat } from "node:fs/promises";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -815,7 +816,7 @@ function decodePathname(pathname: string): string | null {
   }
 }
 
-function hostIsAllowed(
+export function hostIsAllowed(
   hostHeader: string | undefined,
   configuredHost: string,
   expectedPort: number,
@@ -829,11 +830,31 @@ function hostIsAllowed(
     return false;
   }
 
-  const allowedHosts = configuredHost === "127.0.0.1" || configuredHost === "localhost"
-    ? new Set(["127.0.0.1", "localhost"])
-    : new Set([configuredHost]);
+  const requestHost = normalizeHostName(parsed.hostname);
+  const configured = normalizeHostName(configuredHost);
+  const port = parsed.port || "80";
+  if (port !== String(expectedPort)) return false;
 
-  return allowedHosts.has(parsed.hostname) && parsed.port === String(expectedPort);
+  if (configured === "0.0.0.0" || configured === "::") {
+    return requestHost === "localhost" || isIP(requestHost) !== 0;
+  }
+
+  const allowedHosts = isLoopbackHost(configured)
+    ? new Set(["127.0.0.1", "::1", "localhost"])
+    : new Set([configured]);
+
+  return allowedHosts.has(requestHost);
+}
+
+function normalizeHostName(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  return normalized.startsWith("[") && normalized.endsWith("]")
+    ? normalized.slice(1, -1)
+    : normalized;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
 }
 
 function pathIsInside(root: string, filePath: string): boolean {

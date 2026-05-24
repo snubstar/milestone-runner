@@ -181,6 +181,7 @@ async function submitLaunch() {
     });
     renderLaunchResult(response);
     if (!response.dryRun && response.runId) {
+      if (state.selectedRunId !== response.runId) clearResumeResult();
       state.selectedRunId = response.runId;
       connectRunStream(response.runId);
       window.setTimeout(() => {
@@ -329,11 +330,25 @@ function clearSelectedResumeDryRun() {
   if (!state.selectedRunId) return;
   state.resumeDryRunByRun.delete(state.selectedRunId);
   elements.resumeConfirmButton.disabled = true;
-  elements.resumeResult.classList.add("hidden");
+  clearResumeResult();
   if (!state.resuming) {
     elements.resumeState.textContent = resumeIsTerminal(state.selectedRun)
       ? "Terminal"
       : "Ready";
+  }
+}
+
+function clearResumeResult() {
+  elements.resumeResult.classList.add("hidden");
+  elements.resumeResult.replaceChildren();
+  delete elements.resumeResult.dataset.runId;
+}
+
+function markResumeResultForRun(runId) {
+  if (runId) {
+    elements.resumeResult.dataset.runId = runId;
+  } else {
+    delete elements.resumeResult.dataset.runId;
   }
 }
 
@@ -350,11 +365,15 @@ async function refreshDashboard(options = {}) {
       ? runsResponse.warnings
       : [];
 
-    if (
-      state.selectedRunId === null ||
-      !state.runs.some((run) => run.runId === state.selectedRunId)
-    ) {
-      state.selectedRunId = state.runs[0]?.runId ?? null;
+    const selectedRunStillExists =
+      state.selectedRunId !== null &&
+      state.runs.some((run) => run.runId === state.selectedRunId);
+    const nextSelectedRunId = selectedRunStillExists
+      ? state.selectedRunId
+      : state.runs[0]?.runId ?? null;
+    if (state.selectedRunId !== nextSelectedRunId) {
+      state.selectedRunId = nextSelectedRunId;
+      clearResumeResult();
     }
 
     renderRunList();
@@ -380,6 +399,7 @@ async function refreshDashboard(options = {}) {
 }
 
 async function selectRun(runId) {
+  if (state.selectedRunId !== runId) clearResumeResult();
   state.selectedRunId = runId;
   closeRunStream();
   renderRunList();
@@ -522,22 +542,27 @@ function renderResumeControls(run) {
   elements.resumeConfirmButton.disabled = disabled || !dryRun?.allowed;
   if (!run) {
     elements.resumeState.textContent = "-";
-    elements.resumeResult.classList.add("hidden");
+    clearResumeResult();
     return;
   }
   if (terminal) {
     elements.resumeState.textContent = "Terminal";
-    elements.resumeResult.classList.add("hidden");
+    clearResumeResult();
     return;
   }
   if (state.resuming) return;
   elements.resumeState.textContent = dryRun
     ? dryRun.allowed ? "Allowed" : "Blocked"
     : "Ready";
-  if (dryRun) renderResumeResult(dryRun);
+  if (dryRun) {
+    renderResumeResult(dryRun);
+  } else if (elements.resumeResult.dataset.runId !== run.runId) {
+    clearResumeResult();
+  }
 }
 
 function renderResumeResult(response) {
+  markResumeResultForRun(response.runId);
   elements.resumeResult.className = `launch-result${response.allowed ? "" : " error"}`;
   elements.resumeResult.replaceChildren();
 
@@ -577,6 +602,7 @@ function renderResumeResult(response) {
 }
 
 function renderResumeStarted(response) {
+  markResumeResultForRun(response.runId);
   elements.resumeResult.className = "launch-result";
   elements.resumeResult.replaceChildren();
 
@@ -592,6 +618,7 @@ function renderResumeStarted(response) {
 }
 
 function renderResumeError(error) {
+  markResumeResultForRun(state.selectedRun?.runId ?? state.selectedRunId);
   elements.resumeResult.className = "launch-result error";
   elements.resumeResult.textContent = error instanceof Error ? error.message : String(error);
 }

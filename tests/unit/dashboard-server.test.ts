@@ -8,7 +8,11 @@ import test from "node:test";
 import { buildRunPaths, type RunPaths } from "../../src/artifacts/paths.js";
 import { createRunDirectory } from "../../src/artifacts/run-directory.js";
 import { writeTextArtifact } from "../../src/artifacts/planning-artifacts.js";
-import { startDashboardServer, type DashboardServerInstance } from "../../src/dashboard/server.js";
+import {
+  hostIsAllowed,
+  startDashboardServer,
+  type DashboardServerInstance,
+} from "../../src/dashboard/server.js";
 import { createInitialState } from "../../src/state/initial-state.js";
 import { writeState } from "../../src/state/state-store.js";
 import type { RunState } from "../../src/state/state-types.js";
@@ -216,6 +220,47 @@ test("dashboard server rejects invalid Host headers", async () => {
   } finally {
     await rm(context.tempDir, { recursive: true, force: true });
   }
+});
+
+test("dashboard server accepts loopback requests when bound to IPv4 wildcard", async () => {
+  const context = await createServerContext();
+  try {
+    await createServerRun(context.tempDir, "run-1");
+    const server = await startFixtureServer({ ...context, host: "0.0.0.0" });
+    try {
+      const port = new URL(server.url).port;
+      const response = await request(`http://127.0.0.1:${port}/api/runs`);
+
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body) as {
+        runs: Array<{ runId: string }>;
+      };
+      assert.equal(body.runs[0]?.runId, "run-1");
+
+      const forbidden = await request(`http://127.0.0.1:${port}/api/runs`, {
+        Host: `example.com:${port}`,
+      });
+      assert.equal(forbidden.statusCode, 403);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard Host validation supports wildcard and IPv6 bind hosts", () => {
+  const port = 3737;
+
+  assert.equal(hostIsAllowed(`127.0.0.1:${port}`, "0.0.0.0", port), true);
+  assert.equal(hostIsAllowed(`localhost:${port}`, "0.0.0.0", port), true);
+  assert.equal(hostIsAllowed(`192.168.1.10:${port}`, "0.0.0.0", port), true);
+  assert.equal(hostIsAllowed(`example.com:${port}`, "0.0.0.0", port), false);
+
+  assert.equal(hostIsAllowed(`[::1]:${port}`, "::1", port), true);
+  assert.equal(hostIsAllowed(`localhost:${port}`, "::1", port), true);
+  assert.equal(hostIsAllowed(`[2001:db8::1]:${port}`, "::", port), true);
+  assert.equal(hostIsAllowed(`example.com:${port}`, "::", port), false);
 });
 
 test("dashboard server serves static files from the configured static root", async () => {
@@ -647,12 +692,13 @@ async function createServerContext(): Promise<{ tempDir: string }> {
 async function startFixtureServer(context: {
   tempDir: string;
   cliPath?: string;
+  host?: string;
 }): Promise<DashboardServerInstance> {
   return startDashboardServer({
     cwd: context.tempDir,
     artifactRoot: ".agent-work",
     staticRoot: "dashboard/public",
-    host: "127.0.0.1",
+    host: context.host ?? "127.0.0.1",
     port: 0,
     cliPath: context.cliPath,
   });
