@@ -115,7 +115,7 @@ test("main dry-runs a new fake run without creating a run directory", async () =
 
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, "");
-    assert.match(result.stdout, /Agent milestone orchestrator dry run/);
+    assert.match(result.stdout, /Milestone Runner dry run/);
     assert.match(result.stdout, /Mode: new/);
     assert.match(result.stdout, /Allowed: true/);
     assert.match(result.stdout, /Next action: run_full_goal/);
@@ -176,7 +176,7 @@ test("main prints machine-readable dry-run JSON", async () => {
 });
 
 test("main dry-run JSON reports target repo and initial inputs", async () => {
-  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-invocation-"));
   const targetRepo = await createCliFixtureRepo({ copyResources: false });
   try {
     await mkdir(path.join(targetRepo, "docs"), { recursive: true });
@@ -205,7 +205,7 @@ test("main dry-run JSON reports target repo and initial inputs", async () => {
       "-c",
       "user.name=Agent Orchestrator Test",
       "-c",
-      "user.email=agent-orchestrator@example.invalid",
+      "user.email=milestone-runner@example.invalid",
       "commit",
       "-m",
       "add input docs",
@@ -313,7 +313,7 @@ test("main prints machine-readable final run JSON with an explicit run id", asyn
 });
 
 test("main targets a separate repo without requiring bundled resources in the target", async () => {
-  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-invocation-"));
   const targetRepo = await createCliFixtureRepo({ copyResources: false });
   try {
     await assert.rejects(
@@ -357,7 +357,7 @@ test("main targets a separate repo without requiring bundled resources in the ta
 });
 
 test("main records goal-file and context inputs as run artifacts", async () => {
-  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-invocation-"));
   const targetRepo = await createCliFixtureRepo({ copyResources: false });
   try {
     await mkdir(path.join(targetRepo, "docs"), { recursive: true });
@@ -376,7 +376,7 @@ test("main records goal-file and context inputs as run artifacts", async () => {
       "-c",
       "user.name=Agent Orchestrator Test",
       "-c",
-      "user.email=agent-orchestrator@example.invalid",
+      "user.email=milestone-runner@example.invalid",
       "commit",
       "-m",
       "add input docs",
@@ -443,7 +443,7 @@ test("main uses a seeded major plan in planning-only runs", async () => {
       "-c",
       "user.name=Agent Orchestrator Test",
       "-c",
-      "user.email=agent-orchestrator@example.invalid",
+      "user.email=milestone-runner@example.invalid",
       "commit",
       "-m",
       "add seeded major plan",
@@ -511,7 +511,7 @@ test("main uses a seeded major plan in full fake runs", async () => {
       "-c",
       "user.name=Agent Orchestrator Test",
       "-c",
-      "user.email=agent-orchestrator@example.invalid",
+      "user.email=milestone-runner@example.invalid",
       "commit",
       "-m",
       "add seeded major plan",
@@ -599,7 +599,7 @@ test("main rejects invalid UTF-8 goal files before creating run artifacts", asyn
 });
 
 test("main rejects unsafe artifact roots before creating run artifacts", async () => {
-  for (const artifactRoot of ["/tmp/agent-orchestrator-outside", "../outside", "."]) {
+  for (const artifactRoot of ["/tmp/milestone-runner-outside", "../outside", "."]) {
     const repo = await createCliFixtureRepo();
     try {
       const result = await runMainInRepo(repo, [
@@ -624,7 +624,7 @@ test("main rejects unsafe artifact roots before creating run artifacts", async (
 
 test("main rejects symlink artifact roots before creating run artifacts", async () => {
   const repo = await createCliFixtureRepo();
-  const outside = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-outside-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-outside-"));
   try {
     await symlink(outside, path.join(repo, ".agent-work"));
 
@@ -648,7 +648,7 @@ test("main rejects symlink artifact roots before creating run artifacts", async 
 });
 
 test("main rejects sibling-prefix goal and context paths before runner calls", async () => {
-  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-invocation-"));
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-invocation-"));
   const targetRepo = await createCliFixtureRepo({ copyResources: false });
   const siblingDir = `${targetRepo}-other`;
   try {
@@ -768,7 +768,7 @@ test("main dry-runs blocked codex-exec execution without creating a run director
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
-      command: "agent-orchestrator-missing-codex",
+      command: "milestone-runner-missing-codex",
       options: {
         sandboxForPlanning: "read-only",
         sandboxForImplementation: "workspace-write",
@@ -800,7 +800,7 @@ test("main dry-runs missing codex-exec runner command as an environment block", 
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
-      command: "agent-orchestrator-missing-codex",
+      command: "milestone-runner-missing-codex",
       options: {
         sandboxForPlanning: "read-only",
         sandboxForImplementation: "workspace-write",
@@ -821,7 +821,7 @@ test("main dry-runs missing codex-exec runner command as an environment block", 
     assert.equal(result.stderr, "");
     assert.match(result.stdout, /Next action: blocked_missing_tool/);
     assert.match(result.stdout, /runner\.command/);
-    assert.match(result.stdout, /agent-orchestrator-missing-codex --version/);
+    assert.match(result.stdout, /milestone-runner-missing-codex --version/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -832,7 +832,7 @@ test("main rejects missing codex-exec runner command before creating a run direc
   const repo = await createCliFixtureRepo({
     runner: {
       type: "codex-exec",
-      command: "agent-orchestrator-missing-codex",
+      command: "milestone-runner-missing-codex",
       options: {
         sandboxForPlanning: "read-only",
         sandboxForImplementation: "workspace-write",
@@ -1014,7 +1014,7 @@ test("main dry-runs resume without writing state changes", async () => {
 
     assert.equal(result.exitCode, 0);
     assert.equal(result.stderr, "");
-    assert.match(result.stdout, /Agent milestone orchestrator dry run/);
+    assert.match(result.stdout, /Milestone Runner dry run/);
     assert.match(result.stdout, /Mode: resume/);
     assert.match(result.stdout, /Allowed: true/);
     assert.match(result.stdout, /Next action: continue_milestone/);
@@ -1585,7 +1585,7 @@ async function createCliFixtureRepo(
     "-c",
     "user.name=Agent Orchestrator Test",
     "-c",
-    "user.email=agent-orchestrator@example.invalid",
+    "user.email=milestone-runner@example.invalid",
     "commit",
     "-m",
     "initial",
@@ -1601,7 +1601,7 @@ async function createCliFixtureProject(
     copyResources?: boolean;
   } = {},
 ): Promise<string> {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-cli-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-cli-"));
   await writeFile(path.join(repo, ".gitignore"), ".agent-work/\n", "utf8");
   await writeFile(path.join(repo, "README.md"), "# CLI Fixture\n", "utf8");
   await writeFile(

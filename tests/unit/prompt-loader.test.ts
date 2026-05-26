@@ -19,7 +19,7 @@ test("resolvePromptDir defaults to src/prompts under cwd", () => {
 });
 
 test("loadPrompt reads a named prompt", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-prompts-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-prompts-"));
   try {
     const promptDir = path.join(tempDir, "prompts");
     await mkdir(promptDir);
@@ -39,7 +39,7 @@ test("loadPrompt reads a named prompt", async () => {
 });
 
 test("loadPrompt reports missing prompts clearly", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-prompts-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-prompts-"));
   try {
     const result = await loadPrompt("major-plan", { promptDir: tempDir });
 
@@ -53,7 +53,7 @@ test("loadPrompt reports missing prompts clearly", async () => {
 });
 
 test("loadPrompts reads multiple prompts", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-prompts-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-prompts-"));
   try {
     await writeFile(path.join(tempDir, "major-plan.md"), "major\n", "utf8");
     await writeFile(path.join(tempDir, "major-plan-review.md"), "review\n", "utf8");

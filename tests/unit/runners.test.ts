@@ -170,7 +170,7 @@ test("FakeRunner returns deterministic scrupulous milestone planning artifacts",
 });
 
 test("FakeRunner returns milestone-specific outputs for generated fake milestones", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-runner-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-fake-runner-"));
   try {
     const runner = new FakeRunner();
     const planOne = await runner.run({
@@ -252,7 +252,7 @@ test("FakeRunner returns milestone-specific outputs for generated fake milestone
 });
 
 test("FakeRunner writes deterministic milestone implementation output inside cwd", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-runner-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-fake-runner-"));
   try {
     const runner = new FakeRunner();
     const result = await runner.run({
@@ -380,7 +380,7 @@ test("CodexExecRunner builds codex exec requests for every phase", async () => {
     const commandRunner = new CapturingCommandRunner({
       finalMessage: `final message for ${phase}`,
     });
-    const cwd = path.join(os.tmpdir(), `agent-orchestrator-${phase}`);
+    const cwd = path.join(os.tmpdir(), `milestone-runner-${phase}`);
     const runner = new CodexExecRunner({
       command: "codex",
       options: {
@@ -421,8 +421,8 @@ test("CodexExecRunner includes optional model, profile, JSON events, and output 
   const commandRunner = new CapturingCommandRunner({
     finalMessage: "schema-backed result",
   });
-  const cwd = "/tmp/agent-orchestrator-cwd";
-  const schemaPath = "/tmp/agent-orchestrator-schema.json";
+  const cwd = "/tmp/milestone-runner-cwd";
+  const schemaPath = "/tmp/milestone-runner-schema.json";
   const runner = new CodexExecRunner({
     command: "codex",
     accountLabel: "work-codex",
@@ -475,7 +475,7 @@ test("CodexExecRunner omits optional args when they are not configured", async (
   await runner.run({
     phase: "major_plan",
     prompt: "plan",
-    cwd: "/tmp/agent-orchestrator-cwd",
+    cwd: "/tmp/milestone-runner-cwd",
   });
 
   const request = commandRunner.singleRequest();
@@ -503,7 +503,7 @@ test("CodexExecRunner reads and cleans up the output-last-message file", async (
   const result = await runner.run({
     phase: "major_plan",
     prompt: "plan",
-    cwd: "/tmp/agent-orchestrator-cwd",
+    cwd: "/tmp/milestone-runner-cwd",
   });
 
   const outputLastMessagePath = commandRunner.singleOutputLastMessagePath();
@@ -513,7 +513,7 @@ test("CodexExecRunner reads and cleans up the output-last-message file", async (
   assert.deepEqual(result.metadata?.args, [
     "exec",
     "--cd",
-    "/tmp/agent-orchestrator-cwd",
+    "/tmp/milestone-runner-cwd",
     "--sandbox",
     "read-only",
     "--color",
@@ -548,7 +548,7 @@ test("CodexExecRunner propagates non-zero command exits", async () => {
   const result = await runner.run({
     phase: "review_milestone",
     prompt: "review",
-    cwd: "/tmp/agent-orchestrator-cwd",
+    cwd: "/tmp/milestone-runner-cwd",
   });
 
   assert.equal(result.exitCode, 42);
@@ -579,7 +579,7 @@ test("CodexExecRunner reports timeout and missing final message as a failure", a
   const result = await runner.run({
     phase: "implement_milestone",
     prompt: "implement",
-    cwd: "/tmp/agent-orchestrator-cwd",
+    cwd: "/tmp/milestone-runner-cwd",
   });
 
   assert.equal(result.exitCode, 1);

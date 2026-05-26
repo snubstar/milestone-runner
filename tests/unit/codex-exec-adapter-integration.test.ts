@@ -19,12 +19,12 @@ const projectRoot = process.cwd();
 
 test("codex-exec adapter runs a deterministic fake codex through the workflow", async () => {
   const repo = await createFixtureRepo({
-    prefix: "agent-orchestrator-fake-codex-",
+    prefix: "milestone-runner-fake-codex-",
     files: {
       "README.md": "# Fake Codex Fixture\n",
     },
   });
-  const toolDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-fake-codex-bin-"));
+  const toolDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-fake-codex-bin-"));
   const fakeCodexPath = path.join(toolDir, "fake-codex.cjs");
   const invocationLog = path.join(toolDir, "invocations.jsonl");
   const previousInvocationLog = process.env.FAKE_CODEX_INVOCATIONS;

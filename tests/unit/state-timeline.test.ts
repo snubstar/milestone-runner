@@ -187,7 +187,7 @@ async function createTimelineContext(): Promise<{
   paths: RunPaths;
   state: RunState;
 }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-timeline-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-timeline-"));
   const paths = buildRunPaths({
     cwd: tempDir,
     artifactRoot: ".agent-work",

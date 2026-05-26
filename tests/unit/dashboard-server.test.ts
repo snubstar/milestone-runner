@@ -522,7 +522,7 @@ test("dashboard server launches a goal-file dry run through POST /api/runs", asy
 
 test("dashboard server launch forwards configured target repo to child CLI", async () => {
   const context = await createServerContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     const cliPath = await writeStubCli(context.tempDir);
     const canonicalTargetDir = await realpath(targetDir);
@@ -685,7 +685,7 @@ test("dashboard server rejects resume starts without the dashboard token", async
 });
 
 async function createServerContext(): Promise<{ tempDir: string }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-server-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-server-"));
   return { tempDir };
 }
 

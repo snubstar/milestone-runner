@@ -32,7 +32,7 @@ test("outputSchemaRelativePathForPhase leaves Markdown phases unconstrained", ()
 });
 
 test("resolveOutputSchemaPathForPhase resolves existing schema paths", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-schema-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-schema-"));
   try {
     const schemaDir = path.join(tempDir, "schemas");
     await mkdir(schemaDir);
@@ -53,8 +53,8 @@ test("resolveOutputSchemaPathForPhase resolves existing schema paths", async () 
 });
 
 test("resolveOutputSchemaPathForPhase resolves schemas from schemaRoot, not runner cwd", async () => {
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
-  const resourceDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-resource-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
+  const resourceDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-resource-"));
   try {
     const schemaRoot = path.join(resourceDir, "schemas");
     await mkdir(schemaRoot);
@@ -79,7 +79,7 @@ test("resolveOutputSchemaPathForPhase resolves schemas from schemaRoot, not runn
 });
 
 test("resolveOutputSchemaPathForPhase reports missing required schemas", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-schema-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-schema-"));
   try {
     const result = await resolveOutputSchemaPathForPhase({
       phase: "review_milestone",

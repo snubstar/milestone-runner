@@ -26,7 +26,7 @@ test(
   },
   async () => {
     const repo = await createFixtureRepo({
-      prefix: "agent-orchestrator-real-codex-",
+      prefix: "milestone-runner-real-codex-",
       files: {
         "README.md": "# Real Codex Smoke Fixture\n",
       },
@@ -41,7 +41,7 @@ test(
         "-c",
         "user.name=Agent Orchestrator Test",
         "-c",
-        "user.email=agent-orchestrator@example.invalid",
+        "user.email=milestone-runner@example.invalid",
         "commit",
         "-m",
         "add real codex smoke harness",

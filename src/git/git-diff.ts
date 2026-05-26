@@ -150,7 +150,7 @@ async function populateTemporaryIndex(
   | { ok: true; tempDir: string; env: NodeJS.ProcessEnv }
   | { ok: false; error: string; details?: CommandResult }
 > {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-git-index-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-git-index-"));
   const tempIndex = path.join(tempDir, "index");
 
   try {

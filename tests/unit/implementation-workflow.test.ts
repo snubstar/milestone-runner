@@ -964,7 +964,7 @@ async function createImplementationContext(
   options: ContextOptions = {},
 ): Promise<ImplementationContext> {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-implementation-",
+    prefix: "milestone-runner-implementation-",
     gitignore: options.ignoreArtifactRoot === false ? false : ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",

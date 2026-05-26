@@ -65,7 +65,7 @@ type ReportMajorPlanSource =
 
 export function printRunReport(options: RunReportOptions): void {
   const constrainedStop = constrainedTargetStop(options);
-  console.log("Agent milestone orchestrator");
+  console.log("Milestone Runner");
   console.log(`Mode: ${options.mode}`);
   console.log(`Run id: ${options.runId}`);
   console.log(`Run dir: ${options.paths.runDir}`);
@@ -242,7 +242,7 @@ function runnerConfigForReport(options: RunReportOptions): RunnerConfig {
 }
 
 export function printDryRunReport(report: DryRunReport): void {
-  console.log("Agent milestone orchestrator dry run");
+  console.log("Milestone Runner dry run");
   console.log(`Mode: ${report.mode}`);
   console.log(`Allowed: ${report.allowed}`);
   console.log(`Exit code: ${report.exitCode}`);

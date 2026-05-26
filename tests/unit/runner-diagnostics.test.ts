@@ -241,7 +241,7 @@ interface DiagnosticContext {
 }
 
 async function createDiagnosticContext(): Promise<DiagnosticContext> {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-diagnostics-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-diagnostics-"));
   const paths = buildRunPaths({
     cwd: repo,
     artifactRoot: ".agent-work",

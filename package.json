@@ -1,10 +1,10 @@
 {
-  "name": "agent-milestone-orchestrator",
+  "name": "milestone-runner",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "agent-orchestrator": "./dist/cli/main.js"
+    "milestone-runner": "./dist/cli/main.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

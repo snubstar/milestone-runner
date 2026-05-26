@@ -56,7 +56,7 @@ test("nodeCommandRunner captures stderr and non-zero exit codes", async () => {
 
 test("nodeCommandRunner records spawn failures", async () => {
   const result = await nodeCommandRunner.run({
-    command: "agent-orchestrator-command-that-should-not-exist",
+    command: "milestone-runner-command-that-should-not-exist",
     args: [],
     cwd: process.cwd(),
   });

@@ -10,7 +10,7 @@ import {
 } from "../../src/review/review-evidence.js";
 
 test("buildReviewEvidence rejects cwd outside the repository root", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     const repo = path.join(tempDir, "repo");
     const outside = path.join(tempDir, "outside");
@@ -35,7 +35,7 @@ test("buildReviewEvidence rejects cwd outside the repository root", async () => 
 });
 
 test("buildReviewEvidence excludes runDir and changed Markdown from authoritative matches", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeRepoFile(repo, "docs/smoke.md", "Use `logs/secret`.\n");
     await writeRepoFile(repo, ".agent-work/run-1/logs/evidence.txt", "logs/secret\n");
@@ -64,7 +64,7 @@ test("buildReviewEvidence excludes runDir and changed Markdown from authoritativ
 });
 
 test("buildReviewEvidence ignores packageJsonPath outside the repository root", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     const repo = path.join(tempDir, "repo");
     const outside = path.join(tempDir, "outside");
@@ -100,7 +100,7 @@ test("buildReviewEvidence ignores packageJsonPath outside the repository root", 
 });
 
 test("buildReviewEvidence backs structured claims from authoritative sources", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -131,7 +131,7 @@ test("buildReviewEvidence backs structured claims from authoritative sources", a
 });
 
 test("buildReviewEvidence normalizes leading dot-slash path claims", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -156,7 +156,7 @@ test("buildReviewEvidence normalizes leading dot-slash path claims", async () =>
 });
 
 test("buildReviewEvidence backs dashboard diagnostic artifact path claims", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -232,7 +232,7 @@ test("buildReviewEvidence backs dashboard diagnostic artifact path claims", asyn
 });
 
 test("buildReviewEvidence rejects unsupported dashboard diagnostic artifact suffixes", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -289,7 +289,7 @@ test("buildReviewEvidence rejects unsupported dashboard diagnostic artifact suff
 });
 
 test("buildReviewEvidence decomposes shell commands when derived claims are backed", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -322,7 +322,7 @@ test("buildReviewEvidence decomposes shell commands when derived claims are back
 });
 
 test("buildReviewEvidence omits machine-specific repository roots from Markdown", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-evidence-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
     await writeValidatorRepo(repo);
 
@@ -355,7 +355,7 @@ async function writeValidatorRepo(repo: string): Promise<void> {
     "package.json",
     `${JSON.stringify(
       {
-        bin: { "agent-orchestrator": "./dist/cli/main.js" },
+        bin: { "milestone-runner": "./dist/cli/main.js" },
         scripts: {
           dashboard: "npm run build && node dist/dashboard/server.js",
         },

@@ -343,8 +343,8 @@ function parseIntegerOption(
 
 export function usage(): string {
   return [
-    "Usage: agent-orchestrator [options] <goal>",
-    "       agent-orchestrator --resume <run-dir-or-id> [options]",
+    "Usage: milestone-runner [options] <goal>",
+    "       milestone-runner --resume <run-dir-or-id> [options]",
     "",
     "Options:",
     "  --config <path>         Path to config file.",

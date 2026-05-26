@@ -45,7 +45,7 @@ test("buildPlanningArtifactPaths creates expected planning artifact paths", () =
 });
 
 test("writeTextArtifact and writeJsonArtifact write stable artifact content", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-planning-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-planning-"));
   try {
     const runPaths = buildRunPaths({
       cwd: tempDir,

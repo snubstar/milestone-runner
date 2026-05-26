@@ -240,7 +240,7 @@ test("launchDashboardRun persists live process output before completion", async 
 
 test("launchDashboardRun forwards target repo and validated context paths", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     await mkdir(path.join(targetDir, "docs"), { recursive: true });
     await writeFile(path.join(targetDir, "README.md"), "# Target\n", "utf8");
@@ -295,7 +295,7 @@ test("launchDashboardRun forwards target repo and validated context paths", asyn
 
 test("launchDashboardRun forwards and records a validated seed major plan path", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     await mkdir(path.join(targetDir, "docs"), { recursive: true });
     await writeFile(
@@ -359,7 +359,7 @@ test("launchDashboardRun forwards and records a validated seed major plan path",
 
 test("launchDashboardRun forwards and records a goal file launch", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     await mkdir(path.join(targetDir, "docs"), { recursive: true });
     await writeFile(path.join(targetDir, "docs", "task.md"), "Goal from file\n", "utf8");
@@ -433,7 +433,7 @@ test("launchDashboardRun forwards and records a goal file launch", async () => {
 
 test("launchDashboardRun parses dry-run reports for large valid goal files", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     const cliPath = await writeLargeGoalDryRunCli(context.tempDir);
     const largeGoal = `Large goal\n${"a".repeat(80 * 1024)}`;
@@ -516,7 +516,7 @@ test("launchDashboardRun rejects invalid goal source combinations", async () => 
 
 test("launchDashboardRun rejects absolute browser goal file paths", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     const result = await launchDashboardRun(
       {
@@ -613,7 +613,7 @@ for (const scenario of [
   test(`launchDashboardRun rejects ${scenario.name} goal file paths`, async () => {
     const context = await createLauncherContext();
     const rootDir = await mkdtemp(
-      path.join(os.tmpdir(), "agent-orchestrator-goal-launch-"),
+      path.join(os.tmpdir(), "milestone-runner-goal-launch-"),
     );
     const targetDir = path.join(rootDir, "target");
     try {
@@ -649,7 +649,7 @@ for (const scenario of [
 
 test("launchDashboardRun rejects context paths that escape by sibling prefix", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   const siblingDir = `${targetDir}-other`;
   try {
     await mkdir(siblingDir, { recursive: true });
@@ -687,7 +687,7 @@ test("launchDashboardRun rejects context paths that escape by sibling prefix", a
 
 test("launchDashboardRun rejects absolute browser context paths", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     await writeFile(path.join(targetDir, "README.md"), "# Target\n", "utf8");
 
@@ -720,7 +720,7 @@ test("launchDashboardRun rejects absolute browser context paths", async () => {
 
 test("launchDashboardRun rejects absolute browser seed major plan paths", async () => {
   const context = await createLauncherContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     const result = await launchDashboardRun(
       {
@@ -818,7 +818,7 @@ for (const scenario of [
   test(`launchDashboardRun rejects ${scenario.name} seed major plan paths`, async () => {
     const context = await createLauncherContext();
     const rootDir = await mkdtemp(
-      path.join(os.tmpdir(), "agent-orchestrator-seed-launch-"),
+      path.join(os.tmpdir(), "milestone-runner-seed-launch-"),
     );
     const targetDir = path.join(rootDir, "target");
     try {
@@ -964,7 +964,7 @@ test("launchDashboardRun validates browser launch input before spawning", async 
 });
 
 test("launchDashboardRun reports a missing built CLI clearly", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-launcher-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-launcher-"));
   try {
     const result = await launchDashboardRun(
       {
@@ -1020,7 +1020,7 @@ async function writeScenarioFile(
 }
 
 async function createLauncherContext(): Promise<{ tempDir: string; cliPath: string }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-launcher-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-launcher-"));
   const cliPath = path.join(tempDir, "stub-cli.mjs");
   await writeFile(
     cliPath,

@@ -754,7 +754,7 @@ interface ContextOptions {
 
 async function createReviewContext(options: ContextOptions = {}): Promise<ReviewContext> {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-review-",
+    prefix: "milestone-runner-review-",
     gitignore: ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",

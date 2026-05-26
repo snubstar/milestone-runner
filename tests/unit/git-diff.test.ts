@@ -103,7 +103,7 @@ test("captureGitDiff can compare against a captured working tree baseline", asyn
 });
 
 test("captureGitDiff reports a clear error outside a Git repository", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-git-diff-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-git-diff-"));
   try {
     const result = await captureGitDiff({
       cwd: tempDir,
@@ -121,7 +121,7 @@ test("captureGitDiff reports a clear error outside a Git repository", async () =
 });
 
 async function createCommittedRepo(): Promise<string> {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-git-diff-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-git-diff-"));
   await runGit(repo, ["init"]);
   await writeFile(path.join(repo, "tracked.txt"), "before\n", "utf8");
   await runGit(repo, ["add", "tracked.txt"]);
@@ -129,7 +129,7 @@ async function createCommittedRepo(): Promise<string> {
     "-c",
     "user.name=Agent Orchestrator Test",
     "-c",
-    "user.email=agent-orchestrator@example.invalid",
+    "user.email=milestone-runner@example.invalid",
     "commit",
     "-m",
     "initial",

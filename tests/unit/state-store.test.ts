@@ -10,7 +10,7 @@ import { createInitialState } from "../../src/state/initial-state.js";
 import { readState, writeState } from "../../src/state/state-store.js";
 
 test("createRunDirectory writes goal and log files", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-artifacts-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-artifacts-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,
@@ -29,7 +29,7 @@ test("createRunDirectory writes goal and log files", async () => {
 });
 
 test("createRunDirectory refuses to reuse an existing run directory", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-artifacts-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-artifacts-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,
@@ -49,7 +49,7 @@ test("createRunDirectory refuses to reuse an existing run directory", async () =
 });
 
 test("createInitialState writes required initial fields", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-state-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-state-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,

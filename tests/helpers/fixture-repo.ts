@@ -28,7 +28,7 @@ export async function createFixtureRepo(
   options: FixtureRepoOptions = {},
 ): Promise<FixtureRepo> {
   const repoPath = await mkdtemp(
-    path.join(os.tmpdir(), options.prefix ?? "agent-orchestrator-fixture-"),
+    path.join(os.tmpdir(), options.prefix ?? "milestone-runner-fixture-"),
   );
   const repo = buildFixtureRepo(repoPath);
 
@@ -49,7 +49,7 @@ export async function createFixtureRepo(
     "-c",
     "user.name=Agent Orchestrator Test",
     "-c",
-    "user.email=agent-orchestrator@example.invalid",
+    "user.email=milestone-runner@example.invalid",
     "commit",
     "-m",
     options.commitMessage ?? "initial",

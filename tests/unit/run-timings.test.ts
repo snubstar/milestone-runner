@@ -402,7 +402,7 @@ interface TimingContext {
 async function createTimingContext(options: {
   checks?: Record<string, string>;
 } = {}): Promise<TimingContext> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-run-timings-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-run-timings-"));
   const paths = buildRunPaths({
     cwd: tempDir,
     artifactRoot: ".agent-work",

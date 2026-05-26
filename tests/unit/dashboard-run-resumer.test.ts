@@ -76,7 +76,7 @@ test("dryRunDashboardResume stores an allowed resume dry-run confirmation", asyn
 
 test("dryRunDashboardResume reads runs from target repo and forwards --repo", async () => {
   const context = await createResumerContext();
-  const targetDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-target-"));
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-target-"));
   try {
     await createResumeRun(targetDir, "run-1");
     const canonicalTargetDir = await realpath(targetDir);
@@ -395,7 +395,7 @@ test("resumeDashboardRun reports immediate process spawn failures", async () => 
 });
 
 async function createResumerContext(): Promise<{ tempDir: string; cliPath: string }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-resumer-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-resumer-"));
   const cliPath = await writeResumeStubCli(tempDir);
   return { tempDir, cliPath };
 }

@@ -31,7 +31,7 @@ test("loadConfig reads the example config", async () => {
 });
 
 test("loadConfig reports invalid JSON clearly", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-config-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-config-"));
   try {
     const configPath = path.join(tempDir, "broken.json");
     await writeFile(configPath, "{", "utf8");

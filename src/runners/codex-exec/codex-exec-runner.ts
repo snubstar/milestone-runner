@@ -38,7 +38,7 @@ export class CodexExecRunner implements AgentRunner {
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const cwd = request.cwd ?? process.cwd();
     const sandbox = sandboxForPhase(request.phase, this.options);
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-codex-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-codex-"));
     const outputLastMessagePath = path.join(tempDir, "last-message.txt");
     const args = buildCodexExecArgs({
       cwd,

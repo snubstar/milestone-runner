@@ -488,7 +488,7 @@ test("readDashboardRun includes missing state artifacts with warnings", async ()
 });
 
 test("readDashboardRun rejects run ids outside the canonical run id format", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-dashboard-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-dashboard-"));
   try {
     const result = await readDashboardRun({
       cwd: tempDir,
@@ -635,7 +635,7 @@ async function createDashboardRunContext(runId: string): Promise<{
   tempDir: string;
   paths: RunPaths;
 }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-dashboard-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-dashboard-"));
   const paths = buildRunPaths({
     cwd: tempDir,
     artifactRoot: ".agent-work",

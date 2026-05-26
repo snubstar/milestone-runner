@@ -413,7 +413,7 @@ test("runGoalWorkflow rejects a constrained target missing from metadata", async
 
 test("runGoalWorkflow resumes a passed milestone by advancing to the next pending milestone", async () => {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-goal-workflow-resume-",
+    prefix: "milestone-runner-goal-workflow-resume-",
     gitignore: ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",
@@ -1193,7 +1193,7 @@ interface GoalContextOptions {
 
 async function createGoalContext(options: GoalContextOptions = {}): Promise<GoalContext> {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-goal-workflow-",
+    prefix: "milestone-runner-goal-workflow-",
     gitignore: ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",
@@ -1240,7 +1240,7 @@ async function createReadyGoalContext(
   options: GoalContextOptions = {},
 ): Promise<GoalContext> {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-goal-workflow-ready-",
+    prefix: "milestone-runner-goal-workflow-ready-",
     gitignore: ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",
@@ -1276,7 +1276,7 @@ async function createReadyReviewGoalContext(
   options: GoalContextOptions = {},
 ): Promise<GoalContext> {
   const fixtureRepo = await createFixtureRepo({
-    prefix: "agent-orchestrator-goal-workflow-ready-review-",
+    prefix: "milestone-runner-goal-workflow-ready-review-",
     gitignore: ".agent-work/\n",
     files: {
       "README.md": "# Fixture\n",

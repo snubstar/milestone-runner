@@ -23,7 +23,7 @@ import {
 } from "../../src/inputs/initial-inputs.js";
 
 test("resolveInitialInputs reads goal files and snapshots context artifacts", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-inputs-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-inputs-"));
   try {
     await mkdir(path.join(repo, "docs"), { recursive: true });
     const seedPath = path.join(repo, "docs", "major-plan.md");
@@ -101,7 +101,7 @@ test("resolveInitialInputs reads goal files and snapshots context artifacts", as
 });
 
 test("resolveInitialInputs accepts absolute seed paths inside target and seed/context overlap", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-inputs-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-inputs-"));
   try {
     await mkdir(path.join(repo, "docs"), { recursive: true });
     const seedPath = path.join(repo, "docs", "major-plan.md");
@@ -128,7 +128,7 @@ test("resolveInitialInputs accepts absolute seed paths inside target and seed/co
 });
 
 test("resolveInitialInputs rejects invalid repository input files", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-inputs-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-inputs-"));
   const sibling = `${repo}-other`;
   try {
     await mkdir(path.join(repo, "docs"), { recursive: true });
@@ -206,7 +206,7 @@ test("resolveInitialInputs rejects invalid repository input files", async () => 
 });
 
 test("resolveInitialInputs rejects invalid seed major plan files", async () => {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-inputs-"));
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-inputs-"));
   const sibling = `${repo}-other`;
   try {
     await mkdir(path.join(repo, "docs"), { recursive: true });

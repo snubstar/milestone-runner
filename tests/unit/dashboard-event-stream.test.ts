@@ -120,7 +120,7 @@ test("buildDashboardStreamEvents emits only newly visible artifacts when given a
 });
 
 test("startDashboardRunEventStream keeps polling until a launched run writes state", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-stream-late-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-stream-late-"));
   const runId = "run-late-state";
   const paths = buildRunPaths({
     cwd: tempDir,
@@ -251,7 +251,7 @@ async function createEventStreamContext(runId: string): Promise<{
   tempDir: string;
   paths: RunPaths;
 }> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-stream-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-stream-"));
   const paths = buildRunPaths({
     cwd: tempDir,
     artifactRoot: ".agent-work",

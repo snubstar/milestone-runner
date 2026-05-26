@@ -287,7 +287,7 @@ test("printRunReport shows saved resume review policy and next scrupulous status
 });
 
 test("printRunReport includes timing artifact paths and compact durations", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-report-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-report-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,

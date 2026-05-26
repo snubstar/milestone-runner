@@ -68,7 +68,7 @@ test("loadResumeRun resolves a direct state.json path", async () => {
 
 test("loadResumeRun direct-path resume uses saved workspace target when repo is omitted", async () => {
   const repo = await createFixtureRepo();
-  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-loader-"));
+  const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-loader-"));
   try {
     const fixture = await createResumeFixture(repo.path);
     await writeState(fixture.paths.files.state, {
@@ -158,7 +158,7 @@ test("loadResumeRun resolves a run id under artifact root", async () => {
 });
 
 test("loadResumeRun rejects missing resume state", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-loader-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-loader-"));
   try {
     const result = await loadResumeRun({
       cwd: tempDir,
@@ -263,7 +263,7 @@ test("loadResumeRun rejects resume from a different Git repository", async () =>
 });
 
 test("loadResumeRun allows planning-only state without Git root", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-loader-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-loader-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,

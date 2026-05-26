@@ -1015,7 +1015,7 @@ interface WorkflowContext {
 }
 
 async function createWorkflowContext(): Promise<WorkflowContext> {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-planning-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-planning-"));
   const paths = buildRunPaths({
     cwd: tempDir,
     artifactRoot: ".agent-work",

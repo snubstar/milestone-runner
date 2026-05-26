@@ -24,7 +24,7 @@ import { createInitialState } from "../../src/state/initial-state.js";
 import type { RunState } from "../../src/state/state-types.js";
 
 test("writeGoalSummary writes a passed summary with changed files, artifacts, and residual risks", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,
@@ -125,7 +125,7 @@ test("writeGoalSummary writes a passed summary with changed files, artifacts, an
 });
 
 test("writeGoalSummary writes blocked summaries with stop diagnostics and changed-file capture risk", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,
@@ -206,7 +206,7 @@ test("writeGoalSummary writes blocked summaries with stop diagnostics and change
 });
 
 test("writeGoalSummary reports unsafe review artifact paths without reading them", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,
@@ -257,7 +257,7 @@ test("writeGoalSummary reports unsafe review artifact paths without reading them
 });
 
 test("writeGoalSummary returns a structured error when the summary cannot be written", async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
   try {
     const paths = buildRunPaths({
       cwd: tempDir,

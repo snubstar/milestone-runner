@@ -1,6 +1,6 @@
-# Agent Milestone Orchestrator
+# Milestone Runner
 
-Agent Milestone Orchestrator is a local TypeScript CLI prototype for automating a structured agent-assisted development loop.
+Milestone Runner is a local TypeScript CLI prototype for automating a structured agent-assisted development loop.
 
 The first real runner adapter uses Codex Exec, but the orchestration core is intended to stay runner-agnostic. Codex, fake test runners, and future agent providers should all plug into the same workflow through a shared runner interface.
 
