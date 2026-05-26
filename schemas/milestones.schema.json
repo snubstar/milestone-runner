@@ -30,6 +30,7 @@
       "enum": [
         "pending",
         "planned",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -77,8 +78,7 @@
           "items": {
             "type": "integer",
             "minimum": 1
-          },
-          "uniqueItems": true
+          }
         },
         "status": {
           "$ref": "#/$defs/milestoneStatus"
@@ -87,4 +87,3 @@
     }
   }
 }
-

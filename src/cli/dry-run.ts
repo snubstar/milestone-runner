@@ -1,0 +1,371 @@
+import { readFile } from "node:fs/promises";
+
+import { buildPlanningArtifactPaths } from "../artifacts/planning-artifacts.js";
+import type { RunPaths } from "../artifacts/paths.js";
+import type { OrchestratorConfig } from "../config/config-types.js";
+import type { EnvironmentDiagnostic } from "../diagnostics/environment-validator.js";
+import type { GitMetadata } from "../git/git-types.js";
+import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
+import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
+import { runnerIdentityDetails } from "../runners/runner-identity.js";
+import type { RunState } from "../state/state-types.js";
+import {
+  describeScrupulousReviewForNextMilestone,
+  formatChecks,
+  formatDiagnostics,
+  formatMilestoneStatusesCompact,
+  nonGitPlanningOverride,
+  warningsForGitOverrides,
+} from "./run-report.js";
+
+export { printDryRunReport } from "./run-report.js";
+
+export interface DryRunReport {
+  mode: "new" | "resume";
+  allowed: boolean;
+  exitCode: 0 | 1;
+  nextAction: string;
+  warnings: string[];
+  details: Record<string, unknown>;
+}
+
+export type DryRunMajorPlanSource =
+  | { type: "runner"; path: null }
+  | { type: "seed"; path: string };
+
+export interface NewRunDryRunOptions {
+  goal: string;
+  runId?: string;
+  runDir?: string;
+  invocationCwd: string;
+  targetCwd: string;
+  goalSourceType: "argv" | "file";
+  goalSourcePath: string | null;
+  majorPlanSource?: DryRunMajorPlanSource;
+  contextPaths: string[];
+  config: OrchestratorConfig;
+  configPath: string | null;
+  planningOnly: boolean;
+  allowDirty: boolean;
+  allowNonGitPlanning: boolean;
+  targetMilestone?: number;
+  git: GitMetadata;
+  runnerType: string;
+  diagnostics?: EnvironmentDiagnostic[];
+  blockedReason?: string;
+}
+
+export interface ResumeDryRunOptions {
+  state: RunState;
+  paths: RunPaths;
+  config: OrchestratorConfig;
+  planningOnly: boolean;
+  allowDirty: boolean;
+  allowNonGitPlanning: boolean;
+  targetMilestone?: number;
+  git: GitMetadata;
+  runnerType: string;
+  diagnostics?: EnvironmentDiagnostic[];
+  warnings?: string[];
+  blockedReason?: string;
+}
+
+export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunReport {
+  const allowed = options.blockedReason === undefined;
+  const majorPlanSource = options.majorPlanSource ?? { type: "runner" as const, path: null };
+  const nextAction =
+    options.blockedReason ??
+    (majorPlanSource.type === "seed" ? "review_seeded_major_plan" : undefined) ??
+    (options.planningOnly ? "run_planning_only" : "run_full_goal");
+
+  return {
+    mode: "new",
+    allowed,
+    exitCode: allowed ? 0 : 1,
+    nextAction,
+    warnings: [
+      ...warningsForChecks(options.config, options.diagnostics ?? []),
+      ...diagnosticWarnings(options.diagnostics ?? []),
+      ...warningsForGitOverrides(options.git, options.allowNonGitPlanning),
+    ],
+    details: {
+      goal: options.goal,
+      runId: options.runId ?? null,
+      runDir: options.runDir ?? null,
+      invocationCwd: options.invocationCwd,
+      targetCwd: options.targetCwd,
+      goalSource: formatGoalSource(options.goalSourceType, options.goalSourcePath),
+      majorPlanSource,
+      contextInputs: formatContextInputs(options.contextPaths),
+      planningOnly: options.planningOnly,
+      allowDirty: options.allowDirty,
+      allowNonGitPlanning: options.allowNonGitPlanning,
+      targetMilestone: options.targetMilestone ?? null,
+      runner: options.runnerType,
+      runnerExecution: runnerExecutionDescription(options.config),
+      ...runnerIdentityDetails(options.config),
+      config: options.configPath,
+      artifactRoot: options.config.artifactRoot,
+      maxFixAttempts: options.config.maxFixAttempts,
+      milestonePlanPolicy: options.config.milestonePlanPolicy,
+      milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
+      scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
+        policy: options.config.milestonePlanReviewPolicy,
+        planningOnly: options.planningOnly,
+        nextAction,
+        allowed,
+      }),
+      checks: formatChecks(options.config.checks),
+      environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
+      gitRequired: options.git.required,
+      gitRoot: options.git.root ?? "unavailable",
+      gitDirty: options.git.dirtyAtStart,
+      gitDirtyOverride: options.git.dirtyOverride,
+      gitNonGitPlanningOverride: nonGitPlanningOverride(
+        options.git,
+        options.allowNonGitPlanning,
+      ),
+    },
+  };
+}
+
+export async function buildResumeDryRunReport(
+  options: ResumeDryRunOptions,
+): Promise<DryRunReport> {
+  const savedPlanPolicy = savedMilestonePlanPolicy(options.state);
+  const savedReviewPolicy = savedMilestonePlanReviewPolicy(options.state);
+  const warnings = [
+    ...(options.warnings ?? []),
+    ...warningsForChecks(options.config, options.diagnostics ?? []),
+    ...diagnosticWarnings(options.diagnostics ?? []),
+    ...warningsForGitOverrides(options.git, options.allowNonGitPlanning),
+  ];
+
+  let nextAction = options.blockedReason;
+  let allowed = nextAction === undefined;
+
+  if (!nextAction) {
+    const action = await resumeNextAction(options.state, options.paths);
+    nextAction = action.nextAction;
+    allowed = action.allowed;
+    warnings.push(...action.warnings);
+  }
+
+  return {
+    mode: "resume",
+    allowed,
+    exitCode: allowed ? 0 : 1,
+    nextAction,
+    warnings,
+    details: {
+      runId: options.state.runId,
+      runDir: options.paths.runDir,
+      goal: options.state.goal,
+      invocationCwd: options.state.workspace?.invocationCwd ?? null,
+      targetCwd: options.state.workspace?.targetCwd ?? null,
+      goalSource: formatGoalSource(
+        options.state.inputs?.goalSource.type ?? "argv",
+        options.state.inputs?.goalSource.path ?? null,
+      ),
+      majorPlanSource: majorPlanSourceFromState(options.state),
+      contextInputs: formatContextInputs(
+        options.state.inputs?.context.map((entry) => entry.path) ?? [],
+      ),
+      currentPhase: options.state.currentPhase,
+      currentMilestone: options.state.currentMilestoneId ?? "none",
+      milestones: formatMilestoneStatusesCompact(options.state),
+      planningOnly: options.planningOnly,
+      allowDirty: options.allowDirty,
+      allowNonGitPlanning: options.allowNonGitPlanning,
+      targetMilestone: options.targetMilestone ?? null,
+      runner: options.runnerType,
+      runnerExecution: runnerExecutionDescription(options.config),
+      ...runnerIdentityDetails(options.config),
+      artifactRoot: options.paths.artifactRoot,
+      maxFixAttempts: options.config.maxFixAttempts,
+      milestonePlanPolicy: options.config.milestonePlanPolicy,
+      ...(savedPlanPolicy !== options.config.milestonePlanPolicy
+        ? { savedMilestonePlanPolicy: savedPlanPolicy }
+        : {}),
+      milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
+      savedMilestonePlanReviewPolicy: savedReviewPolicy,
+      scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
+        policy: options.config.milestonePlanReviewPolicy,
+        planningOnly: options.planningOnly,
+        state: options.state,
+        nextAction,
+        allowed,
+      }),
+      checks: formatChecks(options.config.checks),
+      environmentDiagnostics: formatDiagnostics(options.diagnostics ?? []),
+      gitRequired: options.git.required,
+      gitRoot: options.git.root ?? "unavailable",
+      gitDirty: options.git.dirtyAtStart,
+      gitDirtyOverride: options.git.dirtyOverride,
+      gitNonGitPlanningOverride: nonGitPlanningOverride(
+        options.git,
+        options.allowNonGitPlanning,
+      ),
+      lastError: options.state.lastError?.message ?? null,
+    },
+  };
+}
+
+function savedMilestonePlanPolicy(state: RunState): OrchestratorConfig["milestonePlanPolicy"] {
+  return state.config.snapshot?.milestonePlanPolicy ?? "always";
+}
+
+function formatGoalSource(type: "argv" | "file", goalPath: string | null): string {
+  return type === "file" && goalPath ? `file:${goalPath}` : "argv";
+}
+
+function formatContextInputs(paths: string[]): string {
+  return paths.length === 0 ? "none" : paths.join(", ");
+}
+
+function majorPlanSourceFromState(state: RunState): DryRunMajorPlanSource {
+  const source = state.inputs?.majorPlanSource;
+  if (source?.type === "seed" && source.path) {
+    return { type: "seed", path: source.path };
+  }
+  return { type: "runner", path: null };
+}
+
+function savedMilestonePlanReviewPolicy(
+  state: RunState,
+): OrchestratorConfig["milestonePlanReviewPolicy"] {
+  return state.config.snapshot?.milestonePlanReviewPolicy ?? "normal";
+}
+
+async function resumeNextAction(
+  state: RunState,
+  paths: RunPaths,
+): Promise<{ allowed: boolean; nextAction: string; warnings: string[] }> {
+  if (isPlanningResumePhase(state.currentPhase)) {
+    return { allowed: true, nextAction: "continue_planning", warnings: [] };
+  }
+
+  const metadataResult = await readMilestoneMetadata(paths);
+  if (!metadataResult.ok) {
+    return {
+      allowed: false,
+      nextAction: "blocked_unsafe_resume",
+      warnings: [metadataResult.error],
+    };
+  }
+
+  const decision = normalizeStateForGoalResume(state, metadataResult.metadata);
+  switch (decision.kind) {
+    case "continue":
+      return {
+        allowed: true,
+        nextAction: actionForContinuablePhase(decision.state.currentPhase),
+        warnings: [],
+      };
+    case "advance":
+      return {
+        allowed: true,
+        nextAction: "advance_to_next_milestone",
+        warnings: [],
+      };
+    case "complete":
+      return {
+        allowed: true,
+        nextAction: decision.summaryRequired ? "complete_goal_summary" : "goal_complete",
+        warnings: [],
+      };
+    case "stopped":
+      return {
+        allowed: false,
+        nextAction:
+          decision.state.status === "failed"
+            ? "stopped_failed"
+            : "stopped_needs_human_review",
+        warnings: [],
+      };
+    case "normalize_to_ready_for_review":
+      return {
+        allowed: true,
+        nextAction: "normalize_to_ready_for_review",
+        warnings: [],
+      };
+    case "normalize_to_passed":
+      return {
+        allowed: true,
+        nextAction: "normalize_to_passed",
+        warnings: [],
+      };
+    case "needs_human_review":
+      return {
+        allowed: false,
+        nextAction: "blocked_unsafe_resume",
+        warnings: [decision.message],
+      };
+  }
+}
+
+async function readMilestoneMetadata(paths: RunPaths) {
+  const planningPaths = buildPlanningArtifactPaths(paths);
+  try {
+    const raw = await readFile(planningPaths.files.milestones, "utf8");
+    const parsed = parseMilestoneMetadataJson(raw);
+    if (!parsed.ok) {
+      return { ok: false as const, error: parsed.error };
+    }
+
+    return { ok: true as const, metadata: parsed.value };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: `Failed to read milestone metadata: ${formatError(error)}`,
+    };
+  }
+}
+
+function actionForContinuablePhase(phase: RunState["currentPhase"]): string {
+  if (
+    phase === "initialized" ||
+    phase === "planning" ||
+    phase === "plan_reviewing"
+  ) {
+    return "continue_planning";
+  }
+
+  if (phase === "ready_for_milestone") return "continue_milestone";
+  if (phase === "ready_for_review") return "continue_review";
+  return `continue_${phase}`;
+}
+
+function isPlanningResumePhase(phase: RunState["currentPhase"]): boolean {
+  return (
+    phase === "initialized" ||
+    phase === "planning" ||
+    phase === "plan_reviewing"
+  );
+}
+
+function warningsForChecks(
+  config: OrchestratorConfig,
+  diagnostics: EnvironmentDiagnostic[],
+): string[] {
+  if (diagnostics.some((diagnostic) => diagnostic.code === "checks_empty")) {
+    return [];
+  }
+  return config.checks.length === 0 ? ["No deterministic checks are configured."] : [];
+}
+
+function diagnosticWarnings(diagnostics: EnvironmentDiagnostic[]): string[] {
+  return diagnostics
+    .filter((diagnostic) => diagnostic.level === "warning")
+    .map((diagnostic) => diagnostic.message);
+}
+
+function runnerExecutionDescription(config: OrchestratorConfig): string {
+  return config.runner.type === "codex-exec"
+    ? `codex exec via ${config.runner.command ?? "codex"}`
+    : "fake runner";
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

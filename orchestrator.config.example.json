@@ -6,10 +6,13 @@
     "options": {
       "sandboxForPlanning": "read-only",
       "sandboxForImplementation": "workspace-write",
-      "approvalPolicy": "never"
+      "approvalPolicy": "never",
+      "timeoutMs": 1800000,
+      "jsonEvents": false
     }
   },
   "maxFixAttempts": 2,
-  "artifactRoot": ".agent-work"
+  "artifactRoot": ".agent-work",
+  "milestonePlanPolicy": "always",
+  "milestonePlanReviewPolicy": "normal"
 }
-

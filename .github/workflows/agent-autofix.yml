@@ -1,0 +1,334 @@
+name: Agent CI Autofix
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch or ref to inspect and fix. Required."
+        required: true
+        type: string
+      output_branch:
+        description: "Branch to push fixes to. Defaults to agent/autofix-<run_id>."
+        required: false
+        type: string
+      prompt_path:
+        description: "Prompt file to use."
+        required: false
+        default: "ci/prompts/ci-failure-autofix.md"
+        type: string
+      failing_command:
+        description: "Optional failing command or test command for Codex to investigate."
+        required: false
+        type: string
+      failure_log_url:
+        description: "Optional URL for the failing CI logs."
+        required: false
+        type: string
+      failure_summary:
+        description: "Optional short summary of the observed CI failure."
+        required: false
+        type: string
+      dry_run:
+        description: "Prepare context and skip Codex execution."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-autofix-${{ github.workflow }}-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  autofix:
+    name: Agent autofix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AUTOFIX_PROMPT_PATH: ${{ inputs.prompt_path }}
+      AUTOFIX_TARGET_BRANCH: ${{ inputs.target_branch }}
+      AUTOFIX_REQUESTED_OUTPUT_BRANCH: ${{ inputs.output_branch }}
+      AUTOFIX_FAILING_COMMAND: ${{ inputs.failing_command }}
+      AUTOFIX_FAILURE_LOG_URL: ${{ inputs.failure_log_url }}
+      AUTOFIX_FAILURE_SUMMARY: ${{ inputs.failure_summary }}
+      AUTOFIX_DRY_RUN: ${{ inputs.dry_run }}
+      AUTOFIX_OUTPUT_DIR: ${{ runner.temp }}/agent-autofix
+      AUTOFIX_OUTPUT_FILE: ${{ runner.temp }}/agent-autofix/agent-autofix.md
+      AUTOFIX_PROMPT_FILE: ${{ runner.temp }}/agent-autofix/agent-autofix-prompt.md
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.target_branch }}
+          fetch-depth: 0
+
+      - name: Validate autofix inputs
+        id: guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$AUTOFIX_OUTPUT_DIR"
+
+          if [ -z "$AUTOFIX_TARGET_BRANCH" ]; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Required input \`target_branch\` is missing."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            exit 1
+          fi
+
+          output_branch="$AUTOFIX_REQUESTED_OUTPUT_BRANCH"
+          if [ -z "$output_branch" ]; then
+            output_branch="agent/autofix-${GITHUB_RUN_ID}"
+          fi
+
+          if ! git check-ref-format --branch "$output_branch" >/dev/null 2>&1; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Invalid output branch: \`$output_branch\`."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            exit 1
+          fi
+
+          case "$output_branch" in
+            main|master|trunk|production|prod|release|develop|dev)
+              {
+                echo "## Agent autofix"
+                echo
+                echo "Refusing to push directly to likely protected branch: \`$output_branch\`."
+                echo
+                echo "Use an \`agent/autofix-\` branch or another non-protected branch."
+              } > "$AUTOFIX_OUTPUT_FILE"
+              exit 1
+              ;;
+          esac
+
+          case "$output_branch" in
+            refs/*|-*|*..*|*@{*|*//*)
+              {
+                echo "## Agent autofix"
+                echo
+                echo "Refusing unsafe output branch name: \`$output_branch\`."
+              } > "$AUTOFIX_OUTPUT_FILE"
+              exit 1
+              ;;
+          esac
+
+          if git ls-remote --exit-code --heads origin "$output_branch" >/dev/null 2>&1; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Output branch already exists: \`$output_branch\`."
+              echo
+              echo "Choose a new branch so this workflow never force-pushes or overwrites existing work."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            exit 1
+          fi
+
+          echo "output_branch=$output_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare autofix prompt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$AUTOFIX_PROMPT_PATH" ]; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Required prompt file is missing: \`$AUTOFIX_PROMPT_PATH\`."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            cat "$AUTOFIX_OUTPUT_FILE" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "# CI failure autofix request"
+            echo
+            cat "$AUTOFIX_PROMPT_PATH"
+            echo
+            echo "## Workflow context"
+            echo
+            echo "- Repository: $GITHUB_REPOSITORY"
+            echo "- Target branch/ref: $AUTOFIX_TARGET_BRANCH"
+            echo "- Output branch: ${{ steps.guardrails.outputs.output_branch }}"
+            echo "- SHA: $GITHUB_SHA"
+            echo "- Event: $GITHUB_EVENT_NAME"
+            echo
+            echo "## Failure context"
+            echo
+            if [ -n "$AUTOFIX_FAILURE_SUMMARY" ]; then
+              echo "### Failure summary"
+              echo
+              printf '%s\n' "$AUTOFIX_FAILURE_SUMMARY"
+              echo
+            fi
+            if [ -n "$AUTOFIX_FAILURE_LOG_URL" ]; then
+              echo "### Failure log URL"
+              echo
+              echo "$AUTOFIX_FAILURE_LOG_URL"
+              echo
+            fi
+            if [ -n "$AUTOFIX_FAILING_COMMAND" ]; then
+              echo "### Failing command"
+              echo
+              echo '```bash'
+              printf '%s\n' "$AUTOFIX_FAILING_COMMAND"
+              echo '```'
+              echo
+              echo "Run this command only if it is safe and useful for reproducing the failure in this checkout."
+              echo
+            fi
+            echo "## Repository status before autofix"
+            echo
+            echo '```text'
+            git status --short
+            echo '```'
+          } > "$AUTOFIX_PROMPT_FILE"
+
+      - name: Check provider availability
+        id: provider
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ "$AUTOFIX_DRY_RUN" = "true" ]; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Dry run requested. Codex execution was skipped."
+              echo
+              echo "Prepared output branch: \`${{ steps.guardrails.outputs.output_branch }}\`."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            echo "run_codex=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "${CODEX_API_KEY:-}" ]; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Codex execution failed because no provider credential was available."
+              echo
+              echo "Configure a repository secret named \`CODEX_API_KEY\` or \`OPENAI_API_KEY\` for this trusted manual workflow."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            exit 1
+          else
+            echo "run_codex=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Codex CLI
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        run: npm install -g @openai/codex
+
+      - name: Confirm Codex CLI
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        run: codex --version
+
+      - name: Run Codex autofix
+        if: ${{ steps.provider.outputs.run_codex == 'true' }}
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          codex exec \
+            --ephemeral \
+            --sandbox workspace-write \
+            --ignore-user-config \
+            --ignore-rules \
+            - < "$AUTOFIX_PROMPT_FILE" > "$AUTOFIX_OUTPUT_FILE"
+
+          if [ ! -s "$AUTOFIX_OUTPUT_FILE" ]; then
+            echo "Codex completed but did not produce $AUTOFIX_OUTPUT_FILE." >&2
+            exit 1
+          fi
+
+      - name: Commit and push autofix branch
+        if: ${{ steps.provider.outputs.run_codex == 'true' && inputs.dry_run != true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output_branch="${{ steps.guardrails.outputs.output_branch }}"
+
+          git status --porcelain=v1 > "$AUTOFIX_OUTPUT_DIR/git-status.txt"
+
+          if [ ! -s "$AUTOFIX_OUTPUT_DIR/git-status.txt" ]; then
+            {
+              echo
+              echo "## Workflow result"
+              echo
+              echo "Codex did not produce repository changes. No branch was pushed."
+            } >> "$AUTOFIX_OUTPUT_FILE"
+            exit 0
+          fi
+
+          if grep -E '(^.. \.env($|[./])|\.pem$|id_rsa|id_ed25519)' "$AUTOFIX_OUTPUT_DIR/git-status.txt"; then
+            {
+              echo
+              echo "## Workflow result"
+              echo
+              echo "Refusing to commit likely secret or credential files."
+            } >> "$AUTOFIX_OUTPUT_FILE"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -c "$output_branch"
+          git add -A
+          git commit -m "Agent autofix"
+          git push --set-upstream origin "HEAD:refs/heads/$output_branch"
+
+          {
+            echo
+            echo "## Workflow result"
+            echo
+            echo "Pushed autofix branch: \`$output_branch\`."
+          } >> "$AUTOFIX_OUTPUT_FILE"
+
+      - name: Publish autofix summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$AUTOFIX_OUTPUT_DIR"
+
+          if [ ! -s "$AUTOFIX_OUTPUT_FILE" ]; then
+            {
+              echo "## Agent autofix"
+              echo
+              echo "Agent autofix did not produce \`agent-autofix.md\`."
+            } > "$AUTOFIX_OUTPUT_FILE"
+            cat "$AUTOFIX_OUTPUT_FILE" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          cat "$AUTOFIX_OUTPUT_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload autofix artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-autofix
+          path: |
+            ${{ runner.temp }}/agent-autofix/agent-autofix.md
+            ${{ runner.temp }}/agent-autofix/git-status.txt
+          if-no-files-found: warn

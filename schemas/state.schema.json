@@ -30,6 +30,24 @@
       "type": "string",
       "minLength": 1
     },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocationCwd", "targetCwd"],
+      "properties": {
+        "invocationCwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targetCwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "inputs": {
+      "$ref": "#/$defs/inputs"
+    },
     "currentPhase": {
       "$ref": "#/$defs/phase"
     },
@@ -154,6 +172,7 @@
         "planning",
         "plan_reviewing",
         "ready_for_milestone",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -170,6 +189,7 @@
         "planning",
         "plan_reviewing",
         "ready_for_milestone",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -184,6 +204,7 @@
       "enum": [
         "pending",
         "planned",
+        "ready_for_review",
         "implementing",
         "checking",
         "reviewing",
@@ -203,12 +224,113 @@
         "$ref": "#/$defs/artifactPath"
       }
     },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalSource", "context"],
+      "properties": {
+        "goalSource": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["argv", "file"]
+            },
+            "path": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "majorPlanSource": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "path"],
+              "properties": {
+                "type": {
+                  "const": "runner"
+                },
+                "path": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "path", "sizeBytes", "sha256"],
+              "properties": {
+                "type": {
+                  "const": "seed"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "sha256": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "artifactPath", "sizeBytes", "sha256"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifactPath": {
+                "$ref": "#/$defs/artifactPath"
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "inputArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest"],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/artifactPath"
+        },
+        "context": {
+          "$ref": "#/$defs/artifactMap"
+        }
+      }
+    },
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "goal": {
           "$ref": "#/$defs/artifactPath"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputArtifacts"
         },
         "majorPlan": {
           "$ref": "#/$defs/artifactPath"
@@ -225,7 +347,16 @@
         "milestones": {
           "$ref": "#/$defs/artifactPath"
         },
+        "milestonePlanDrafts": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "milestonePlanReviews": {
+          "$ref": "#/$defs/artifactMap"
+        },
         "milestonePlans": {
+          "$ref": "#/$defs/artifactMap"
+        },
+        "implementations": {
           "$ref": "#/$defs/artifactMap"
         },
         "diffs": {
@@ -250,4 +381,3 @@
     }
   }
 }
-
