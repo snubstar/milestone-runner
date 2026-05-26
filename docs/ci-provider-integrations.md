@@ -1,6 +1,7 @@
 # CI Provider Integrations
 
-Milestone 9 adds optional GitHub Actions automation around agent review and CI-failure autofix workflows.
+This project includes optional GitHub Actions automation around agent review and
+CI-failure autofix workflows.
 
 These workflows are provider integrations. They are not required for local CLI usage.
 

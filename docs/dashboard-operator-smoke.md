@@ -147,7 +147,10 @@ node dist/cli/main.js --dry-run --runner fake \
 ## Launch A Live Smoke Run
 
 Only clear `Dry run` after a preview shows the expected target repository,
-artifact root, inputs, and runner. For an offline live smoke, use `fake`.
+artifact root, inputs, and runner. For an offline live smoke, use `fake`. Live
+fake runs still perform Git preflight and diff capture, so the target must be a
+Git repository with at least one commit and a clean tree unless `Allow dirty` is
+intentional.
 
 For `codex-exec`, the Codex CLI must be installed, available on `PATH`, and
 authenticated in the shell. The target directory must be a Git repository with

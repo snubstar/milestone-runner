@@ -155,6 +155,11 @@ node dist/cli/main.js --runner fake --milestone 1 \
   "Add a docs note explaining how to run the orchestrator manually"
 ```
 
+Full fake implementation runs still use the normal orchestration safety model:
+the target must be a Git repository with at least one commit, and the working
+tree must be clean unless `--allow-dirty` is intentional. Use `--planning-only
+--allow-non-git-planning` only for planning without Git.
+
 The general plan is always produced. To skip only the runner-backed per-milestone plan for simple tasks, add a milestone plan policy:
 
 ```bash
@@ -265,7 +270,7 @@ Important locations:
 - `checks/`: deterministic check reports.
 - `reviews/`: review verdict JSON.
 - `runner/`: stdout, stderr, args, sandbox, timeout, and schema diagnostics for real runner calls.
-- `state.json`: final status and all artifact paths.
+- `state.json`: final status and produced workflow artifact paths.
 
 ## Inspect Timing
 
