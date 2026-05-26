@@ -318,6 +318,40 @@ test("buildRunTimingsDocument emits warnings for missing timing sources", async 
   }
 });
 
+test("buildRunTimingsDocument rejects unsafe check artifact paths from state", async () => {
+  const context = await createTimingContext();
+  try {
+    const outsideChecks = path.join(context.tempDir, "outside-checks.txt");
+    await writeFile(outsideChecks, checkReport("npm run outside", 123), "utf8");
+
+    const document = await buildRunTimingsDocument({
+      paths: context.paths,
+      state: {
+        ...context.state,
+        artifacts: {
+          ...context.state.artifacts,
+          checks: {
+            "1": outsideChecks,
+          },
+        },
+      },
+      runEndedAt: "2026-05-10T10:01:00.000Z",
+    });
+
+    assert.deepEqual(document.checks, []);
+    assert.equal(
+      document.warnings.some(
+        (warning) =>
+          warning.code === "check_report_malformed" &&
+          warning.message.includes("Artifact path must be run-relative"),
+      ),
+      true,
+    );
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("writeRunTimings writes JSON and Markdown timing artifacts", async () => {
   const context = await createTimingContext();
   try {

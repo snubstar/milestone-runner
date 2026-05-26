@@ -205,6 +205,57 @@ test("writeGoalSummary writes blocked summaries with stop diagnostics and change
   }
 });
 
+test("writeGoalSummary reports unsafe review artifact paths without reading them", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
+  try {
+    const paths = buildRunPaths({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-1",
+    });
+    await createRunDirectory(paths, "Add feature X");
+    const outsideReview = path.join(tempDir, "outside-review.json");
+    await writeJsonArtifact(outsideReview, passingReview("Outside review passed.", []));
+
+    const state: RunState = {
+      ...baseState(paths, tempDir),
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: null,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "pending",
+      },
+      artifacts: {
+        ...baseState(paths, tempDir).artifacts,
+        reviews: {
+          "1": outsideReview,
+        },
+      },
+      lastError: null,
+      updatedAt: "2026-05-10T12:00:00.000Z",
+    };
+
+    const result = await writeGoalSummary({
+      paths,
+      state,
+      metadata: testMilestoneMetadata(),
+      cwd: tempDir,
+      commandRunner: diffRunner({ stdout: "" }),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const content = await readFile(result.file, "utf8");
+    assert.match(content, /Milestone 1: .*outside-review\.json.*unreadable/);
+    assert.match(content, /Artifact path must be run-relative/);
+    assert.doesNotMatch(content, /Milestone 1: .*outside-review\.json \(pass\)/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("writeGoalSummary returns a structured error when the summary cannot be written", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-goal-summary-"));
   try {

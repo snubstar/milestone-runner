@@ -34,6 +34,10 @@ export interface RunPaths {
   };
 }
 
+export type RunArtifactPathResolution =
+  | { ok: true; path: string; relativePath: string }
+  | { ok: false; error: string };
+
 export function createRunId(date = new Date(), entropy = randomBytes(4).toString("hex")): string {
   return `run-${date.toISOString().replace(/\D/g, "")}-${entropy}`;
 }
@@ -93,4 +97,44 @@ function buildRunPathsFromResolvedParts(options: {
 
 export function toRunRelativePath(runDir: string, filePath: string): string {
   return path.relative(runDir, filePath);
+}
+
+export function resolveRunArtifactPath(
+  runDir: string,
+  artifactPath: string,
+): RunArtifactPathResolution {
+  const trimmed = artifactPath.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: "Artifact path is empty." };
+  }
+
+  if (isAbsolutePath(trimmed)) {
+    return { ok: false, error: `Artifact path must be run-relative: ${artifactPath}.` };
+  }
+
+  const segments = trimmed.split(/[\\/]/);
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    return { ok: false, error: `Artifact path contains unsafe segments: ${artifactPath}.` };
+  }
+
+  const relativePath = segments.join("/");
+  const absolutePath = path.resolve(runDir, relativePath);
+  const relativeFromRunDir = path.relative(path.resolve(runDir), absolutePath);
+  if (
+    relativeFromRunDir === "" ||
+    relativeFromRunDir.startsWith("..") ||
+    isAbsolutePath(relativeFromRunDir)
+  ) {
+    return { ok: false, error: `Artifact path escapes run directory: ${artifactPath}.` };
+  }
+
+  return { ok: true, path: absolutePath, relativePath };
+}
+
+function isAbsolutePath(filePath: string): boolean {
+  return (
+    path.isAbsolute(filePath) ||
+    path.posix.isAbsolute(filePath) ||
+    path.win32.isAbsolute(filePath)
+  );
 }

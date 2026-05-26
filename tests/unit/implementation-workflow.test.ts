@@ -622,6 +622,38 @@ test("runImplementationWorkflow fails when the final major plan artifact is miss
   }
 });
 
+test("runImplementationWorkflow rejects unsafe final major plan artifact paths from state", async () => {
+  const context = await createImplementationContext();
+  try {
+    const outsidePlan = path.join(context.repo, "outside-plan.md");
+    await writeFile(outsidePlan, "# Outside Plan\n", "utf8");
+
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: {
+        ...context.workflowOptions.initialState,
+        artifacts: {
+          ...context.workflowOptions.initialState.artifacts,
+          finalMajorPlanMarkdown: outsidePlan,
+        },
+      },
+      runner: new FakeRunner(),
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Invalid final major plan artifact path/);
+    assert.match(result.error, /run-relative/);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "implementing");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.artifacts.milestonePlans, undefined);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runImplementationWorkflow persists failed state when the milestone-plan runner throws", async () => {
   const context = await createImplementationContext();
   try {

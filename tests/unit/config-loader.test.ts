@@ -168,6 +168,40 @@ test("validateConfig rejects invalid runner account labels", () => {
   }
 });
 
+test("validateConfig rejects unsupported top-level config fields", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanReviewPolciy: "scrupulous",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Unsupported config field(s): milestonePlanReviewPolciy.",
+  });
+});
+
+test("validateConfig rejects unsupported runner fields", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+      accountLable: "work-codex",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Unsupported runner field(s): accountLable.",
+  });
+});
+
 test("validateConfig defaults missing milestone plan policy to always", () => {
   const result = validateConfig({
     checks: [],

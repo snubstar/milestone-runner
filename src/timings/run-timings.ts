@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { writeJsonArtifact, writeTextArtifact } from "../artifacts/planning-artifacts.js";
-import type { RunPaths } from "../artifacts/paths.js";
+import { resolveRunArtifactPath, type RunPaths } from "../artifacts/paths.js";
 import { buildTimingArtifactPaths } from "../artifacts/timing-artifacts.js";
 import type { RunState } from "../state/state-types.js";
 import type { CheckTimingCollector } from "./check-timing-collector.js";
@@ -294,10 +294,20 @@ export async function buildCheckTimings(options: {
       continue;
     }
 
-    const filePath = resolveRunArtifactPath(options.paths.runDir, artifactPath);
+    const resolvedPath = resolveRunArtifactPath(options.paths.runDir, artifactPath);
+    if (!resolvedPath.ok) {
+      warnings.push(timingWarning(
+        "check_report_malformed",
+        `Check report ${artifactPath} has an invalid artifact path: ${resolvedPath.error}`,
+        "checks",
+        { stateKey, artifactPath },
+      ));
+      continue;
+    }
+
     let report: string;
     try {
-      report = await readFile(filePath, "utf8");
+      report = await readFile(resolvedPath.path, "utf8");
     } catch (error) {
       warnings.push(timingWarning(
         "check_report_missing",
@@ -759,10 +769,6 @@ function timingWarning(
 
 function toRunRelative(paths: RunPaths, filePath: string): string {
   return path.relative(paths.runDir, filePath);
-}
-
-function resolveRunArtifactPath(runDir: string, artifactPath: string): string {
-  return path.isAbsolute(artifactPath) ? artifactPath : path.join(runDir, artifactPath);
 }
 
 function isNoEntryError(error: unknown): boolean {

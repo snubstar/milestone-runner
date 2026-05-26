@@ -144,6 +144,41 @@ test("runReviewWorkflow fails when required diff artifacts are missing", async (
   }
 });
 
+test("runReviewWorkflow rejects unsafe artifact paths from state", async () => {
+  const context = await createReviewContext();
+  try {
+    const outsideDiff = path.join(context.repo, "outside.diff");
+    await writeFile(outsideDiff, "diff --git a/secret b/secret\n", "utf8");
+
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      initialState: {
+        ...context.workflowOptions.initialState,
+        artifacts: {
+          ...context.workflowOptions.initialState.artifacts,
+          diffs: {
+            ...context.workflowOptions.initialState.artifacts.diffs,
+            "1": outsideDiff,
+          },
+        },
+      },
+      runner: new ScenarioRunner([]),
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Invalid milestone diff artifact path/);
+    assert.match(result.error, /run-relative/);
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "reviewing");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.artifacts.reviews, undefined);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runReviewWorkflow persists failed state when review artifact writes fail", async () => {
   const context = await createReviewContext();
   try {

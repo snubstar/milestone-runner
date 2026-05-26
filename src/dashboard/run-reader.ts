@@ -6,6 +6,7 @@ import path from "node:path";
 import { buildMilestoneArtifactPaths } from "../artifacts/milestone-artifacts.js";
 import {
   buildRunPathsFromRunDir,
+  isSafeRunId,
   toRunRelativePath,
   type RunPaths,
 } from "../artifacts/paths.js";
@@ -68,6 +69,7 @@ export async function listDashboardRuns(
   const summaries: DashboardRunSummary[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (!isSafeRunId(entry.name)) continue;
 
     const runDir = path.join(artifactRoot, entry.name);
     const summary = await readDashboardRunSummary(runDir, entry.name);
@@ -105,6 +107,21 @@ export async function readDashboardRun(
   }
 
   const state = stateResult.state;
+  if (state.runId !== options.runId) {
+    return {
+      ok: false,
+      error: {
+        code: "state_malformed",
+        message: stateRunIdMismatchMessage(
+          path.join(runDir, "state.json"),
+          options.runId,
+          state.runId,
+        ),
+        details: { runId: options.runId, stateRunId: state.runId, runDir },
+      },
+    };
+  }
+
   const warnings: DashboardWarning[] = [];
   const paths = buildRunPathsFromRunDir({ runDir, runId: state.runId });
   const artifacts = await readRunArtifacts({
@@ -149,6 +166,20 @@ async function readDashboardRunSummary(
   const statePath = path.join(runDir, "state.json");
   const stateResult = await readRunState(statePath);
   if (stateResult.ok) {
+    if (stateResult.state.runId !== fallbackRunId) {
+      return unreadableRunSummary({
+        runDir,
+        fallbackRunId,
+        statePath,
+        code: "state_malformed",
+        message: stateRunIdMismatchMessage(
+          statePath,
+          fallbackRunId,
+          stateResult.state.runId,
+        ),
+      });
+    }
+
     const paths = buildRunPathsFromRunDir({
       runDir,
       runId: stateResult.state.runId,
@@ -158,13 +189,29 @@ async function readDashboardRunSummary(
 
   if (stateResult.code === "state_missing") return null;
 
-  const runStat = await stat(runDir).catch(() => null);
+  return unreadableRunSummary({
+    runDir,
+    fallbackRunId,
+    statePath,
+    code: stateResult.code,
+    message: stateResult.message,
+  });
+}
+
+async function unreadableRunSummary(options: {
+  runDir: string;
+  fallbackRunId: string;
+  statePath: string;
+  code: "state_malformed";
+  message: string;
+}): Promise<DashboardRunSummary> {
+  const runStat = await stat(options.runDir).catch(() => null);
   const timestamp = runStat ? new Date(runStat.mtimeMs).toISOString() : null;
-  const goal = await readOptionalText(path.join(runDir, "00-goal.txt"));
+  const goal = await readOptionalText(path.join(options.runDir, "00-goal.txt"));
 
   return {
-    runId: fallbackRunId,
-    runDir,
+    runId: options.fallbackRunId,
+    runDir: options.runDir,
     goal: goal?.trim() ?? "",
     status: "unreadable",
     currentPhase: "unreadable",
@@ -174,10 +221,10 @@ async function readDashboardRunSummary(
     active: false,
     warnings: [
       {
-        code: stateResult.code,
-        message: stateResult.message,
+        code: options.code,
+        message: options.message,
         source: "state",
-        details: { statePath },
+        details: { statePath: options.statePath },
       },
     ],
   };
@@ -923,16 +970,6 @@ function resolveArtifactRoot(options: DashboardRunReaderOptions): string {
   return path.resolve(options.cwd, options.artifactRoot);
 }
 
-function isSafeRunId(runId: string): boolean {
-  return (
-    runId.length > 0 &&
-    runId !== "." &&
-    runId !== ".." &&
-    !runId.includes("/") &&
-    !runId.includes("\\")
-  );
-}
-
 function isRunStateLike(value: unknown): value is RunState {
   if (!isRecord(value)) return false;
 
@@ -968,6 +1005,14 @@ function numberField(value: unknown): number | null {
 
 function isNoEntryError(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
+}
+
+function stateRunIdMismatchMessage(
+  statePath: string,
+  expectedRunId: string,
+  actualRunId: string,
+): string {
+  return `state.json at ${statePath} has runId ${actualRunId}, expected ${expectedRunId}.`;
 }
 
 function formatError(error: unknown): string {

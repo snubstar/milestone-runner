@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { buildGoalArtifactPaths } from "../artifacts/goal-artifacts.js";
-import type { RunPaths } from "../artifacts/paths.js";
+import { resolveRunArtifactPath, type RunPaths } from "../artifacts/paths.js";
 import { writeTextArtifact } from "../artifacts/planning-artifacts.js";
 import type { Milestone, MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseReviewVerdictJson } from "../review/review-verdict-validator.js";
@@ -290,10 +290,15 @@ async function latestReviewArtifactsByMilestone(
   return Promise.all(
     reviewRefs.map(async (reviewRef): Promise<GoalSummaryReviewRef> => {
       try {
-        const raw = await readFile(
-          resolveRunArtifactPath(runDir, reviewRef.path),
-          "utf8",
-        );
+        const resolvedPath = resolveRunArtifactPath(runDir, reviewRef.path);
+        if (!resolvedPath.ok) {
+          return {
+            ...reviewRef,
+            error: resolvedPath.error,
+          };
+        }
+
+        const raw = await readFile(resolvedPath.path, "utf8");
         const verdict = parseReviewVerdictJson(raw);
         if (!verdict.ok) {
           return {
@@ -482,10 +487,6 @@ function sortedMilestones(metadata: MilestoneMetadata): Milestone[] {
 
 function milestoneStatus(state: RunState, milestone: Milestone): string | undefined {
   return state.milestoneStatuses[String(milestone.id)];
-}
-
-function resolveRunArtifactPath(runDir: string, artifactPath: string): string {
-  return path.isAbsolute(artifactPath) ? artifactPath : path.join(runDir, artifactPath);
 }
 
 function toPosixPath(filePath: string): string {

@@ -19,6 +19,15 @@ const milestonePlanPolicies = new Set(["always", "auto", "light"]);
 const milestonePlanReviewPolicies = new Set(["normal", "scrupulous"]);
 const sandboxModes = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const approvalPolicies = new Set(["never", "on-request", "untrusted"]);
+const configKeys = new Set([
+  "checks",
+  "runner",
+  "maxFixAttempts",
+  "artifactRoot",
+  "milestonePlanPolicy",
+  "milestonePlanReviewPolicy",
+]);
+const runnerKeys = new Set(["type", "command", "accountLabel", "options"]);
 const codexExecOptionKeys = new Set([
   "sandboxForPlanning",
   "sandboxForImplementation",
@@ -103,6 +112,14 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     return { ok: false, error: "Config must be an object." };
   }
 
+  const unsupportedConfigKeys = unsupportedKeys(value, configKeys);
+  if (unsupportedConfigKeys.length > 0) {
+    return {
+      ok: false,
+      error: `Unsupported config field(s): ${unsupportedConfigKeys.join(", ")}.`,
+    };
+  }
+
   const checks = value.checks;
   if (!Array.isArray(checks) || !checks.every((item) => isNonEmptyString(item))) {
     return { ok: false, error: "`checks` must be an array of non-empty strings." };
@@ -111,6 +128,14 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
   const runner = value.runner;
   if (!isRecord(runner)) {
     return { ok: false, error: "`runner` must be an object." };
+  }
+
+  const unsupportedRunnerKeys = unsupportedKeys(runner, runnerKeys);
+  if (unsupportedRunnerKeys.length > 0) {
+    return {
+      ok: false,
+      error: `Unsupported runner field(s): ${unsupportedRunnerKeys.join(", ")}.`,
+    };
   }
 
   if (!isNonEmptyString(runner.type) || !runnerTypes.has(runner.type)) {
@@ -343,6 +368,13 @@ function isMilestonePlanReviewPolicy(
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function unsupportedKeys(
+  value: Record<string, unknown>,
+  allowedKeys: Set<string>,
+): string[] {
+  return Object.keys(value).filter((key) => !allowedKeys.has(key));
 }
 
 function formatError(error: unknown): string {

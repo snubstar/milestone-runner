@@ -7,6 +7,7 @@ import {
   buildRunPathsFromRunDir,
   createRunId,
   isSafeRunId,
+  resolveRunArtifactPath,
   toRunRelativePath,
 } from "../../src/artifacts/paths.js";
 
@@ -67,4 +68,27 @@ test("toRunRelativePath returns path relative to run directory", () => {
     toRunRelativePath("/repo/.agent-work/run-1", "/repo/.agent-work/run-1/logs/run.log"),
     "logs/run.log",
   );
+});
+
+test("resolveRunArtifactPath accepts only safe run-relative paths", () => {
+  assert.deepEqual(
+    resolveRunArtifactPath("/repo/.agent-work/run-1", "reviews/20-review.json"),
+    {
+      ok: true,
+      path: path.resolve("/repo/.agent-work/run-1/reviews/20-review.json"),
+      relativePath: "reviews/20-review.json",
+    },
+  );
+
+  for (const unsafePath of [
+    "/tmp/secret.json",
+    "C:\\temp\\secret.json",
+    "../secret.json",
+    "reviews/../secret.json",
+    "reviews//secret.json",
+    ".",
+  ]) {
+    const result = resolveRunArtifactPath("/repo/.agent-work/run-1", unsafePath);
+    assert.equal(result.ok, false, unsafePath);
+  }
 });

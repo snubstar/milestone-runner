@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import { buildMilestoneArtifactPaths } from "../artifacts/milestone-artifacts.js";
+import { resolveRunArtifactPath } from "../artifacts/paths.js";
 import { buildPlanningArtifactPaths, writeTextArtifact } from "../artifacts/planning-artifacts.js";
 import { runChecks } from "../checks/check-runner.js";
 import { captureGitDiff, captureGitTree } from "../git/git-diff.js";
@@ -628,9 +628,17 @@ export async function runImplementationWorkflow(
     fallbackPath: string,
     label: string,
   ): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
-    const filePath = statePath
-      ? resolveRunArtifactPath(options.paths.runDir, statePath)
-      : fallbackPath;
+    let filePath = fallbackPath;
+    if (statePath !== undefined) {
+      const resolvedPath = resolveRunArtifactPath(options.paths.runDir, statePath);
+      if (!resolvedPath.ok) {
+        return {
+          ok: false,
+          error: `Invalid ${label} artifact path ${statePath}: ${resolvedPath.error}`,
+        };
+      }
+      filePath = resolvedPath.path;
+    }
 
     try {
       return { ok: true, value: await readFile(filePath, "utf8") };
@@ -717,10 +725,6 @@ function formatMilestoneSummary(options: {
     "",
     `Milestone ${options.milestone.id} must review the diff and decide whether fixes are required.`,
   ].join("\n");
-}
-
-function resolveRunArtifactPath(runDir: string, artifactPath: string): string {
-  return path.isAbsolute(artifactPath) ? artifactPath : path.join(runDir, artifactPath);
 }
 
 function formatError(error: unknown): string {

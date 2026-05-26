@@ -487,6 +487,47 @@ test("readDashboardRun includes missing state artifacts with warnings", async ()
   }
 });
 
+test("readDashboardRun rejects run ids outside the canonical run id format", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "agent-orchestrator-dashboard-"));
+  try {
+    const result = await readDashboardRun({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "job-1",
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, "invalid_run_id");
+      assert.match(result.error.message, /job-1/);
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("readDashboardRun rejects state whose run id does not match the directory", async () => {
+  const context = await createDashboardRunContext("run-state-mismatch");
+  try {
+    await writeDashboardState(context.paths, {
+      runId: "run-other",
+    });
+
+    const result = await readDashboardRun(
+      readerOptions(context, "run-state-mismatch"),
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, "state_malformed");
+      assert.match(result.error.message, /run-other/);
+      assert.match(result.error.message, /run-state-mismatch/);
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
 test("listDashboardRuns skips directories without state and reports malformed state summaries", async () => {
   const context = await createDashboardRunContext("run-good");
   try {
@@ -523,6 +564,50 @@ test("listDashboardRuns skips directories without state and reports malformed st
     const malformed = summaries.find((summary) => summary.runId === "run-malformed");
     assert.equal(malformed?.status, "unreadable");
     assert.equal(malformed?.warnings[0]?.code, "state_malformed");
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
+test("listDashboardRuns skips noncanonical directories and marks mismatched state unreadable", async () => {
+  const context = await createDashboardRunContext("run-list-good");
+  try {
+    await writeDashboardState(context.paths, {});
+
+    const unsafePaths = buildRunPaths({
+      cwd: context.tempDir,
+      artifactRoot: ".agent-work",
+      runId: "job-1",
+    });
+    await createRunDirectory(unsafePaths, "Unsafe dashboard run id");
+    await writeDashboardState(unsafePaths, {});
+
+    const mismatchPaths = buildRunPaths({
+      cwd: context.tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-list-mismatch",
+    });
+    await createRunDirectory(mismatchPaths, "Mismatched state");
+    await writeDashboardState(mismatchPaths, {
+      runId: "run-other",
+    });
+
+    const summaries = await listDashboardRuns({
+      cwd: context.tempDir,
+      artifactRoot: ".agent-work",
+    });
+
+    assert.equal(summaries.some((summary) => summary.runId === "job-1"), false);
+    assert.equal(
+      summaries.some((summary) => summary.runId === "run-list-good"),
+      true,
+    );
+    const mismatch = summaries.find(
+      (summary) => summary.runId === "run-list-mismatch",
+    );
+    assert.equal(mismatch?.status, "unreadable");
+    assert.equal(mismatch?.warnings[0]?.code, "state_malformed");
+    assert.match(mismatch?.warnings[0]?.message ?? "", /run-other/);
   } finally {
     await rm(context.tempDir, { recursive: true, force: true });
   }
