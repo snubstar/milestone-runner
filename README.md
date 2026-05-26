@@ -118,7 +118,7 @@ target.
 
 The run id should be unique and stable for the life of a workflow. A timestamp-based id is acceptable for the prototype.
 
-Initial run layout:
+Current run layout:
 
 ```text
 .agent-work/<run-id>/
@@ -137,16 +137,19 @@ Initial run layout:
     01-major-plan.md
     02-major-plan-review.md
     03-final-major-plan.md
-    04-final-major-plan.json
   milestones/
     05-milestones.json
+    10-milestone-<id>-plan-draft.md
+    10-milestone-<id>-plan-review.md
     10-milestone-<id>-plan.md
     11-milestone-<id>-implementation.md
     14-milestone-<id>-summary.md
     25-milestone-<id>-review-summary.md
     90-goal-summary.md
   reviews/
+    19-milestone-<id>-review-evidence.md
     20-milestone-<id>-review.json
+    23-milestone-<id>-review-evidence-after-fix-<n>.md
     24-milestone-<id>-review-after-fix-<n>.json
   checks/
     13-milestone-<id>-checks.txt
@@ -156,6 +159,8 @@ Initial run layout:
     22-milestone-<id>-diff-after-fix-<n>.diff
   fixes/
     21-milestone-<id>-fix-attempt-<n>.md
+  runner/
+    <phase>-<nn>.json
 ```
 
 `.agent-work/` is generated runtime output. It is ignored by Git and should be created by runner code only when a workflow executes.
@@ -166,6 +171,12 @@ Timing artifacts live under `logs/`. `timeline.jsonl` is an append-only timeline
 
 Milestone plan artifacts always use `milestones/10-milestone-<id>-plan.md` and are recorded under `state.artifacts.milestonePlans`. Depending on `milestonePlanPolicy`, that file may contain either a full runner-generated milestone plan or a deterministic lightweight plan. Plans produced by `light` and `auto` include a metadata block showing the configured policy, selected mode, and decision reason. The default `always` policy preserves the raw runner-generated artifact for backward compatibility.
 
+In `scrupulous` mode, milestone plan drafts and plan reviews are also written to
+`milestones/10-milestone-<id>-plan-draft.md` and
+`milestones/10-milestone-<id>-plan-review.md`, and recorded under
+`state.artifacts.milestonePlanDrafts` and
+`state.artifacts.milestonePlanReviews`.
+
 Artifact filenames should keep their numeric prefixes stable so a run can be inspected in workflow order. When the same phase repeats, such as fix attempts, use `<n>` starting at `1`.
 
 The `state.json` schema tracks artifact paths as relative paths from the run directory. The shape is equivalent to:
@@ -174,15 +185,26 @@ The `state.json` schema tracks artifact paths as relative paths from the run dir
 {
   "artifacts": {
     "goal": "00-goal.txt",
+    "inputs": {
+      "manifest": "inputs/01-inputs.json",
+      "context": {
+        "README.md": "inputs/context/01-README.md"
+      }
+    },
     "majorPlan": "plans/01-major-plan.md",
     "majorPlanReview": "plans/02-major-plan-review.md",
     "finalMajorPlanMarkdown": "plans/03-final-major-plan.md",
-    "finalMajorPlanJson": "plans/04-final-major-plan.json",
     "milestones": "milestones/05-milestones.json",
     "logs": {
       "run": "logs/run.log",
       "timingsJson": "logs/80-timings.json",
       "timingsMarkdown": "logs/81-timings.md"
+    },
+    "milestonePlanDrafts": {
+      "1": "milestones/10-milestone-1-plan-draft.md"
+    },
+    "milestonePlanReviews": {
+      "1": "milestones/10-milestone-1-plan-review.md"
     },
     "milestonePlans": {
       "1": "milestones/10-milestone-1-plan.md"
@@ -191,13 +213,21 @@ The `state.json` schema tracks artifact paths as relative paths from the run dir
       "1": "milestones/11-milestone-1-implementation.md"
     },
     "diffs": {
-      "1": "diffs/12-milestone-1.diff"
+      "1": "diffs/12-milestone-1.diff",
+      "1-fix-1": "diffs/22-milestone-1-diff-after-fix-1.diff"
     },
     "checks": {
-      "1": "checks/13-milestone-1-checks.txt"
+      "1": "checks/13-milestone-1-checks.txt",
+      "1-fix-1": "checks/23-milestone-1-checks-after-fix-1.txt"
     },
     "reviews": {
-      "1": "reviews/20-milestone-1-review.json"
+      "1-evidence": "reviews/19-milestone-1-review-evidence.md",
+      "1": "reviews/20-milestone-1-review.json",
+      "1-fix-1-evidence": "reviews/23-milestone-1-review-evidence-after-fix-1.md",
+      "1-fix-1": "reviews/24-milestone-1-review-after-fix-1.json"
+    },
+    "fixes": {
+      "1-fix-1": "fixes/21-milestone-1-fix-attempt-1.md"
     },
     "summaries": {
       "1": "milestones/14-milestone-1-summary.md",
@@ -208,7 +238,7 @@ The `state.json` schema tracks artifact paths as relative paths from the run dir
 }
 ```
 
-The orchestrator should write artifact paths to state when each artifact is produced. Missing paths mean the phase has not completed.
+The orchestrator writes workflow artifact paths to state when each artifact is produced. Runner diagnostics live under `runner/` and are referenced from timing summaries and failure details when applicable. Missing state artifact paths mean the phase has not completed.
 
 ## State
 
@@ -435,13 +465,16 @@ The fake runner keeps the state machine, artifact handling, and review gates tes
 
 Agent prompt templates live under `src/prompts/`. They are versioned files so workflow prompts can be reviewed, tested, and changed independently from orchestration code.
 
-Initial prompt template files:
+Current prompt template files:
 
 ```text
 src/prompts/major-plan.md
 src/prompts/major-plan-review.md
+src/prompts/final-major-plan.md
 src/prompts/final-plan-json.md
 src/prompts/milestone-plan.md
+src/prompts/milestone-plan-review.md
+src/prompts/final-milestone-plan.md
 src/prompts/implement-milestone.md
 src/prompts/review-milestone.md
 src/prompts/fix-review-findings.md
@@ -449,13 +482,15 @@ src/prompts/fix-review-findings.md
 
 Current templates declare required inputs, expected outputs, orchestration boundaries, and referenced schemas. Planning and review prompts keep the agent read-only by default, while implementation and fix prompts scope edits to the active milestone.
 
+## Additional Documentation
+
+- [Manual Run Guide](./docs/how-to.md): command-line setup, target repositories, runner modes, run inspection, resume, dashboard usage, and real Codex smoke testing.
+- [Dashboard Operator Smoke Test](./docs/dashboard-operator-smoke.md): checklist for validating the local dashboard against run artifacts and launch flows.
+- [CI Provider Integrations](./docs/ci-provider-integrations.md): optional GitHub Actions setup for agent PR review and guarded CI-failure autofix workflows.
+
 ## Milestone Sequence
 
-The project plan is tracked in [general_plan.md](./general_plan.md).
-
-Real runner implementation detail is tracked in [real_run_plan.md](./real_run_plan.md).
-
-High-level sequence:
+The prototype was built around this high-level sequence:
 
 1. Prototype foundations.
 2. Core orchestrator skeleton.
@@ -511,6 +546,8 @@ Common options:
 - `--runner fake|codex-exec`: override the configured runner for a new run.
 - `--planning-only`: stop after planning and milestone metadata generation.
 - `--dry-run`: validate and report the next action without writing workflow artifacts or calling runners.
+- `--json`: print the dry-run or final run report as JSON.
+- `--run-id <id>`: use a specific filesystem-safe id for a new run.
 - `--resume <run-dir-or-id>`: resume from an existing `state.json` by run directory, `state.json` path, or run id under the artifact root.
 - `--milestone <id>`: run only one runnable milestone and stop before advancing to remaining pending milestones.
 - `--max-fix-attempts <n>`: override fix attempts for this invocation.
@@ -812,7 +849,7 @@ Expected result:
 - Configured checks run and write reports under `.agent-work/<run-id>/checks/`.
 - Review verdict JSON is written under `.agent-work/<run-id>/reviews/`.
 - Runner diagnostics are written under `.agent-work/<run-id>/runner/`.
-- `state.json` records final status and every produced artifact path.
+- `state.json` records final status and produced workflow artifact paths.
 - In scrupulous mode, milestone plan draft and plan-review trace artifacts are also written under `.agent-work/<run-id>/milestones/`.
 
 If the starting dirty tree is deliberate, make that explicit:
@@ -867,7 +904,7 @@ Troubleshooting real runs:
 - Dirty tree: commit or stash changes, or rerun with `--allow-dirty` when the dirty start is intentional.
 - Timeout: increase `runner.options.timeoutMs`.
 - Codex non-zero exit: inspect `Last error` and `.agent-work/<run-id>/runner/*.json`.
-- Malformed milestone JSON: inspect `plans/04-final-major-plan.json` and the `final_plan_json` runner diagnostic.
+- Malformed milestone JSON: inspect the `final_plan_json` runner diagnostic under `.agent-work/<run-id>/runner/`; if validation succeeded, inspect `milestones/05-milestones.json`.
 - Malformed review JSON: inspect `reviews/20-milestone-<id>-review.json` and the `review_milestone` runner diagnostic.
 - Empty diff: check whether the implementation changed only ignored files, only `.agent-work/`, or made no working-tree changes.
 - Lightweight plan too thin: resume remaining work with `--milestone-plan-policy always` so future milestones use full runner-backed milestone plans.
