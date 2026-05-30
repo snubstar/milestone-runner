@@ -1,18 +1,23 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { main } from "../../src/cli/main.js";
+import type { OrchestratorConfig } from "../../src/config/config-types.js";
 import { nodeCommandRunner } from "../../src/shell/command-runner.js";
+import { writeState } from "../../src/state/state-store.js";
 import type { RunState } from "../../src/state/state-types.js";
 import {
   assertMilestoneMetadataArtifact,
   assertReviewVerdictArtifact,
   assertRunStateShape,
 } from "../helpers/assertions.js";
-import { createReadyForMilestoneRunFixture } from "../helpers/run-fixture.js";
+import {
+  createReadyForMilestoneRunFixture,
+  createReadyForReviewRunFixture,
+} from "../helpers/run-fixture.js";
 
 const projectRoot = process.cwd();
 
@@ -90,12 +95,14 @@ test("main stores config CLI overrides in new run state", async () => {
     assert.match(result.stdout, /Effective max fix attempts: 2/);
     assert.match(result.stdout, /Milestone plan policy: light/);
     assert.match(result.stdout, /Milestone plan review policy: scrupulous/);
+    assert.match(result.stdout, /Human review policy: stop/);
     assert.match(result.stdout, /Scrupulous review for next milestone: no \(planning only\)/);
 
     const state = await readOnlyRunState(repo);
     assert.equal(state.config.snapshot?.maxFixAttempts, 2);
     assert.equal(state.config.snapshot?.milestonePlanPolicy, "light");
     assert.equal(state.config.snapshot?.milestonePlanReviewPolicy, "scrupulous");
+    assert.equal(state.config.snapshot?.humanReviewPolicy, "stop");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -127,6 +134,7 @@ test("main dry-runs a new fake run without creating a run directory", async () =
     assert.match(result.stdout, /maxFixAttempts: 0/);
     assert.match(result.stdout, /milestonePlanPolicy: always/);
     assert.match(result.stdout, /milestonePlanReviewPolicy: normal/);
+    assert.match(result.stdout, /humanReviewPolicy: stop/);
     assert.match(result.stdout, /scrupulousReviewForNextMilestone: no \(policy normal\)/);
     await assert.rejects(() => readdir(path.join(repo, ".agent-work")), /ENOENT/);
   } finally {
@@ -949,6 +957,7 @@ test("main reports resume max fix attempts override without mutating saved snaps
     assert.equal(plannedState.config.snapshot?.maxFixAttempts, 0);
     assert.equal(plannedState.config.snapshot?.milestonePlanPolicy, "always");
     assert.equal(plannedState.config.snapshot?.milestonePlanReviewPolicy, "normal");
+    assert.equal(plannedState.config.snapshot?.humanReviewPolicy, "stop");
 
     const resumeResult = await runMainInRepo(repo, [
       "--resume",
@@ -969,6 +978,7 @@ test("main reports resume max fix attempts override without mutating saved snaps
     assert.match(resumeResult.stdout, /Saved milestone plan policy: always/);
     assert.match(resumeResult.stdout, /Milestone plan review policy: scrupulous/);
     assert.match(resumeResult.stdout, /Saved milestone plan review policy: normal/);
+    assert.match(resumeResult.stdout, /Human review policy: stop/);
     assert.match(
       resumeResult.stdout,
       /Scrupulous review for next milestone: no \(no runnable milestone\)/,
@@ -979,6 +989,7 @@ test("main reports resume max fix attempts override without mutating saved snaps
     assert.equal(finalState.config.snapshot?.maxFixAttempts, 0);
     assert.equal(finalState.config.snapshot?.milestonePlanPolicy, "always");
     assert.equal(finalState.config.snapshot?.milestonePlanReviewPolicy, "normal");
+    assert.equal(finalState.config.snapshot?.humanReviewPolicy, "stop");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -1022,6 +1033,8 @@ test("main dry-runs resume without writing state changes", async () => {
     assert.match(result.stdout, /savedMilestonePlanPolicy: always/);
     assert.match(result.stdout, /milestonePlanReviewPolicy: scrupulous/);
     assert.match(result.stdout, /savedMilestonePlanReviewPolicy: normal/);
+    assert.match(result.stdout, /humanReviewPolicy: stop/);
+    assert.match(result.stdout, /savedHumanReviewPolicy: stop/);
     assert.match(result.stdout, /scrupulousReviewForNextMilestone: yes/);
 
     const rawStateAfter = await readFile(statePath, "utf8");
@@ -1455,6 +1468,7 @@ test("main resumes codex-exec implementation-capable runs through the adapter", 
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
       configPath: path.join(repo, "orchestrator.config.json"),
     });
@@ -1490,6 +1504,170 @@ test("main resumes codex-exec implementation-capable runs through the adapter", 
   }
 });
 
+test("main exits non-zero when autonomous review resolution is exhausted", async () => {
+  const toolDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-cli-codex-"));
+  const fakeCodexPath = path.join(toolDir, "fake-codex.cjs");
+  const runner: CliFixtureRunnerConfig = {
+    type: "codex-exec",
+    command: fakeCodexPath,
+    options: {
+      sandboxForPlanning: "read-only",
+      sandboxForImplementation: "workspace-write",
+      approvalPolicy: "never",
+      timeoutMs: 10000,
+    },
+  };
+  const checks = [
+    `${JSON.stringify(process.execPath)} -e "process.stdout.write('cli check ok')"`,
+  ];
+  const config: OrchestratorConfig = {
+    checks,
+    runner,
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "autonomous",
+  };
+  const repo = await createCliFixtureRepo({
+    runner,
+    checks,
+    humanReviewPolicy: "autonomous",
+    copyResources: false,
+  });
+
+  try {
+    await installAutonomousReviewFakeCodex(fakeCodexPath);
+    const repoPath = await realpath(repo);
+    await createReadyForReviewRunFixture({
+      cwd: repoPath,
+      startSha: await gitOutput(repoPath, ["rev-parse", "HEAD"]),
+      config,
+      configPath: path.join(repoPath, "orchestrator.config.json"),
+    });
+
+    const result = await runMainInRepo(repoPath, [
+      "--resume",
+      "run-1",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Review ambiguity resolution failed after 2 attempt\(s\)\./);
+    assert.match(result.stdout, /Mode: resume/);
+    assert.match(result.stdout, /State: failed/);
+    assert.match(result.stdout, /Human review policy: autonomous/);
+
+    const state = await readOnlyRunState(repoPath);
+    assert.equal(state.currentPhase, "failed");
+    assert.equal(state.status, "failed");
+    assert.equal(state.milestoneStatuses["1"], "failed");
+    assert.equal(state.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+    assert.equal(
+      state.artifacts.reviews?.["1-resolution-2"],
+      path.join("reviews", "22-milestone-1-autonomous-resolution-2.json"),
+    );
+
+    const runDir = path.join(repoPath, ".agent-work", state.runId);
+    const reviewSummary = await readFile(
+      path.join(runDir, "milestones", "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(reviewSummary, /Status: failed/);
+    const goalSummary = await readFile(
+      path.join(runDir, state.artifacts.summaries?.goal ?? ""),
+      "utf8",
+    );
+    assert.match(goalSummary, /Status: failed/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+    await rm(toolDir, { recursive: true, force: true });
+  }
+});
+
+test("main exits non-zero when autonomous resume resolution is exhausted", async () => {
+  const toolDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-cli-codex-"));
+  const fakeCodexPath = path.join(toolDir, "fake-codex.cjs");
+  const runner: CliFixtureRunnerConfig = {
+    type: "codex-exec",
+    command: fakeCodexPath,
+    options: {
+      sandboxForPlanning: "read-only",
+      sandboxForImplementation: "workspace-write",
+      approvalPolicy: "never",
+      timeoutMs: 10000,
+    },
+  };
+  const checks = [
+    `${JSON.stringify(process.execPath)} -e "process.stdout.write('cli check ok')"`,
+  ];
+  const config: OrchestratorConfig = {
+    checks,
+    runner,
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "autonomous",
+  };
+  const repo = await createCliFixtureRepo({
+    runner,
+    checks,
+    humanReviewPolicy: "autonomous",
+    copyResources: false,
+  });
+
+  try {
+    await installAutonomousReviewFakeCodex(fakeCodexPath);
+    const repoPath = await realpath(repo);
+    const fixture = await createReadyForReviewRunFixture({
+      cwd: repoPath,
+      startSha: await gitOutput(repoPath, ["rev-parse", "HEAD"]),
+      config,
+      configPath: path.join(repoPath, "orchestrator.config.json"),
+    });
+    const ambiguousState: RunState = {
+      ...fixture.state,
+      milestoneStatuses: {
+        "1": "planned",
+        "2": "pending",
+      },
+      updatedAt: "2026-05-10T12:00:20.000Z",
+    };
+    await writeState(fixture.paths.files.state, ambiguousState);
+
+    const result = await runMainInRepo(repoPath, [
+      "--resume",
+      "run-1",
+    ]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Resume state resolution failed after 2 attempt\(s\)\./);
+    assert.match(result.stdout, /Mode: resume/);
+    assert.match(result.stdout, /State: failed/);
+    assert.match(result.stdout, /Human review policy: autonomous/);
+
+    const state = await readOnlyRunState(repoPath);
+    assert.equal(state.currentPhase, "failed");
+    assert.equal(state.status, "failed");
+    assert.equal(state.milestoneStatuses["1"], "failed");
+    assert.equal(
+      state.artifacts.logs?.["resume-resolution-2"],
+      path.join("logs", "resolve-resume-state-2.json"),
+    );
+    assert.equal(state.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
+
+    const goalSummary = await readFile(
+      path.join(repoPath, ".agent-work", state.runId, state.artifacts.summaries?.goal ?? ""),
+      "utf8",
+    );
+    assert.match(goalSummary, /Status: failed/);
+    assert.match(goalSummary, /Resume state resolution failed after 2 attempt\(s\)\./);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+    await rm(toolDir, { recursive: true, force: true });
+  }
+});
+
 test("main allows non-fake runners in planning-only mode", async () => {
   const repo = await createCliFixtureRepo({
     runner: {
@@ -1522,6 +1700,88 @@ test("main allows non-fake runners in planning-only mode", async () => {
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+async function installAutonomousReviewFakeCodex(filePath: string): Promise<void> {
+  await writeFile(filePath, autonomousReviewFakeCodexSource(), "utf8");
+  await chmod(filePath, 0o755);
+}
+
+function autonomousReviewFakeCodexSource(): string {
+  return String.raw`#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("fake-codex 1.0.0\n");
+  process.exit(0);
+}
+
+const args = process.argv.slice(2);
+const fail = (message) => {
+  process.stderr.write(message + "\n");
+  process.exit(1);
+};
+const valueAfter = (flag) => {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+};
+
+if (args[0] !== "exec") fail("expected codex exec");
+const outputLastMessage = valueAfter("--output-last-message");
+if (!outputLastMessage) fail("missing --output-last-message");
+const outputSchema = valueAfter("--output-schema");
+if (!outputSchema) fail("missing --output-schema");
+
+const schemaName = path.basename(outputSchema);
+if (schemaName === "review-verdict.schema.json") {
+  fs.writeFileSync(outputLastMessage, JSON.stringify({
+    verdict: "needs_human_review",
+    summary: "The implementation depends on a manual product decision.",
+    findings: [],
+    reviewedArtifacts: [
+      "diffs/12-milestone-1.diff",
+      "checks/13-milestone-1-checks.txt"
+    ]
+  }, null, 2));
+  process.exit(0);
+}
+
+if (schemaName === "review-resolution.schema.json") {
+  fs.writeFileSync(outputLastMessage, JSON.stringify({
+    resolution: {
+      summary: "Could not resolve review ambiguity autonomously.",
+      rationale: "The fake codex keeps the ambiguity unresolved.",
+      assumptions: [],
+      sourceCondition: "explicit_needs_human_review"
+    },
+    verdict: {
+      verdict: "needs_human_review",
+      summary: "The resolver still cannot decide.",
+      findings: [],
+      reviewedArtifacts: [
+        "reviews/20-milestone-1-review.json",
+        "diffs/12-milestone-1.diff",
+        "checks/13-milestone-1-checks.txt"
+      ]
+    }
+  }, null, 2));
+  process.exit(0);
+}
+
+if (schemaName === "resume-resolution.schema.json") {
+  fs.writeFileSync(outputLastMessage, JSON.stringify({
+    action: "normalize_to_passed",
+    summary: "Incorrectly normalize milestone 1 to passed.",
+    rationale: "The fake codex keeps choosing an invalid resume action.",
+    assumptions: [],
+    currentMilestoneId: 1
+  }, null, 2));
+  process.exit(0);
+}
+
+fail("unexpected schema " + schemaName);
+`;
+}
 
 interface MainResult {
   exitCode: number;
@@ -1567,6 +1827,7 @@ type CliFixtureRunnerConfig =
         sandboxForPlanning: "read-only" | "workspace-write" | "danger-full-access";
         sandboxForImplementation: "read-only" | "workspace-write" | "danger-full-access";
         approvalPolicy: "never" | "on-request" | "untrusted";
+        timeoutMs?: number;
       };
     };
 
@@ -1575,6 +1836,7 @@ async function createCliFixtureRepo(
     runner?: CliFixtureRunnerConfig;
     checks?: string[];
     copyResources?: boolean;
+    humanReviewPolicy?: "stop" | "fail" | "autonomous";
   } = {},
 ): Promise<string> {
   const repo = await createCliFixtureProject(options);
@@ -1599,6 +1861,7 @@ async function createCliFixtureProject(
     runner?: CliFixtureRunnerConfig;
     checks?: string[];
     copyResources?: boolean;
+    humanReviewPolicy?: "stop" | "fail" | "autonomous";
   } = {},
 ): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-cli-"));
@@ -1614,6 +1877,9 @@ async function createCliFixtureProject(
         runner: options.runner ?? { type: "fake" },
         maxFixAttempts: 0,
         artifactRoot: ".agent-work",
+        ...(options.humanReviewPolicy === undefined
+          ? {}
+          : { humanReviewPolicy: options.humanReviewPolicy }),
       },
       null,
       2,

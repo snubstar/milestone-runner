@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/snubstar/automation/schemas/resume-resolution.schema.json",
+  "title": "Agent Resume State Resolution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "summary", "rationale", "assumptions"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "normalize_to_ready_for_review",
+        "normalize_to_passed",
+        "fail"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "currentMilestoneId": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    }
+  }
+}

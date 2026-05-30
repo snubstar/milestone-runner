@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ test("loadConfig reads the example config", async () => {
     assert.equal(result.value.config.artifactRoot, ".agent-work");
     assert.equal(result.value.config.milestonePlanPolicy, "always");
     assert.equal(result.value.config.milestonePlanReviewPolicy, "normal");
+    assert.equal(result.value.config.humanReviewPolicy, "stop");
   }
 });
 
@@ -216,6 +217,41 @@ test("validateConfig defaults missing milestone plan policy to always", () => {
   if (result.ok) {
     assert.equal(result.value.milestonePlanPolicy, "always");
     assert.equal(result.value.milestonePlanReviewPolicy, "normal");
+    assert.equal(result.value.humanReviewPolicy, "stop");
+  }
+});
+
+test("validateConfig accepts human review fail policy", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    humanReviewPolicy: "fail",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.humanReviewPolicy, "fail");
+  }
+});
+
+test("validateConfig accepts human review autonomous policy", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    humanReviewPolicy: "autonomous",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.humanReviewPolicy, "autonomous");
   }
 });
 
@@ -251,6 +287,41 @@ test("validateConfig rejects invalid milestone plan review policy", () => {
     ok: false,
     error: '`milestonePlanReviewPolicy` must be "normal" or "scrupulous".',
   });
+});
+
+test("validateConfig rejects invalid human review policy", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    humanReviewPolicy: "continue",
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: '`humanReviewPolicy` must be "stop", "fail", or "autonomous".',
+  });
+});
+
+test("config schema keeps humanReviewPolicy optional with all supported values", async () => {
+  const raw = await readFile(
+    path.join(process.cwd(), "schemas", "config.schema.json"),
+    "utf8",
+  );
+  const schema = JSON.parse(raw) as {
+    required?: string[];
+    properties?: Record<string, { enum?: string[] }>;
+  };
+
+  assert.ok(!schema.required?.includes("humanReviewPolicy"));
+  assert.deepEqual(schema.properties?.humanReviewPolicy?.enum, [
+    "stop",
+    "fail",
+    "autonomous",
+  ]);
 });
 
 test("validateConfig rejects deprecated codex approval policy", () => {
@@ -379,6 +450,7 @@ test("applyConfigOverrides applies artifact root, runner type, max fix attempts,
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "fail",
   });
 
   assert.equal(result.ok, true);
@@ -396,5 +468,6 @@ test("applyConfigOverrides applies artifact root, runner type, max fix attempts,
     assert.equal(config.maxFixAttempts, 3);
     assert.equal(config.milestonePlanPolicy, "light");
     assert.equal(config.milestonePlanReviewPolicy, "scrupulous");
+    assert.equal(config.humanReviewPolicy, "fail");
   }
 });

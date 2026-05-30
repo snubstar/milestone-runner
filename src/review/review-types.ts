@@ -26,9 +26,25 @@ export interface ReviewVerdictDocument {
   reviewedArtifacts: string[];
 }
 
+export interface ReviewResolutionMetadata {
+  summary: string;
+  rationale: string;
+  assumptions: string[];
+  sourceCondition: string;
+}
+
+export interface ReviewResolutionDocument {
+  resolution: ReviewResolutionMetadata;
+  verdict: ReviewVerdictDocument;
+}
+
 export type ReviewResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
-export type ReviewRunnerPhase = "review_milestone" | "fix_review_findings";
+export type ReviewRunnerPhase =
+  | "review_milestone"
+  | "repair_review_verdict"
+  | "resolve_review_ambiguity"
+  | "fix_review_findings";
 
 export interface ReviewWorkflowOptions {
   goal: string;

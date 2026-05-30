@@ -4,6 +4,7 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 export type ApprovalPolicy = "never" | "on-request" | "untrusted";
 export type MilestonePlanPolicy = "always" | "auto" | "light";
 export type MilestonePlanReviewPolicy = "normal" | "scrupulous";
+export type HumanReviewPolicy = "stop" | "fail" | "autonomous";
 
 export interface CodexExecRunnerOptions {
   sandboxForPlanning: SandboxMode;
@@ -29,6 +30,7 @@ export interface OrchestratorConfig {
   artifactRoot: string;
   milestonePlanPolicy: MilestonePlanPolicy;
   milestonePlanReviewPolicy: MilestonePlanReviewPolicy;
+  humanReviewPolicy: HumanReviewPolicy;
 }
 
 export interface LoadedConfig {

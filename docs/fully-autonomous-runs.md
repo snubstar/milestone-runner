@@ -4,22 +4,26 @@
 
 Milestone Runner currently has a deliberate human-in-the-loop terminal state:
 `needs_human_review`. That is useful for supervised local development, but it
-does not fit unattended operator scripts that need the process to either finish
-or fail without requiring a person to inspect state before the run can end.
+does not fit runs where the next actor must always be the runner itself.
 
-This document describes the goals for fully autonomous behavior and a
-recommended implementation approach.
+This document describes the implemented fully autonomous policy: the runner
+repairs malformed intermediate output, resolves ambiguity with documented
+assumptions, continues through normal checks/review/fix gates when safe, and
+fails only after bounded autonomous attempts cannot produce a valid next action.
 
 ## Goals
 
-- Add a supported mode for unattended runs where the CLI never stops in a
-  human-review state.
+- Add a supported mode where newly encountered review or resume ambiguity does
+  not require human action.
 - Preserve the current supervised behavior as the default.
-- Keep review, check, fix, and summary artifacts auditable in every mode.
-- Let automation distinguish success from unresolved uncertainty with process
-  exit codes.
+- Keep review, check, fix, repair, resolution, and summary artifacts auditable.
+- Let automation distinguish completed work from exhausted autonomous attempts
+  with process exit codes.
 - Continue to auto-fix actionable review findings up to `maxFixAttempts`.
-- Avoid silently treating uncertain or unsafe states as passed work.
+- Repair malformed review output before failing.
+- Resolve ambiguous review verdicts by choosing documented assumptions or
+  actionable findings.
+- Keep deterministic checks as hard gates.
 - Keep the orchestration state machine explicit and testable.
 
 ## Non-Goals
@@ -27,16 +31,15 @@ recommended implementation approach.
 - Do not remove review gates from the default workflow.
 - Do not make `needs_human_review` mean `passed`.
 - Do not bypass deterministic checks.
-- Do not add a mode that skips model review entirely in the first autonomous
-  pass. Skipping review is a separate policy decision from making unresolved
-  review outcomes fail non-interactively.
-- Do not let an implementation continue after malformed review output, unsafe
-  resume state, exhausted fixes, or failed checks unless an explicit future
-  policy is designed for that risk.
+- Do not silently ignore failed checks, malformed output, unsafe resume state,
+  or exhausted repair/resolution attempts.
+- Do not add review-skipping in the first autonomous pass. Skipping review is a
+  separate policy from resolving review ambiguity.
 
-## Current Behavior
+## Default Supervised Behavior
 
-The workflow can reach `needs_human_review` from review decisions when:
+With the default `humanReviewPolicy: "stop"`, the workflow can reach
+`needs_human_review` from review decisions when:
 
 - the review verdict explicitly asks for human review;
 - review output is malformed or cannot be validated;
@@ -49,14 +52,13 @@ The workflow can also reach `needs_human_review` from resume safety when:
 
 - resume safety cannot prove that a transient state is safe to continue.
 
-Today these are represented as a successful orchestrator stop with status
-`needs_human_review`. That is intentional for local supervised operation, but
-it is ambiguous for scripts that expect a clean success/failure contract.
+These are represented as a successful orchestrator stop with status
+`needs_human_review` only in supervised `stop` mode. That remains intentional
+for local supervised operation, but it is not the fully autonomous contract.
 
-## Recommended Approach
+## Policy
 
-Add a config option that changes the terminal handling of human-review states,
-without changing review quality or default safety:
+Use one config option:
 
 ```json
 {
@@ -66,80 +68,55 @@ without changing review quality or default safety:
 
 Supported values:
 
-- `stop`: current behavior. Human-review situations stop the workflow with
-  status `needs_human_review` and a report explaining what to inspect.
-- `fail`: autonomous behavior. Human-review situations are converted into a
-  failed workflow with a non-zero CLI exit. The artifacts and diagnostics are
-  still written, but automation does not need a human to decide that the run is
-  unresolved.
+- `stop`: supervised default. Human-review-equivalent situations stop the
+  workflow with status `needs_human_review`.
+- `fail`: fail-fast unattended mode. Human-review-equivalent situations become
+  failed workflow results with non-zero CLI exits. This is useful for CI, but
+  it does not repair malformed output or resolve ambiguity.
+- `autonomous`: fully autonomous mode. Human-review-equivalent situations first
+  route through bounded repair or resolution. The runner records assumptions
+  and resolution artifacts, then continues when the result validates. If repair
+  or resolution is exhausted, the workflow fails with diagnostics.
 
-The recommended first autonomous mode is `fail`, not `continue`. It gives
-operators a fully unattended contract while avoiding false green runs.
+## Autonomous Semantics
 
-## Why Not Continue Automatically?
+With `humanReviewPolicy: "autonomous"`:
 
-Continuing after `needs_human_review` would mean accepting one of these
-conditions:
+- malformed review output is preserved, then repaired through a JSON-only
+  repair phase before the workflow gives up;
+- explicit `needs_human_review` review verdicts route through an autonomous
+  ambiguity-resolution phase;
+- non-actionable review failures are converted into actionable findings when
+  the resolver can justify them;
+- review `pass` with failed checks cannot pass the milestone until checks pass;
+- `maxFixAttempts` remains a real budget for code-changing fixes;
+- malformed review repair, review ambiguity resolution, and resume-state
+  resolution are each bounded to two autonomous attempts;
+- ambiguous transient resume states route through a resume-state resolver that
+  can continue, normalize to a safe state, or fail with diagnostics;
+- exhausted autonomous repair/resolution fails with artifacts and a non-zero
+  exit instead of asking for human review;
+- already-terminal legacy `needs_human_review` resumes preserve the saved
+  terminal state unless a future explicit migration policy is added.
 
-- the reviewer could not produce valid machine-readable output;
-- the reviewer found uncertainty it was not confident fixing;
-- configured checks contradicted a pass verdict;
-- fix attempts were exhausted;
-- resume state was ambiguous.
+The point is not to guarantee success. The point is that the runner, not a
+human, is responsible for attempting the next safe action.
 
-Those conditions should not become successful milestone progression by
-default. If a future use case requires risky continuation, it should be a
-separate policy with clear naming, loud reporting, and likely a narrower scope
-than all human-review cases.
+Autonomous artifacts are written in the same run directory as the ordinary
+workflow artifacts:
 
-## Proposed Semantics
-
-With `humanReviewPolicy: "stop"`:
-
-- review verdict `pass` with passing checks marks the milestone `passed`;
-- review verdict `fail` with blocking findings enters the existing fix loop;
-- unresolved review conditions mark the milestone and run
-  `needs_human_review`;
-- CLI exits according to the existing behavior.
-
-With `humanReviewPolicy: "fail"`:
-
-- review verdict `pass` with passing checks marks the milestone `passed`;
-- review verdict `fail` with blocking findings enters the existing fix loop;
-- unresolved review conditions write the same review and summary artifacts,
-  then mark the milestone and run `failed`;
-- the goal workflow returns an unsuccessful result and the CLI exits non-zero;
-- the final report should identify the original unresolved condition and
-  reference the review/check artifacts.
-
-## Implementation Plan
-
-1. Extend config types, schema, loader validation, and defaults with
-   `humanReviewPolicy: "stop" | "fail"`.
-2. Add the policy to config snapshots and run reports so resume behavior is
-   auditable.
-3. Introduce a small helper in the orchestration or review layer, for example
-   `terminalHumanReviewState(...)`, that maps human-review terminal decisions
-   to either `needs_human_review` or `failed` based on policy.
-4. Replace direct terminal human-review state transitions in review and resume
-   normalization paths with that helper.
-5. Ensure `humanReviewPolicy: "fail"` also changes the workflow result path:
-   the final `GoalWorkflowResult` must be unsuccessful so the CLI exits
-   non-zero. Updating state alone is not sufficient.
-6. Preserve all existing artifact writes before applying the policy mapping.
-7. Add CLI/report wording that distinguishes:
-   - `needs_human_review`: supervised stop;
-   - `failed`: autonomous unresolved condition.
-8. Add focused tests for both policies across:
-   - explicit `needs_human_review` review verdict;
-   - malformed review JSON;
-   - exhausted fix attempts;
-   - failed checks after a pass verdict;
-   - unsafe resume normalization.
+- `reviews/*review-repair-<n>.json`: malformed review repair diagnostics.
+- `reviews/*autonomous-resolution-<n>.json`: review ambiguity resolution
+  diagnostics, including assumptions and rationale.
+- `logs/resolve-resume-state-<n>.json`: resume-state resolution diagnostics.
+- `milestones/25-milestone-<id>-review-summary.md`: review summary with
+  autonomous assumptions when they affected the decision.
+- `milestones/90-goal-summary.md`: goal summary with autonomous decisions and
+  residual risks.
 
 ## Script Usage
 
-An unattended operator script should use a config like:
+An autonomous operator script should use a config like:
 
 ```json
 {
@@ -157,27 +134,50 @@ An unattended operator script should use a config like:
   "artifactRoot": ".agent-work",
   "milestonePlanPolicy": "always",
   "milestonePlanReviewPolicy": "scrupulous",
-  "humanReviewPolicy": "fail"
+  "humanReviewPolicy": "autonomous"
 }
 ```
 
 The script can then rely on:
 
 - exit code `0`: requested workflow completed;
-- non-zero exit: checks, runner execution, orchestration validation, or an
-  autonomous human-review-equivalent condition failed.
+- non-zero exit: checks, runner execution, orchestration validation, or bounded
+  autonomous repair/resolution failed.
+
+Choose `humanReviewPolicy` before creating the run. It is saved in the run
+state and used for resume; there is no resume-time CLI override that converts a
+supervised run into an autonomous one.
+
+## Implementation Plan
+
+The implementation-ready plan lives in
+[`fully-autonomous-runs_plan.md`](../fully-autonomous-runs_plan.md). The main
+phases are:
+
+1. Extend config/schema/reporting to include `autonomous`.
+2. Update the human-review policy helper to route `autonomous` to resolution.
+3. Add review output repair for malformed review JSON.
+4. Add autonomous review ambiguity resolution with structured assumptions.
+5. Apply policy-specific review workflow result semantics.
+6. Add bounded autonomous resume safety resolution.
+7. Update dashboards, summaries, and reports.
+8. Update documentation and operator examples.
+9. Run end-to-end verification.
 
 ## Acceptance Criteria
 
-- Existing tests pass without config changes.
 - Existing configs remain valid and default to `humanReviewPolicy: "stop"`.
-- A new unresolved condition encountered under `humanReviewPolicy: "fail"`
-  cannot finish with status `needs_human_review`.
-- Resuming a legacy run that is already terminal `needs_human_review` has
-  explicit documented behavior, either preserving the saved terminal state or
-  normalizing it to failed according to the saved policy snapshot.
-- Human-review-equivalent failures still write the same diagnostic artifacts as
-  supervised mode.
+- `humanReviewPolicy: "stop"` preserves existing supervised behavior.
+- `humanReviewPolicy: "fail"` fails immediately for newly encountered
+  human-review-equivalent conditions.
+- `humanReviewPolicy: "autonomous"` does not newly end review or resume
+  ambiguity as `needs_human_review`.
+- Autonomous mode repairs malformed review output before failing.
+- Autonomous mode resolves explicit `needs_human_review` review verdicts by
+  choosing documented assumptions or actionable findings.
+- Autonomous mode can pass a milestone after valid repair/resolution and
+  passing checks.
+- Deterministic checks are never ignored.
+- Human-review-equivalent failures still write diagnostic artifacts.
 - The CLI report and dry-run report show the effective `humanReviewPolicy`.
-- Resume uses the saved policy snapshot unless an explicit resume override is
-  added and documented.
+- Resume uses the saved policy snapshot; there is no resume-time CLI override.

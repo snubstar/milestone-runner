@@ -14,5 +14,6 @@
   "maxFixAttempts": 2,
   "artifactRoot": ".agent-work",
   "milestonePlanPolicy": "always",
-  "milestonePlanReviewPolicy": "normal"
+  "milestonePlanReviewPolicy": "normal",
+  "humanReviewPolicy": "stop"
 }

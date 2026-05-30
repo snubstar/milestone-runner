@@ -44,6 +44,7 @@ test("printRunReport includes runner diagnostic paths from last error details", 
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
     }),
     currentPhase: "planning" as const,
@@ -86,6 +87,7 @@ test("printRunReport includes runner diagnostic paths from last error details", 
     maxFixAttempts: 0,
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
     gitRequired: true,
     gitRoot: "/repo",
     gitDirty: false,
@@ -116,6 +118,7 @@ test("printRunReport includes runner diagnostic paths from last error details", 
   assert.match(output, /Runner diagnostic: runner\/major_plan-01\.json/);
   assert.match(output, /Milestone plan policy: always/);
   assert.match(output, /Milestone plan review policy: normal/);
+  assert.match(output, /Human review policy: stop/);
   assert.match(output, /Scrupulous review for next milestone: no \(policy normal\)/);
   assert.match(
     output,
@@ -162,6 +165,7 @@ test("printRunReport includes seeded major plan source", () => {
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
     inputs: {
       goalSource: { type: "argv", path: null },
@@ -192,6 +196,7 @@ test("printRunReport includes seeded major plan source", () => {
     maxFixAttempts: 0,
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
     gitRequired: false,
     gitRoot: "unavailable",
     gitDirty: false,
@@ -240,6 +245,7 @@ test("printRunReport shows saved resume review policy and next scrupulous status
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "scrupulous",
+        humanReviewPolicy: "autonomous",
       },
     }),
     currentPhase: "ready_for_milestone" as const,
@@ -269,6 +275,8 @@ test("printRunReport shows saved resume review policy and next scrupulous status
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "scrupulous",
       savedMilestonePlanReviewPolicy: "scrupulous",
+      humanReviewPolicy: "autonomous",
+      savedHumanReviewPolicy: "autonomous",
       gitRequired: true,
       gitRoot: "/repo",
       gitDirty: false,
@@ -283,7 +291,153 @@ test("printRunReport shows saved resume review policy and next scrupulous status
   const output = lines.join("\n");
   assert.match(output, /Milestone plan review policy: scrupulous/);
   assert.match(output, /Saved milestone plan review policy: scrupulous/);
+  assert.match(output, /Human review policy: autonomous/);
   assert.match(output, /Scrupulous review for next milestone: yes/);
+});
+
+test("printRunReport distinguishes human review handling outcomes", () => {
+  const paths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const stateFor = (
+    humanReviewPolicy: "stop" | "fail" | "autonomous",
+    overrides: Partial<ReturnType<typeof createInitialState>>,
+  ) => ({
+    ...createInitialState({
+      runId: "run-1",
+      goal: "Add feature X",
+      paths,
+      git: {
+        required: true,
+        planningOnly: false,
+        root: "/repo",
+        startSha: "abc123",
+        dirtyAtStart: false,
+        dirtyOverride: false,
+        statusPorcelain: "",
+      },
+      configPath: "/repo/orchestrator.config.json",
+      configSnapshot: {
+        checks: [],
+        runner: { type: "fake" },
+        maxFixAttempts: 0,
+        artifactRoot: ".agent-work",
+        milestonePlanPolicy: "always",
+        milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy,
+      },
+    }),
+    ...overrides,
+  });
+  const reportFor = (
+    humanReviewPolicy: "stop" | "fail" | "autonomous",
+    finalState: ReturnType<typeof createInitialState>,
+  ) => ({
+    mode: "new" as const,
+    runId: "run-1",
+    paths,
+    goal: "Add feature X",
+    planningOnly: false,
+    allowDirty: false,
+    allowNonGitPlanning: false,
+    targetMilestone: null,
+    runnerType: "fake",
+    configPath: "/repo/orchestrator.config.json",
+    configSource: "config file",
+    artifactRoot: ".agent-work",
+    checks: [],
+    maxFixAttempts: 0,
+    milestonePlanPolicy: "always" as const,
+    milestonePlanReviewPolicy: "normal" as const,
+    humanReviewPolicy,
+    gitRequired: true,
+    gitRoot: "/repo",
+    gitDirty: false,
+    gitDirtyOverride: false,
+    gitNonGitPlanningOverride: false,
+    finalState,
+  });
+
+  const supervisedStop = reportFor(
+    "stop",
+    stateFor("stop", {
+      currentPhase: "needs_human_review",
+      status: "needs_human_review",
+    }),
+  );
+  assert.match(
+    captureConsoleLog(() => printRunReport(supervisedStop)).join("\n"),
+    /Human review handling: supervised stop: human review required/,
+  );
+
+  const failFast = reportFor(
+    "fail",
+    stateFor("fail", {
+      currentPhase: "failed",
+      status: "failed",
+    }),
+  );
+  assert.match(
+    captureConsoleLog(() => printRunReport(failFast)).join("\n"),
+    /Human review handling: fail-fast unattended failure/,
+  );
+
+  const autonomousResolved = reportFor(
+    "autonomous",
+    stateFor("autonomous", {
+      currentPhase: "passed",
+      status: "passed",
+      artifacts: {
+        reviews: {
+          "1-resolution-1":
+            "reviews/22-milestone-1-autonomous-resolution-1.json",
+        },
+      },
+    }),
+  );
+  const autonomousResolvedOutput = captureConsoleLog(() =>
+    printRunReport(autonomousResolved),
+  ).join("\n");
+  assert.match(
+    autonomousResolvedOutput,
+    /Human review handling: autonomous resolved continuation/,
+  );
+  assert.match(
+    autonomousResolvedOutput,
+    /Autonomous decision artifacts: reviews\/22-milestone-1-autonomous-resolution-1\.json/,
+  );
+  const autonomousJson = buildRunJsonReport(autonomousResolved, 0);
+  assert.equal(
+    autonomousJson.details.humanReviewHandling,
+    "autonomous resolved continuation",
+  );
+  assert.deepEqual(autonomousJson.details.autonomousDecisionArtifacts, [
+    "reviews/22-milestone-1-autonomous-resolution-1.json",
+  ]);
+
+  const autonomousExhausted = reportFor(
+    "autonomous",
+    stateFor("autonomous", {
+      currentPhase: "failed",
+      status: "failed",
+      artifacts: {
+        logs: {
+          "resume-resolution-2": "logs/resolve-resume-state-2.json",
+        },
+      },
+      lastError: {
+        message: "Resume state resolution failed after 2 attempt(s).",
+        phase: "failed",
+        occurredAt: "2026-05-10T12:00:00.000Z",
+      },
+    }),
+  );
+  assert.match(
+    captureConsoleLog(() => printRunReport(autonomousExhausted)).join("\n"),
+    /Human review handling: autonomous exhausted failure/,
+  );
 });
 
 test("printRunReport includes timing artifact paths and compact durations", async () => {
@@ -333,6 +487,7 @@ test("printRunReport includes timing artifact paths and compact durations", asyn
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
     });
     const state = {
@@ -365,6 +520,7 @@ test("printRunReport includes timing artifact paths and compact durations", asyn
         maxFixAttempts: 0,
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
         gitRequired: true,
         gitRoot: tempDir,
         gitDirty: false,
@@ -416,6 +572,7 @@ test("printRunReport explains constrained target stops with pending milestones",
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
     }),
     currentPhase: "passed" as const,
@@ -444,6 +601,7 @@ test("printRunReport explains constrained target stops with pending milestones",
     maxFixAttempts: 0,
     milestonePlanPolicy: "always" as const,
     milestonePlanReviewPolicy: "normal" as const,
+    humanReviewPolicy: "stop" as const,
     gitRequired: true,
     gitRoot: "/repo",
     gitDirty: false,

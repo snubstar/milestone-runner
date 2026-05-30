@@ -1,15 +1,26 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import path from "node:path";
 
-import { buildPlanningArtifactPaths } from "../artifacts/planning-artifacts.js";
+import { resolveRunArtifactPath } from "../artifacts/paths.js";
+import {
+  buildPlanningArtifactPaths,
+  writeJsonArtifact,
+} from "../artifacts/planning-artifacts.js";
 import { runImplementationWorkflow } from "../implementation/implementation-workflow.js";
 import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
 import { runPlanningWorkflow } from "../planning/planning-workflow.js";
+import { loadPrompt } from "../prompts/prompt-loader.js";
+import { renderPrompt, type PromptVariables } from "../prompts/prompt-renderer.js";
 import { runReviewWorkflow } from "../review/review-workflow.js";
+import type { AgentRunResult } from "../runners/agent-runner.js";
+import { resolveOutputSchemaPathForPhase } from "../runners/output-schema.js";
+import { runAgentPhaseWithDiagnostics } from "../runners/runner-diagnostics.js";
 import { writeState } from "../state/state-store.js";
 import {
   advanceToMilestoneState,
   completeGoalState,
+  failState,
   recordArtifactByKey,
   setMilestoneStatus,
   setStatePhase,
@@ -36,6 +47,16 @@ import {
   normalizeStateForGoalResume,
   type ResumeDecision,
 } from "./resume-state.js";
+import {
+  isSupervisedHumanReviewPolicy,
+  shouldAttemptAutonomousResolution,
+  terminalPhaseForUnresolvedHumanReview,
+} from "./human-review-policy.js";
+import {
+  parseResumeResolutionJson,
+  validateResumeResolutionAction,
+  type ResumeResolutionDocument,
+} from "./resume-resolution-validator.js";
 import type {
   GoalWorkflowOptions,
   GoalWorkflowResult,
@@ -44,6 +65,17 @@ import type {
 const emptyMetadata: MilestoneMetadata = { milestones: [] };
 const resumeWithoutMilestoneNextAction =
   "resume without --milestone to continue remaining milestones";
+const resumeResolutionAttemptLimit = 2;
+const resumeResolutionSchemaContract = [
+  "Return a JSON object with exactly these root fields:",
+  '- action: one of "continue", "normalize_to_ready_for_review", "normalize_to_passed", or "fail"',
+  "- summary: non-empty string",
+  "- rationale: non-empty string",
+  "- assumptions: array of non-empty strings",
+  "- currentMilestoneId: optional positive integer or null",
+  "",
+  "Do not include artifact paths or extra fields in the response.",
+].join("\n");
 
 export async function runGoalWorkflow(
   options: GoalWorkflowOptions,
@@ -199,6 +231,10 @@ export async function runGoalWorkflow(
 
         metadata = result.metadata;
         if (result.verdict === "needs_human_review") {
+          if (!isSupervisedHumanReviewPolicy(options.config.humanReviewPolicy)) {
+            return finalizeWorkflowResult(await failUnexpectedHumanReviewResult(metadata));
+          }
+
           return finalizeWorkflowResult(await finishTerminal({
             state,
             metadata,
@@ -496,11 +532,292 @@ export async function runGoalWorkflow(
       return null;
     }
 
+    return handleResumeNeedsHumanReview(decision, selectedMetadata);
+  }
+
+  async function handleResumeNeedsHumanReview(
+    decision: Extract<ResumeDecision, { kind: "needs_human_review" }>,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult | null> {
+    if (shouldAttemptAutonomousResolution(options.config.humanReviewPolicy)) {
+      return resolveResumeNeedsHumanReview(decision, selectedMetadata);
+    }
+
+    if (
+      terminalPhaseForUnresolvedHumanReview(options.config.humanReviewPolicy) ===
+      "failed"
+    ) {
+      return failResumeDecision(
+        decision.message,
+        decision.details,
+        decision.currentMilestoneId,
+        selectedMetadata,
+      );
+    }
+
     return stopForHumanReview(
       decision.message,
       decision.details,
       decision.currentMilestoneId,
     );
+  }
+
+  async function resolveResumeNeedsHumanReview(
+    decision: Extract<ResumeDecision, { kind: "needs_human_review" }>,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult | null> {
+    let previousResolutionOutput: string | null = null;
+    let previousResolutionError: string | null = null;
+    let latestResolutionError = decision.message;
+
+    for (
+      let resolutionAttempt = 1;
+      resolutionAttempt <= resumeResolutionAttemptLimit;
+      resolutionAttempt += 1
+    ) {
+      const artifactInventory = await buildResumeArtifactInventory();
+      const resolutionPrompt = await renderLoadedPrompt("resolve-resume-state", {
+        goal: options.goal,
+        state,
+        milestoneMetadata: selectedMetadata,
+        resolutionAttempt,
+        originalDecisionMessage: decision.message,
+        originalDecisionDetails: decision.details ?? "None.",
+        previousResolutionOutput: previousResolutionOutput ?? "None.",
+        previousResolutionError: previousResolutionError ?? "None.",
+        expectedSchemaContract: resumeResolutionSchemaContract,
+        allowedActions: [
+          "continue",
+          "normalize_to_ready_for_review",
+          "normalize_to_passed",
+          "fail",
+        ],
+        artifactSummary: artifactInventory.summary,
+      });
+      if (!resolutionPrompt.ok) {
+        return failResumeDecision(
+          resolutionPrompt.error,
+          undefined,
+          decision.currentMilestoneId,
+          selectedMetadata,
+        );
+      }
+
+      const resolution = await runPhase("resolve_resume_state", resolutionPrompt.value, {
+        state: "state.json",
+        ...(state.artifacts.milestones === undefined
+          ? {}
+          : { milestones: state.artifacts.milestones }),
+      }, decision.currentMilestoneId ?? state.currentMilestoneId ?? undefined);
+      if (!resolution.ok) {
+        return failResumeDecision(
+          resolution.error,
+          resolution.details,
+          decision.currentMilestoneId,
+          selectedMetadata,
+        );
+      }
+
+      const parsedResolution = parseResumeResolutionJson(resolution.value);
+      const resolutionError = parsedResolution.ok
+        ? validateResumeResolutionAction(parsedResolution.value, {
+          state,
+          metadata: selectedMetadata,
+          originalDecision: decision,
+          existingArtifacts: artifactInventory.existingArtifacts,
+        })
+        : parsedResolution.error;
+      const resolved = parsedResolution.ok && resolutionError === null;
+      const resolutionArtifactPath = buildResumeResolutionArtifactPath(
+        resolutionAttempt,
+      );
+      const resolutionDiagnostic = {
+        phase: "resolve_resume_state",
+        attempt: resolutionAttempt,
+        status: resolved ? "resolved" : "unresolved",
+        originalDecision: {
+          message: decision.message,
+          details: decision.details ?? null,
+          currentMilestoneId: decision.currentMilestoneId ?? null,
+        },
+        resolutionError,
+        rawOutput: resolution.value,
+        artifactSummary: artifactInventory.summary,
+        ...(parsedResolution.ok ? { resolution: parsedResolution.value } : {}),
+      };
+      try {
+        await writeJsonArtifact(resolutionArtifactPath.file, resolutionDiagnostic);
+      } catch (error) {
+        return failResumeDecision(
+          `Failed to write resume resolution diagnostic artifact at ${resolutionArtifactPath.file}: ${formatError(error)}`,
+          undefined,
+          decision.currentMilestoneId,
+          selectedMetadata,
+        );
+      }
+
+      state = await persist(
+        recordArtifactByKey(
+          state,
+          "logs",
+          resolutionArtifactPath.stateKey,
+          resolutionArtifactPath.statePath,
+          clock(),
+        ),
+      );
+
+      if (parsedResolution.ok && resolved) {
+        return applyResumeResolutionAction(
+          parsedResolution.value,
+          decision,
+          selectedMetadata,
+        );
+      }
+
+      previousResolutionOutput = resolution.value;
+      latestResolutionError =
+        resolutionError ?? "Resume resolution did not produce a valid action.";
+      previousResolutionError = latestResolutionError;
+    }
+
+    return failResumeDecision(
+      `Resume state resolution failed after ${resumeResolutionAttemptLimit} attempt(s).`,
+      {
+        originalDecision: decision.message,
+        originalDetails: decision.details ?? null,
+        latestResolutionError,
+      },
+      decision.currentMilestoneId,
+      selectedMetadata,
+    );
+  }
+
+  async function applyResumeResolutionAction(
+    resolution: ResumeResolutionDocument,
+    originalDecision: Extract<ResumeDecision, { kind: "needs_human_review" }>,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult | null> {
+    if (resolution.action === "fail") {
+      return failResumeDecision(
+        resolution.summary,
+        {
+          rationale: resolution.rationale,
+          assumptions: resolution.assumptions,
+          originalDecision: originalDecision.message,
+          originalDetails: originalDecision.details ?? null,
+        },
+        resolution.currentMilestoneId ?? originalDecision.currentMilestoneId,
+        selectedMetadata,
+      );
+    }
+
+    if (resolution.action === "continue") {
+      return null;
+    }
+
+    const milestoneId = resolution.currentMilestoneId;
+    if (milestoneId === undefined || milestoneId === null) {
+      return failResumeDecision(
+        `Resume resolution action ${resolution.action} did not include currentMilestoneId.`,
+        {
+          resolution,
+          originalDecision: originalDecision.message,
+        },
+        originalDecision.currentMilestoneId,
+        selectedMetadata,
+      );
+    }
+
+    if (resolution.action === "normalize_to_ready_for_review") {
+      const now = clock();
+      let nextState = setStatePhase(state, "ready_for_review", now);
+      nextState = setMilestoneStatus(nextState, milestoneId, "ready_for_review", now);
+      state = await persist({
+        ...nextState,
+        lastError: null,
+      });
+      return null;
+    }
+
+    if (resolution.action === "normalize_to_passed") {
+      const now = clock();
+      let nextState = setStatePhase(state, "passed", now);
+      nextState = setMilestoneStatus(nextState, milestoneId, "passed", now);
+      state = await persist({
+        ...nextState,
+        lastError: null,
+      });
+      return null;
+    }
+
+    return failResumeDecision(
+      `Unsupported resume resolution action: ${resolution.action}.`,
+      { resolution },
+      originalDecision.currentMilestoneId,
+      selectedMetadata,
+    );
+  }
+
+  async function failResumeDecision(
+    message: string,
+    details: unknown,
+    currentMilestoneId: number | null | undefined,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult> {
+    const normalizedDetails = normalizeDetails(details);
+    const now = clock();
+    let nextState = failState(state, {
+      phase: "failed",
+      message,
+      details: normalizedDetails,
+      now,
+    });
+    if (currentMilestoneId !== undefined) {
+      nextState = {
+        ...nextState,
+        currentMilestoneId,
+      };
+    }
+    if (currentMilestoneId !== undefined && currentMilestoneId !== null) {
+      nextState = setMilestoneStatus(nextState, currentMilestoneId, "failed", now);
+    }
+
+    state = await persist(nextState);
+    return finishTerminal({
+      state,
+      metadata: selectedMetadata,
+      ok: false,
+      originalError: message,
+      diagnostics: [
+        {
+          message,
+          details: normalizedDetails,
+        },
+      ],
+    });
+  }
+
+  async function failUnexpectedHumanReviewResult(
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult> {
+    const message = `Review workflow returned needs_human_review while humanReviewPolicy is ${options.config.humanReviewPolicy}.`;
+    const now = clock();
+    let nextState = failState(state, {
+      phase: "failed",
+      message,
+      details: { humanReviewPolicy: options.config.humanReviewPolicy },
+      now,
+    });
+    if (nextState.currentMilestoneId !== null) {
+      nextState = setMilestoneStatus(nextState, nextState.currentMilestoneId, "failed", now);
+    }
+    state = await persist(nextState);
+    return finishTerminal({
+      state,
+      metadata: selectedMetadata,
+      ok: false,
+      originalError: message,
+    });
   }
 
   async function stopForHumanReview(
@@ -533,6 +850,151 @@ export async function runGoalWorkflow(
         },
       ],
     });
+  }
+
+  async function renderLoadedPrompt(
+    promptName: "resolve-resume-state",
+    variables: PromptVariables,
+  ): Promise<{ ok: true; value: string } | { ok: false; error: string }> {
+    const loaded = await loadPrompt(promptName, {
+      cwd: options.cwd,
+      promptDir: options.promptDir,
+    });
+    if (!loaded.ok) return loaded;
+    return renderPrompt(loaded.value.text, variables);
+  }
+
+  async function runPhase(
+    phase: "resolve_resume_state",
+    prompt: string,
+    artifacts: Record<string, string>,
+    milestoneId?: number,
+  ): Promise<
+    | { ok: true; value: string }
+    | { ok: false; error: string; details?: AgentRunResult | { message: string } }
+  > {
+    let result: AgentRunResult;
+    let diagnosticArtifact: string | undefined;
+    try {
+      const outputSchema = await outputSchemaPathForRunnerPhase(phase);
+      if (!outputSchema.ok) return outputSchema;
+
+      const execution = await runAgentPhaseWithDiagnostics({
+        runner: options.runner,
+        paths: options.paths,
+        now: clock,
+        request: {
+          phase,
+          prompt,
+          artifacts,
+          cwd: options.cwd,
+          ...(milestoneId === undefined ? {} : { milestoneId }),
+          ...(outputSchema.path === undefined
+            ? {}
+            : { outputSchemaPath: outputSchema.path }),
+        },
+      });
+
+      if (!execution.ok) {
+        return {
+          ok: false,
+          error: `Runner phase ${phase} threw an error: ${execution.error}`,
+          details: withDiagnosticArtifact(
+            { message: execution.error },
+            execution.diagnosticArtifact,
+          ),
+        };
+      }
+
+      result = execution.result;
+      diagnosticArtifact = execution.diagnosticArtifact;
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Runner phase ${phase} threw an error: ${formatError(error)}`,
+        details: { message: formatError(error) },
+      };
+    }
+
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `Runner phase ${phase} failed with exit code ${result.exitCode}.`,
+        details: withDiagnosticArtifact(result, diagnosticArtifact),
+      };
+    }
+
+    if (result.text.trim().length === 0) {
+      return {
+        ok: false,
+        error: `Runner phase ${phase} returned empty output.`,
+        details: withDiagnosticArtifact(result, diagnosticArtifact),
+      };
+    }
+
+    return { ok: true, value: result.text };
+  }
+
+  async function outputSchemaPathForRunnerPhase(
+    phase: "resolve_resume_state",
+  ): Promise<{ ok: true; path?: string } | { ok: false; error: string }> {
+    if (options.runner.type !== "codex-exec") return { ok: true };
+
+    return resolveOutputSchemaPathForPhase({
+      phase,
+      cwd: options.cwd,
+      schemaRoot: options.schemaRoot,
+    });
+  }
+
+  async function buildResumeArtifactInventory(): Promise<{
+    summary: string;
+    existingArtifacts: ReadonlySet<string>;
+  }> {
+    const entries = collectArtifactEntries(state.artifacts);
+    if (entries.length === 0) {
+      return {
+        summary: "No artifacts recorded.",
+        existingArtifacts: new Set(),
+      };
+    }
+
+    const existingArtifacts = new Set<string>();
+    const lines: string[] = [];
+    for (const entry of entries) {
+      const resolved = resolveRunArtifactPath(options.paths.runDir, entry.path);
+      if (!resolved.ok) {
+        lines.push(`- ${entry.key}: ${entry.path} (invalid: ${resolved.error})`);
+        continue;
+      }
+
+      try {
+        await access(resolved.path);
+        existingArtifacts.add(entry.path);
+        existingArtifacts.add(resolved.relativePath);
+        lines.push(`- ${entry.key}: ${entry.path} (exists)`);
+      } catch {
+        lines.push(`- ${entry.key}: ${entry.path} (missing)`);
+      }
+    }
+
+    return {
+      summary: lines.join("\n"),
+      existingArtifacts,
+    };
+  }
+
+  function buildResumeResolutionArtifactPath(attempt: number): {
+    file: string;
+    statePath: string;
+    stateKey: string;
+  } {
+    const fileName = `resolve-resume-state-${attempt}.json`;
+    return {
+      file: path.join(options.paths.dirs.logs, fileName),
+      statePath: path.join("logs", fileName),
+      stateKey: `resume-resolution-${attempt}`,
+    };
   }
 
   function handlePassedExecutionLimit(
@@ -807,6 +1269,28 @@ function hasPendingMilestones(
   );
 }
 
+function collectArtifactEntries(
+  artifacts: RunState["artifacts"],
+): Array<{ key: string; path: string }> {
+  const entries: Array<{ key: string; path: string }> = [];
+
+  for (const [key, value] of Object.entries(artifacts)) {
+    if (typeof value === "string") {
+      entries.push({ key, path: value });
+      continue;
+    }
+
+    if (!isRecord(value)) continue;
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      if (typeof nestedValue === "string") {
+        entries.push({ key: `${key}.${nestedKey}`, path: nestedValue });
+      }
+    }
+  }
+
+  return entries.sort((left, right) => left.key.localeCompare(right.key));
+}
+
 function combineTerminalErrors(
   originalError: string | undefined,
   summaryError: string,
@@ -840,6 +1324,19 @@ function normalizeDetails(
   return String(details);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withDiagnosticArtifact<T extends object>(
+  details: T,
+  diagnosticArtifact: string | undefined,
+): T & { diagnosticArtifact?: string } {
+  return diagnosticArtifact === undefined
+    ? details
+    : { ...details, diagnosticArtifact };
 }

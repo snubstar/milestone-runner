@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   ApprovalPolicy,
   ConfigResult,
+  HumanReviewPolicy,
   LoadedConfig,
   MilestonePlanPolicy,
   MilestonePlanReviewPolicy,
@@ -17,6 +18,7 @@ const exampleConfigName = "orchestrator.config.example.json";
 const runnerTypes = new Set(["fake", "codex-exec"]);
 const milestonePlanPolicies = new Set(["always", "auto", "light"]);
 const milestonePlanReviewPolicies = new Set(["normal", "scrupulous"]);
+const humanReviewPolicies = new Set(["stop", "fail", "autonomous"]);
 const sandboxModes = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const approvalPolicies = new Set(["never", "on-request", "untrusted"]);
 const configKeys = new Set([
@@ -26,6 +28,7 @@ const configKeys = new Set([
   "artifactRoot",
   "milestonePlanPolicy",
   "milestonePlanReviewPolicy",
+  "humanReviewPolicy",
 ]);
 const runnerKeys = new Set(["type", "command", "accountLabel", "options"]);
 const codexExecOptionKeys = new Set([
@@ -290,6 +293,15 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     };
   }
 
+  const humanReviewPolicy =
+    value.humanReviewPolicy === undefined ? "stop" : value.humanReviewPolicy;
+  if (!isHumanReviewPolicy(humanReviewPolicy)) {
+    return {
+      ok: false,
+      error: '`humanReviewPolicy` must be "stop", "fail", or "autonomous".',
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -299,6 +311,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
       artifactRoot: value.artifactRoot,
       milestonePlanPolicy,
       milestonePlanReviewPolicy,
+      humanReviewPolicy,
     },
   };
 }
@@ -364,6 +377,10 @@ function isMilestonePlanReviewPolicy(
   value: unknown,
 ): value is MilestonePlanReviewPolicy {
   return typeof value === "string" && milestonePlanReviewPolicies.has(value);
+}
+
+function isHumanReviewPolicy(value: unknown): value is HumanReviewPolicy {
+  return typeof value === "string" && humanReviewPolicies.has(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

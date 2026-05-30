@@ -24,7 +24,8 @@ The orchestrator, not the agent, controls:
 - Whether deterministic checks passed.
 - Whether a review verdict blocks progress.
 - How many fix attempts are allowed.
-- When a run stops for human review.
+- When a run stops for human review, fails, or resolves ambiguity
+  autonomously.
 
 Agent runners are expected to do scoped work only:
 
@@ -283,7 +284,7 @@ State should reference artifact paths as strings only. The schema must not requi
 
 The goal workflow uses `milestoneStatuses` and `currentMilestoneId` to choose work. After one milestone passes, the selector advances to the lowest pending milestone whose dependencies passed. The run stops instead of advancing when implementation fails, checks fail, review needs human input, fix attempts are exhausted, dependencies are blocked, or persisted state is inconsistent.
 
-Resume behavior in the core workflow is conservative. Stable states such as `ready_for_milestone`, `ready_for_review`, and `passed` with pending work can continue from `state.json`. Ambiguous transient states such as partial implementation or review work stop as `needs_human_review` unless existing artifacts prove the next safe state.
+Resume behavior in the core workflow is policy-aware. Stable states such as `ready_for_milestone`, `ready_for_review`, and `passed` with pending work can continue from `state.json`. Ambiguous transient states such as partial implementation or review work stop as `needs_human_review` under the default `humanReviewPolicy: "stop"` unless existing artifacts prove the next safe state. Under `humanReviewPolicy: "fail"`, those newly encountered states fail immediately. Under `humanReviewPolicy: "autonomous"`, the runner gets bounded attempts to resolve or normalize the resume state before failing.
 
 ## Milestone Metadata
 
@@ -376,7 +377,10 @@ Verdict behavior:
 
 - `pass`: the milestone may be accepted if deterministic checks also passed or were explicitly unavailable.
 - `fail`: the orchestrator should run a scoped fix attempt when fix attempts remain.
-- `needs_human_review`: the orchestrator must stop and report the review summary.
+- `needs_human_review`: under the default `humanReviewPolicy: "stop"`, the
+  orchestrator must stop and report the review summary. Under
+  `humanReviewPolicy: "autonomous"`, newly encountered review ambiguity routes
+  through autonomous resolution before the workflow can continue or fail.
 
 Finding fields:
 
@@ -417,7 +421,8 @@ Initial config shape:
   "maxFixAttempts": 2,
   "artifactRoot": ".agent-work",
   "milestonePlanPolicy": "always",
-  "milestonePlanReviewPolicy": "normal"
+  "milestonePlanReviewPolicy": "normal",
+  "humanReviewPolicy": "stop"
 }
 ```
 
@@ -432,6 +437,7 @@ Config fields:
 - `artifactRoot`: root directory for generated run artifacts, relative to the target repository. Absolute paths, `..` escapes, and malformed relative paths are rejected.
 - `milestonePlanPolicy`: per-milestone implementation plan policy. Missing values default to `always`.
 - `milestonePlanReviewPolicy`: per-milestone implementation plan review policy. Missing values default to `normal`.
+- `humanReviewPolicy`: handling for human-review-equivalent outcomes. Missing values default to supervised `stop`; `fail` is conservative fail-fast unattended behavior; `autonomous` repairs malformed review output and resolves review/resume ambiguity before failing. The policy is saved when a run is created and is not a resume-time CLI override.
 
 The config schema lives in [schemas/config.schema.json](./schemas/config.schema.json).
 
@@ -459,7 +465,7 @@ Available runner adapters:
 - `FakeRunner`: deterministic test runner for unit and fixture tests.
 - `CodexExecRunner`: real runner adapter implemented by shelling out to `codex exec`.
 
-The fake runner keeps the state machine, artifact handling, and review gates testable without model calls. The `codex-exec` runner passes rendered prompts to Codex through stdin, sets the target repository with `--cd`, applies read-only or workspace-write sandboxing by phase, uses schema-constrained output for JSON phases, and persists runner diagnostics under each run directory.
+The fake runner keeps the state machine, artifact handling, and review gates testable without model calls. The `codex-exec` runner passes rendered prompts to Codex through stdin, sets the target repository with `--cd`, applies the configured sandboxing by phase, uses schema-constrained output for JSON phases, and persists runner diagnostics under each run directory.
 
 ## Prompt Templates
 
@@ -485,6 +491,8 @@ Current templates declare required inputs, expected outputs, orchestration bound
 ## Additional Documentation
 
 - [Manual Run Guide](./docs/how-to.md): command-line setup, target repositories, runner modes, run inspection, resume, dashboard usage, and real Codex smoke testing.
+- [Fully Autonomous Runs](./docs/fully-autonomous-runs.md): autonomous human
+  review policy semantics, operator config, and repair/resolution artifacts.
 - [Dashboard Operator Smoke Test](./docs/dashboard-operator-smoke.md): checklist for validating the local dashboard against run artifacts and launch flows.
 - [CI Provider Integrations](./docs/ci-provider-integrations.md): optional GitHub Actions setup for agent PR review and guarded CI-failure autofix workflows.
 
@@ -888,15 +896,15 @@ node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
 node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-review-policy scrupulous
 ```
 
-If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command. Resume policy overrides are per-invocation and affect only future milestone planning work reached during that invocation.
+If the previous milestone left real file changes in the working tree and you intend to continue from that state, add `--allow-dirty` to the resume command. Milestone planning policy overrides are per-invocation and affect only future milestone planning work reached during that invocation. `humanReviewPolicy` is not a resume-time CLI override; resume uses the policy snapshot saved when the run was created.
 
-Scrupulous draft, review, and final-plan generation currently stay inside the existing `implementing` phase and run before target repository edits begin. If a process is interrupted during those internal steps, resume remains conservative: incomplete implementation-ready artifacts stop as `needs_human_review` instead of automatically reusing a partial draft, partial review, or final plan. A resume-time `--milestone-plan-review-policy` override does not rewrite the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
+Scrupulous draft, review, and final-plan generation currently stay inside the existing `implementing` phase and run before target repository edits begin. If a process is interrupted during those internal steps, the default `stop` policy remains conservative: incomplete implementation-ready artifacts stop as `needs_human_review` instead of automatically reusing a partial draft, partial review, or final plan. Under `humanReviewPolicy: "autonomous"`, the resume-state resolver gets bounded attempts to choose a safe continuation, normalization, or failure. A resume-time `--milestone-plan-review-policy` override does not rewrite the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
 
 Interpret final states:
 
 - `passed`: the current requested workflow completed. If `--milestone` was used, remaining milestones may still be pending and the next action will say to resume without `--milestone`.
-- `failed`: deterministic checks, runner execution, or orchestration validation failed. Inspect `Last error`, milestone statuses, and generated artifacts.
-- `needs_human_review`: the workflow stopped conservatively because review or resume safety requires human input.
+- `failed`: deterministic checks, runner execution, orchestration validation, or bounded autonomous repair/resolution failed. Inspect `Last error`, milestone statuses, and generated artifacts.
+- `needs_human_review`: the workflow stopped conservatively because review or resume safety requires human input. Newly encountered review/resume ambiguity should reach this state only for supervised `stop` runs, not for `autonomous` runs.
 
 Troubleshooting real runs:
 
@@ -905,7 +913,7 @@ Troubleshooting real runs:
 - Timeout: increase `runner.options.timeoutMs`.
 - Codex non-zero exit: inspect `Last error` and `.agent-work/<run-id>/runner/*.json`.
 - Malformed milestone JSON: inspect the `final_plan_json` runner diagnostic under `.agent-work/<run-id>/runner/`; if validation succeeded, inspect `milestones/05-milestones.json`.
-- Malformed review JSON: inspect `reviews/20-milestone-<id>-review.json` and the `review_milestone` runner diagnostic.
+- Malformed review JSON: inspect `reviews/20-milestone-<id>-review.json`, the `review_milestone` runner diagnostic, and any `reviews/*review-repair-<n>.json` artifacts from autonomous runs.
 - Empty diff: check whether the implementation changed only ignored files, only `.agent-work/`, or made no working-tree changes.
 - Lightweight plan too thin: resume remaining work with `--milestone-plan-policy always` so future milestones use full runner-backed milestone plans.
 

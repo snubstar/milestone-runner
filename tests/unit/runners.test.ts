@@ -373,6 +373,9 @@ test("CodexExecRunner builds codex exec requests for every phase", async () => {
     ["final_milestone_plan", "read-only"],
     ["implement_milestone", "workspace-write"],
     ["review_milestone", "read-only"],
+    ["repair_review_verdict", "read-only"],
+    ["resolve_review_ambiguity", "read-only"],
+    ["resolve_resume_state", "read-only"],
     ["fix_review_findings", "workspace-write"],
   ] as const;
 

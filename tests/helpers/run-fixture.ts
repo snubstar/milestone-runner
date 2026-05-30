@@ -52,6 +52,7 @@ export function defaultTestConfig(
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
     ...overrides,
   };
 }

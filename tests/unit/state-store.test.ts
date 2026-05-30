@@ -77,6 +77,7 @@ test("createInitialState writes required initial fields", async () => {
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
       now: new Date("2026-05-10T12:34:56.789Z"),
     });

@@ -65,6 +65,7 @@ test("codex-exec adapter runs a deterministic fake codex through the workflow", 
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "scrupulous",
+      humanReviewPolicy: "stop",
     };
     const runnerResult = createAgentRunner(config.runner);
     assert.equal(runnerResult.ok, true);

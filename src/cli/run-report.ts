@@ -6,6 +6,7 @@ import {
   type EnvironmentDiagnostic,
 } from "../diagnostics/environment-validator.js";
 import type {
+  HumanReviewPolicy,
   MilestonePlanPolicy,
   MilestonePlanReviewPolicy,
   RunnerConfig,
@@ -37,6 +38,8 @@ export interface RunReportOptions {
   savedMilestonePlanPolicy?: MilestonePlanPolicy;
   milestonePlanReviewPolicy: MilestonePlanReviewPolicy;
   savedMilestonePlanReviewPolicy?: MilestonePlanReviewPolicy;
+  humanReviewPolicy: HumanReviewPolicy;
+  savedHumanReviewPolicy?: HumanReviewPolicy;
   gitRequired: boolean;
   gitRoot: string;
   gitDirty: boolean;
@@ -65,6 +68,7 @@ type ReportMajorPlanSource =
 
 export function printRunReport(options: RunReportOptions): void {
   const constrainedStop = constrainedTargetStop(options);
+  const humanReviewHandling = humanReviewHandlingForReport(options);
   console.log("Milestone Runner");
   console.log(`Mode: ${options.mode}`);
   console.log(`Run id: ${options.runId}`);
@@ -98,6 +102,21 @@ export function printRunReport(options: RunReportOptions): void {
   console.log(`Milestone plan review policy: ${options.milestonePlanReviewPolicy}`);
   if (options.savedMilestonePlanReviewPolicy !== undefined) {
     console.log(`Saved milestone plan review policy: ${options.savedMilestonePlanReviewPolicy}`);
+  }
+  console.log(`Human review policy: ${options.humanReviewPolicy}`);
+  console.log(`Human review handling: ${humanReviewHandling.summary}`);
+  if (humanReviewHandling.autonomousArtifacts.length > 0) {
+    console.log(
+      `Autonomous decision artifacts: ${formatArtifactPathList(
+        humanReviewHandling.autonomousArtifacts,
+      )}`,
+    );
+  }
+  if (
+    options.savedHumanReviewPolicy !== undefined &&
+    options.savedHumanReviewPolicy !== options.humanReviewPolicy
+  ) {
+    console.log(`Saved human review policy: ${options.savedHumanReviewPolicy}`);
   }
   console.log(
     `Scrupulous review for next milestone: ${describeScrupulousReviewForNextMilestone({
@@ -162,6 +181,7 @@ export function buildRunJsonReport(
     ) ?? [];
   const nextAction = options.nextAction ?? options.finalState.currentPhase;
   const constrainedStop = constrainedTargetStop(options);
+  const humanReviewHandling = humanReviewHandlingForReport(options);
 
   return {
     mode: options.mode,
@@ -192,6 +212,10 @@ export function buildRunJsonReport(
       savedMilestonePlanPolicy: options.savedMilestonePlanPolicy,
       milestonePlanReviewPolicy: options.milestonePlanReviewPolicy,
       savedMilestonePlanReviewPolicy: options.savedMilestonePlanReviewPolicy,
+      humanReviewPolicy: options.humanReviewPolicy,
+      savedHumanReviewPolicy: options.savedHumanReviewPolicy,
+      humanReviewHandling: humanReviewHandling.summary,
+      autonomousDecisionArtifacts: humanReviewHandling.autonomousArtifacts,
       scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
         policy: options.milestonePlanReviewPolicy,
         planningOnly: options.planningOnly,
@@ -239,6 +263,114 @@ function printRunnerIdentity(options: RunReportOptions): void {
 
 function runnerConfigForReport(options: RunReportOptions): RunnerConfig {
   return options.runnerConfig ?? { type: options.runnerType as RunnerConfig["type"] };
+}
+
+export function describeHumanReviewPolicyMode(policy: HumanReviewPolicy): string {
+  switch (policy) {
+    case "stop":
+      return "supervised stop on human-review-equivalent conditions";
+    case "fail":
+      return "fail-fast unattended failure on human-review-equivalent conditions";
+    case "autonomous":
+      return "autonomous repair/resolution before failing";
+  }
+}
+
+function humanReviewHandlingForReport(options: RunReportOptions): {
+  summary: string;
+  autonomousArtifacts: string[];
+} {
+  const autonomousArtifacts = autonomousDecisionArtifactPaths(options.finalState);
+
+  if (options.humanReviewPolicy === "stop") {
+    return {
+      summary:
+        options.finalState.status === "needs_human_review"
+          ? "supervised stop: human review required"
+          : describeHumanReviewPolicyMode(options.humanReviewPolicy),
+      autonomousArtifacts,
+    };
+  }
+
+  if (options.humanReviewPolicy === "fail") {
+    return {
+      summary:
+        options.finalState.status === "failed"
+          ? "fail-fast unattended failure"
+          : describeHumanReviewPolicyMode(options.humanReviewPolicy),
+      autonomousArtifacts,
+    };
+  }
+
+  if (autonomousArtifacts.length === 0) {
+    return {
+      summary: describeHumanReviewPolicyMode(options.humanReviewPolicy),
+      autonomousArtifacts,
+    };
+  }
+
+  if (
+    options.finalState.status === "failed" &&
+    isAutonomousExhaustedFailure(options.finalState.lastError)
+  ) {
+    return {
+      summary: "autonomous exhausted failure",
+      autonomousArtifacts,
+    };
+  }
+
+  if (options.finalState.status === "failed") {
+    return {
+      summary: "autonomous resolution attempted before failure",
+      autonomousArtifacts,
+    };
+  }
+
+  return {
+    summary: "autonomous resolved continuation",
+    autonomousArtifacts,
+  };
+}
+
+function autonomousDecisionArtifactPaths(state: RunState): string[] {
+  const paths: string[] = [];
+  for (const [key, artifactPath] of Object.entries(state.artifacts.reviews ?? {})) {
+    if (isAutonomousReviewArtifact(key, artifactPath)) paths.push(artifactPath);
+  }
+  for (const [key, artifactPath] of Object.entries(state.artifacts.logs ?? {})) {
+    if (isResumeResolutionArtifact(key, artifactPath)) paths.push(artifactPath);
+  }
+  return [...new Set(paths)].sort();
+}
+
+function isAutonomousReviewArtifact(key: string, artifactPath: string): boolean {
+  return (
+    /(?:^|-)repair-\d+$/.test(key) ||
+    /(?:^|-)resolution-\d+$/.test(key) ||
+    /review-repair-\d+\.json$/.test(artifactPath) ||
+    /autonomous-resolution-\d+\.json$/.test(artifactPath)
+  );
+}
+
+function isResumeResolutionArtifact(key: string, artifactPath: string): boolean {
+  return (
+    /^resume-resolution-\d+$/.test(key) ||
+    /resolve-resume-state-\d+\.json$/.test(artifactPath)
+  );
+}
+
+function isAutonomousExhaustedFailure(lastError: RunState["lastError"]): boolean {
+  const message = lastError?.message ?? "";
+  return (
+    /repair failed after \d+ attempt/.test(message) ||
+    /resolution failed after \d+ attempt/.test(message)
+  );
+}
+
+function formatArtifactPathList(paths: string[]): string {
+  const limit = 5;
+  if (paths.length <= limit) return paths.join(", ");
+  return `${paths.slice(0, limit).join(", ")} (+${paths.length - limit} more)`;
 }
 
 export function printDryRunReport(report: DryRunReport): void {

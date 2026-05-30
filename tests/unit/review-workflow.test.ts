@@ -329,6 +329,173 @@ test("runReviewWorkflow persists diagnostics and needs human review for malforme
   }
 });
 
+test("runReviewWorkflow fails malformed verdicts under fail-fast human review policy", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ humanReviewPolicy: "fail" }),
+  });
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner: new ScenarioRunner([
+        {
+          phase: "review_milestone",
+          text: "not json",
+          exitCode: 0,
+        },
+      ]),
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.match(result.state.lastError?.message ?? "", /malformed/);
+
+    const diagnostic = JSON.parse(
+      await readFile(path.join(context.paths.dirs.reviews, "20-milestone-1-review.json"), "utf8"),
+    );
+    assert.equal(diagnostic.verdict, "needs_human_review");
+    assert.equal(diagnostic.humanReviewPolicy, "fail");
+    assert.equal(diagnostic.rawOutput, "not json");
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.match(summary, /Invalid review verdict JSON/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow repairs malformed base review output in autonomous mode", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "review_milestone",
+      text: "not json",
+      exitCode: 0,
+    },
+    reviewRepairResponse({
+      verdict: "pass",
+      summary: "The repaired verdict accepts the milestone.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1-malformed"], path.join(
+      "reviews",
+      "20-milestone-1-review-malformed.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-repair-1"], path.join(
+      "reviews",
+      "21-milestone-1-review-repair-1.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1"], path.join(
+      "reviews",
+      "20-milestone-1-review.json",
+    ));
+
+    const malformed = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "20-milestone-1-review-malformed.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(malformed.rawOutput, "not json");
+    assert.equal(malformed.humanReviewPolicy, "autonomous");
+
+    const repair = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "21-milestone-1-review-repair-1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(repair.status, "repaired");
+    assert.equal(repair.repairedVerdict.verdict, "pass");
+    assert.equal(
+      runner.requests[1]?.artifacts.malformedReview,
+      path.join("reviews", "20-milestone-1-review-malformed.json"),
+    );
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "repair_review_verdict",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow enters the fix loop after repairing malformed review output into fail", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "review_milestone",
+      text: "{ malformed",
+      exitCode: 0,
+    },
+    reviewRepairResponse({
+      verdict: "fail",
+      summary: "The repaired verdict found a blocking issue.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "pass",
+      summary: "The fix resolves the blocking issue.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.deepEqual(result.state.fixAttempts, { "1": 1 });
+    assert.equal(result.state.artifacts.reviews?.["1-repair-1"], path.join(
+      "reviews",
+      "21-milestone-1-review-repair-1.json",
+    ));
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "repair_review_verdict",
+      "fix_review_findings",
+      "review_milestone",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runReviewWorkflow needs human review for blocking findings when fixes are disabled", async () => {
   const context = await createReviewContext();
   try {
@@ -440,6 +607,7 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
   const runner = new ScenarioRunner([
@@ -587,6 +755,725 @@ test("runReviewWorkflow fixes blocking findings and passes after re-review", asy
   }
 });
 
+test("runReviewWorkflow repairs malformed post-fix review output in autonomous mode", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The implementation misses a required behavior.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    {
+      phase: "review_milestone",
+      text: "not json",
+      exitCode: 0,
+    },
+    reviewRepairResponse({
+      verdict: "pass",
+      summary: "The repaired post-fix verdict accepts the milestone.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1-fix-1-malformed"], path.join(
+      "reviews",
+      "24-milestone-1-review-after-fix-1-malformed.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-fix-1-repair-1"], path.join(
+      "reviews",
+      "61-milestone-1-post-fix-1-review-repair-1.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-fix-1"], path.join(
+      "reviews",
+      "24-milestone-1-review-after-fix-1.json",
+    ));
+
+    const malformed = JSON.parse(
+      await readFile(
+        path.join(
+          context.paths.dirs.reviews,
+          "24-milestone-1-review-after-fix-1-malformed.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(malformed.rawOutput, "not json");
+    const repair = JSON.parse(
+      await readFile(
+        path.join(
+          context.paths.dirs.reviews,
+          "61-milestone-1-post-fix-1-review-repair-1.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(repair.status, "repaired");
+    assert.equal(repair.reviewRound, "fix 1");
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "fix_review_findings",
+      "review_milestone",
+      "repair_review_verdict",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow fails autonomous malformed review after repair attempts are exhausted", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "review_milestone",
+      text: "not json",
+      exitCode: 0,
+    },
+    {
+      phase: "repair_review_verdict",
+      text: "still not json",
+      exitCode: 0,
+    },
+    {
+      phase: "repair_review_verdict",
+      text: "{ still malformed",
+      exitCode: 0,
+    },
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.match(result.state.lastError?.message ?? "", /repair failed after 2 attempt/);
+    assert.equal(result.state.artifacts.reviews?.["1-malformed"], path.join(
+      "reviews",
+      "20-milestone-1-review-malformed.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-repair-1"], path.join(
+      "reviews",
+      "21-milestone-1-review-repair-1.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-repair-2"], path.join(
+      "reviews",
+      "21-milestone-1-review-repair-2.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1"], undefined);
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "repair_review_verdict",
+      "repair_review_verdict",
+    ]);
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves repaired human-review verdicts in autonomous mode", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "review_milestone",
+      text: "not json",
+      exitCode: 0,
+    },
+    reviewRepairResponse({
+      verdict: "needs_human_review",
+      summary: "The repaired verdict still needs a decision.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "pass",
+      summary: "The resolver accepts the repaired verdict.",
+      findings: [],
+      assumptions: ["The repaired verdict is schema-valid and review evidence is sufficient."],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1-malformed"], path.join(
+      "reviews",
+      "20-milestone-1-review-malformed.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-repair-1"], path.join(
+      "reviews",
+      "21-milestone-1-review-repair-1.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1"], path.join(
+      "reviews",
+      "20-milestone-1-review.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-resolution-1"], path.join(
+      "reviews",
+      "22-milestone-1-autonomous-resolution-1.json",
+    ));
+
+    const repair = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "21-milestone-1-review-repair-1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(repair.status, "repaired");
+    assert.equal(repair.repairError, null);
+    assert.equal(repair.repairedVerdict.verdict, "needs_human_review");
+
+    const writtenReview = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "20-milestone-1-review.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(writtenReview.verdict, "needs_human_review");
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: pass/);
+    assert.match(summary, /## Autonomous Resolution/);
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "repair_review_verdict",
+      "resolve_review_ambiguity",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves explicit human-review verdicts to pass in autonomous mode", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "needs_human_review",
+      summary: "The reviewer could not decide.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "pass",
+      summary: "The resolver accepts the milestone.",
+      findings: [],
+      assumptions: ["The review evidence covers the active milestone."],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1"], path.join(
+      "reviews",
+      "20-milestone-1-review.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-resolution-1"], path.join(
+      "reviews",
+      "22-milestone-1-autonomous-resolution-1.json",
+    ));
+
+    const resolution = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "22-milestone-1-autonomous-resolution-1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(resolution.status, "resolved");
+    assert.equal(resolution.resolution.verdict.verdict, "pass");
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: pass/);
+    assert.match(summary, /## Autonomous Resolution/);
+    assert.match(summary, /The review evidence covers the active milestone/);
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "resolve_review_ambiguity",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves explicit human-review verdicts to actionable fixes", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "needs_human_review",
+      summary: "The reviewer found ambiguity.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "fail",
+      summary: "The resolver identified a blocking fix.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "pass",
+      summary: "The fix resolves the blocking issue.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.deepEqual(result.state.fixAttempts, { "1": 1 });
+    assert.equal(
+      runner.requests[2]?.artifacts.review,
+      path.join("reviews", "22-milestone-1-autonomous-resolution-1.json"),
+    );
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "resolve_review_ambiguity",
+      "fix_review_findings",
+      "review_milestone",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves failed reviews without blocking findings", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The reviewer found a problem but did not mark it blocking.",
+      findings: [
+        {
+          ...blockingFinding(),
+          blocking: false,
+        },
+      ],
+    }),
+    reviewResolutionResponse({
+      verdict: "fail",
+      summary: "The resolver made the finding actionable.",
+      findings: [blockingFinding()],
+      sourceCondition: "fail_without_blocking_findings",
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "pass",
+      summary: "The fix resolves the actionable issue.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1-resolution-1"], path.join(
+      "reviews",
+      "22-milestone-1-autonomous-resolution-1.json",
+    ));
+    assert.deepEqual(result.state.fixAttempts, { "1": 1 });
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves pass verdicts with failed checks into fix work", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+    checksOutput: "Check results\n\nOverall: failed\n",
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "pass",
+      summary: "The reviewer accepted the work despite failed checks.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "fail",
+      summary: "The resolver requires check failures to be fixed.",
+      findings: [failedChecksTestFinding()],
+      sourceCondition: "review_passed_checks_failed",
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "pass",
+      summary: "The fix resolves the check failure.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.deepEqual(result.state.fixAttempts, { "1": 1 });
+    assert.match(
+      runner.requests[1]?.prompt ?? "",
+      /Latest deterministic checks failed/,
+    );
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "resolve_review_ambiguity",
+      "fix_review_findings",
+      "review_milestone",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow fails autonomous review resolution after unresolved attempts", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "needs_human_review",
+      summary: "The reviewer could not decide.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "needs_human_review",
+      summary: "The resolver still cannot decide.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "needs_human_review",
+      summary: "The resolver still cannot decide.",
+      findings: [],
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.artifacts.reviews?.["1-resolution-1"], path.join(
+      "reviews",
+      "22-milestone-1-autonomous-resolution-1.json",
+    ));
+    assert.equal(result.state.artifacts.reviews?.["1-resolution-2"], path.join(
+      "reviews",
+      "22-milestone-1-autonomous-resolution-2.json",
+    ));
+    assert.match(result.state.lastError?.message ?? "", /resolution failed after 2 attempt/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow retries autonomous resolution with mismatched source condition", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig(),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The reviewer found a problem but did not mark it blocking.",
+      findings: [
+        {
+          ...blockingFinding(),
+          blocking: false,
+        },
+      ],
+    }),
+    reviewResolutionResponse({
+      verdict: "pass",
+      summary: "The resolver used the wrong source condition.",
+      findings: [],
+      sourceCondition: "explicit_needs_human_review",
+    }),
+    reviewResolutionResponse({
+      verdict: "pass",
+      summary: "The resolver accepts the milestone with the correct source condition.",
+      findings: [],
+      sourceCondition: "fail_without_blocking_findings",
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "resolve_review_ambiguity",
+      "resolve_review_ambiguity",
+    ]);
+
+    const firstResolution = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "22-milestone-1-autonomous-resolution-1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(firstResolution.status, "unresolved");
+    assert.match(
+      firstResolution.resolutionError,
+      /sourceCondition must be fail_without_blocking_findings/,
+    );
+
+    const secondResolution = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.reviews, "22-milestone-1-autonomous-resolution-2.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(secondResolution.status, "resolved");
+    assert.equal(
+      secondResolution.resolution.resolution.sourceCondition,
+      "fail_without_blocking_findings",
+    );
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow fails in autonomous mode when fixes are disabled", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 0 }),
+  });
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner: new ScenarioRunner([
+        reviewResponse({
+          verdict: "fail",
+          summary: "The implementation misses required behavior.",
+          findings: [blockingFinding()],
+        }),
+      ]),
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.match(result.state.lastError?.message ?? "", /maxFixAttempts is 0/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow resolves post-fix human-review verdicts to pass in autonomous mode", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The implementation misses required behavior.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nfixed\n",
+    }),
+    reviewResponse({
+      verdict: "needs_human_review",
+      summary: "The post-fix reviewer could not decide.",
+      findings: [],
+    }),
+    reviewResolutionResponse({
+      verdict: "pass",
+      summary: "The resolver accepts the post-fix milestone.",
+      findings: [],
+      sourceCondition: "explicit_needs_human_review",
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.verdict, "pass");
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.artifacts.reviews?.["1-fix-1-resolution-1"], path.join(
+      "reviews",
+      "62-milestone-1-post-fix-1-autonomous-resolution-1.json",
+    ));
+    assert.deepEqual(runner.phases(), [
+      "review_milestone",
+      "fix_review_findings",
+      "review_milestone",
+      "resolve_review_ambiguity",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runReviewWorkflow fails in autonomous mode when fix attempts are exhausted", async () => {
+  const context = await createReviewContext({
+    config: autonomousReviewConfig({ maxFixAttempts: 1 }),
+  });
+  const runner = new ScenarioRunner([
+    reviewResponse({
+      verdict: "fail",
+      summary: "The implementation misses required behavior.",
+      findings: [blockingFinding()],
+    }),
+    fixResponse({
+      text: "# Fix Attempt\n\nUpdated README.md.",
+      relativePath: "README.md",
+      content: "# Fixture\nattempted fix\n",
+    }),
+    reviewResponse({
+      verdict: "fail",
+      summary: "The implementation still misses required behavior.",
+      findings: [blockingFinding()],
+    }),
+    reviewResolutionResponse({
+      verdict: "needs_human_review",
+      summary: "The resolver cannot pass after exhausted fixes.",
+      findings: [],
+      sourceCondition: "max_fix_attempts_exhausted",
+    }),
+    reviewResolutionResponse({
+      verdict: "needs_human_review",
+      summary: "The resolver cannot pass after exhausted fixes.",
+      findings: [],
+      sourceCondition: "max_fix_attempts_exhausted",
+    }),
+  ]);
+
+  try {
+    const result = await runReviewWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.deepEqual(result.state.fixAttempts, { "1": 1 });
+    assert.equal(result.state.artifacts.reviews?.["1-fix-1-resolution-1"], path.join(
+      "reviews",
+      "62-milestone-1-post-fix-1-autonomous-resolution-1.json",
+    ));
+    assert.match(result.state.lastError?.message ?? "", /resolution failed after 2 attempt/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runReviewWorkflow persists failed state when the fix runner fails", async () => {
   const context = await createReviewContext({
     config: {
@@ -596,6 +1483,7 @@ test("runReviewWorkflow persists failed state when the fix runner fails", async 
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
   try {
@@ -638,6 +1526,7 @@ test("runReviewWorkflow stops as needs human review when max fix attempts are ex
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
   try {
@@ -688,6 +1577,7 @@ test("runReviewWorkflow does not pass after a fix when post-fix checks fail", as
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
   try {
@@ -785,6 +1675,21 @@ async function createReviewContext(options: ContextOptions = {}): Promise<Review
   };
 }
 
+function autonomousReviewConfig(
+  overrides: Partial<OrchestratorConfig> = {},
+): OrchestratorConfig {
+  return {
+    checks: [`${JSON.stringify(process.execPath)} -e "process.stdout.write('check ok')" `],
+    runner: { type: "fake" },
+    maxFixAttempts: 0,
+    artifactRoot: ".agent-work",
+    milestonePlanPolicy: "always",
+    milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "autonomous",
+    ...overrides,
+  };
+}
+
 function reviewResponse(options: {
   verdict: "pass" | "fail" | "needs_human_review";
   summary: string;
@@ -801,6 +1706,65 @@ function reviewResponse(options: {
           "diffs/12-milestone-1.diff",
           "checks/13-milestone-1-checks.txt",
         ],
+      },
+      null,
+      2,
+    ),
+    exitCode: 0,
+  };
+}
+
+function reviewRepairResponse(options: {
+  verdict: "pass" | "fail" | "needs_human_review";
+  summary: string;
+  findings: unknown[];
+}): ScenarioStep {
+  return {
+    phase: "repair_review_verdict",
+    text: JSON.stringify(
+      {
+        verdict: options.verdict,
+        summary: options.summary,
+        findings: options.findings,
+        reviewedArtifacts: [
+          "diffs/12-milestone-1.diff",
+          "checks/13-milestone-1-checks.txt",
+        ],
+      },
+      null,
+      2,
+    ),
+    exitCode: 0,
+  };
+}
+
+function reviewResolutionResponse(options: {
+  verdict: "pass" | "fail" | "needs_human_review";
+  summary: string;
+  findings: unknown[];
+  assumptions?: string[];
+  sourceCondition?: string;
+}): ScenarioStep {
+  return {
+    phase: "resolve_review_ambiguity",
+    text: JSON.stringify(
+      {
+        resolution: {
+          summary: "Resolved review ambiguity autonomously.",
+          rationale: "The resolver selected the safest supported verdict.",
+          assumptions: options.assumptions ?? [],
+          sourceCondition: options.sourceCondition ?? "explicit_needs_human_review",
+        },
+        verdict: {
+          verdict: options.verdict,
+          summary: options.summary,
+          findings: options.findings,
+          reviewedArtifacts: [
+            "reviews/20-milestone-1-review.json",
+            "diffs/12-milestone-1.diff",
+            "checks/13-milestone-1-checks.txt",
+          ],
+        },
       },
       null,
       2,
@@ -828,6 +1792,16 @@ function blockingFinding() {
     file: "README.md",
     issue: "Missing required behavior.",
     suggestedFix: "Add the required behavior.",
+    blocking: true,
+  };
+}
+
+function failedChecksTestFinding() {
+  return {
+    severity: "high",
+    file: null,
+    issue: "Latest deterministic checks failed.",
+    suggestedFix: "Fix the failing deterministic checks.",
     blocking: true,
   };
 }

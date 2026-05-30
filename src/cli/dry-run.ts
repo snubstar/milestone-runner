@@ -10,6 +10,7 @@ import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
 import { runnerIdentityDetails } from "../runners/runner-identity.js";
 import type { RunState } from "../state/state-types.js";
 import {
+  describeHumanReviewPolicyMode,
   describeScrupulousReviewForNextMilestone,
   formatChecks,
   formatDiagnostics,
@@ -109,6 +110,10 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       maxFixAttempts: options.config.maxFixAttempts,
       milestonePlanPolicy: options.config.milestonePlanPolicy,
       milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
+      humanReviewPolicy: options.config.humanReviewPolicy,
+      humanReviewHandling: describeHumanReviewPolicyMode(
+        options.config.humanReviewPolicy,
+      ),
       scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
         policy: options.config.milestonePlanReviewPolicy,
         planningOnly: options.planningOnly,
@@ -134,6 +139,7 @@ export async function buildResumeDryRunReport(
 ): Promise<DryRunReport> {
   const savedPlanPolicy = savedMilestonePlanPolicy(options.state);
   const savedReviewPolicy = savedMilestonePlanReviewPolicy(options.state);
+  const savedHumanPolicy = savedHumanReviewPolicy(options.state);
   const warnings = [
     ...(options.warnings ?? []),
     ...warningsForChecks(options.config, options.diagnostics ?? []),
@@ -145,7 +151,7 @@ export async function buildResumeDryRunReport(
   let allowed = nextAction === undefined;
 
   if (!nextAction) {
-    const action = await resumeNextAction(options.state, options.paths);
+    const action = await resumeNextAction(options.state, options.paths, options.config);
     nextAction = action.nextAction;
     allowed = action.allowed;
     warnings.push(...action.warnings);
@@ -189,6 +195,11 @@ export async function buildResumeDryRunReport(
         : {}),
       milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
       savedMilestonePlanReviewPolicy: savedReviewPolicy,
+      humanReviewPolicy: options.config.humanReviewPolicy,
+      savedHumanReviewPolicy: savedHumanPolicy,
+      humanReviewHandling: describeHumanReviewPolicyMode(
+        options.config.humanReviewPolicy,
+      ),
       scrupulousReviewForNextMilestone: describeScrupulousReviewForNextMilestone({
         policy: options.config.milestonePlanReviewPolicy,
         planningOnly: options.planningOnly,
@@ -237,9 +248,14 @@ function savedMilestonePlanReviewPolicy(
   return state.config.snapshot?.milestonePlanReviewPolicy ?? "normal";
 }
 
+function savedHumanReviewPolicy(state: RunState): OrchestratorConfig["humanReviewPolicy"] {
+  return state.config.snapshot?.humanReviewPolicy ?? "stop";
+}
+
 async function resumeNextAction(
   state: RunState,
   paths: RunPaths,
+  config: OrchestratorConfig,
 ): Promise<{ allowed: boolean; nextAction: string; warnings: string[] }> {
   if (isPlanningResumePhase(state.currentPhase)) {
     return { allowed: true, nextAction: "continue_planning", warnings: [] };
@@ -296,6 +312,22 @@ async function resumeNextAction(
         warnings: [],
       };
     case "needs_human_review":
+      if (config.humanReviewPolicy === "autonomous") {
+        return {
+          allowed: true,
+          nextAction: "resolve_resume_state",
+          warnings: [decision.message],
+        };
+      }
+
+      if (config.humanReviewPolicy === "fail") {
+        return {
+          allowed: true,
+          nextAction: "fail_unsafe_resume",
+          warnings: [decision.message],
+        };
+      }
+
       return {
         allowed: false,
         nextAction: "blocked_unsafe_resume",

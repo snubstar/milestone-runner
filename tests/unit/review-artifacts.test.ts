@@ -3,8 +3,14 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  buildBaseMalformedReviewArtifactPath,
   buildBaseReviewArtifactPaths,
+  buildBaseReviewRepairArtifactPath,
+  buildBaseReviewResolutionArtifactPath,
   buildFixAttemptArtifactPaths,
+  buildFixAttemptMalformedReviewArtifactPath,
+  buildFixAttemptReviewRepairArtifactPath,
+  buildFixAttemptReviewResolutionArtifactPath,
 } from "../../src/artifacts/review-artifacts.js";
 import { buildRunPaths } from "../../src/artifacts/paths.js";
 
@@ -49,6 +55,69 @@ test("buildBaseReviewArtifactPaths creates expected review artifact paths", () =
     evidence: "12-evidence",
     review: "12",
     summary: "12-review",
+  });
+});
+
+test("buildBaseMalformedReviewArtifactPath creates expected malformed review paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildBaseMalformedReviewArtifactPath(runPaths, 12);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "20-milestone-12-review-malformed.json",
+    ),
+    statePath: path.join("reviews", "20-milestone-12-review-malformed.json"),
+    stateKey: "12-malformed",
+  });
+});
+
+test("buildBaseReviewRepairArtifactPath creates expected repair diagnostic paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildBaseReviewRepairArtifactPath(runPaths, 12, 2);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "21-milestone-12-review-repair-2.json",
+    ),
+    statePath: path.join("reviews", "21-milestone-12-review-repair-2.json"),
+    stateKey: "12-repair-2",
+  });
+});
+
+test("buildBaseReviewResolutionArtifactPath creates expected resolution paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildBaseReviewResolutionArtifactPath(runPaths, 12, 2);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "22-milestone-12-autonomous-resolution-2.json",
+    ),
+    statePath: path.join("reviews", "22-milestone-12-autonomous-resolution-2.json"),
+    stateKey: "12-resolution-2",
   });
 });
 
@@ -124,6 +193,69 @@ test("buildFixAttemptArtifactPaths creates expected fix attempt artifact paths",
   });
 });
 
+test("buildFixAttemptMalformedReviewArtifactPath creates expected malformed post-fix paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildFixAttemptMalformedReviewArtifactPath(runPaths, 12, 3);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "24-milestone-12-review-after-fix-3-malformed.json",
+    ),
+    statePath: path.join("reviews", "24-milestone-12-review-after-fix-3-malformed.json"),
+    stateKey: "12-fix-3-malformed",
+  });
+});
+
+test("buildFixAttemptReviewRepairArtifactPath creates expected post-fix repair paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildFixAttemptReviewRepairArtifactPath(runPaths, 12, 3, 2);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "61-milestone-12-post-fix-3-review-repair-2.json",
+    ),
+    statePath: path.join("reviews", "61-milestone-12-post-fix-3-review-repair-2.json"),
+    stateKey: "12-fix-3-repair-2",
+  });
+});
+
+test("buildFixAttemptReviewResolutionArtifactPath creates expected post-fix resolution paths", () => {
+  const runPaths = buildRunPaths({
+    cwd: "/repo",
+    artifactRoot: ".agent-work",
+    runId: "run-1",
+  });
+  const artifactPath = buildFixAttemptReviewResolutionArtifactPath(runPaths, 12, 3, 2);
+
+  assert.deepEqual(artifactPath, {
+    file: path.resolve(
+      "/repo",
+      ".agent-work",
+      "run-1",
+      "reviews",
+      "62-milestone-12-post-fix-3-autonomous-resolution-2.json",
+    ),
+    statePath: path.join("reviews", "62-milestone-12-post-fix-3-autonomous-resolution-2.json"),
+    stateKey: "12-fix-3-resolution-2",
+  });
+});
+
 test("buildFixAttemptArtifactPaths rejects invalid attempt numbers", () => {
   const runPaths = buildRunPaths({
     cwd: "/repo",
@@ -134,5 +266,25 @@ test("buildFixAttemptArtifactPaths rejects invalid attempt numbers", () => {
   assert.throws(
     () => buildFixAttemptArtifactPaths(runPaths, 12, 0),
     /Fix attempt must be a positive integer/,
+  );
+  assert.throws(
+    () => buildBaseReviewRepairArtifactPath(runPaths, 12, 0),
+    /Review repair attempt must be a positive integer/,
+  );
+  assert.throws(
+    () => buildBaseReviewResolutionArtifactPath(runPaths, 12, 0),
+    /Review resolution attempt must be a positive integer/,
+  );
+  assert.throws(
+    () => buildFixAttemptMalformedReviewArtifactPath(runPaths, 12, 0),
+    /Fix attempt must be a positive integer/,
+  );
+  assert.throws(
+    () => buildFixAttemptReviewRepairArtifactPath(runPaths, 12, 1, 0),
+    /Review repair attempt must be a positive integer/,
+  );
+  assert.throws(
+    () => buildFixAttemptReviewResolutionArtifactPath(runPaths, 12, 1, 0),
+    /Review resolution attempt must be a positive integer/,
   );
 });

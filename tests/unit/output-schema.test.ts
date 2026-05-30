@@ -18,6 +18,18 @@ test("outputSchemaRelativePathForPhase maps schema-constrained phases", () => {
     outputSchemaRelativePathForPhase("review_milestone"),
     path.join("schemas", "review-verdict.schema.json"),
   );
+  assert.equal(
+    outputSchemaRelativePathForPhase("repair_review_verdict"),
+    path.join("schemas", "review-verdict.schema.json"),
+  );
+  assert.equal(
+    outputSchemaRelativePathForPhase("resolve_review_ambiguity"),
+    path.join("schemas", "review-resolution.schema.json"),
+  );
+  assert.equal(
+    outputSchemaRelativePathForPhase("resolve_resume_state"),
+    path.join("schemas", "resume-resolution.schema.json"),
+  );
 });
 
 test("outputSchemaRelativePathForPhase leaves Markdown phases unconstrained", () => {

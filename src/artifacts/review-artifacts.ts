@@ -42,6 +42,12 @@ export interface FixAttemptArtifactPaths {
   };
 }
 
+export interface ReviewDiagnosticArtifactPath {
+  file: string;
+  statePath: string;
+  stateKey: string;
+}
+
 export function buildBaseReviewArtifactPaths(
   paths: RunPaths,
   milestoneId: number,
@@ -68,14 +74,66 @@ export function buildBaseReviewArtifactPaths(
   };
 }
 
+export function buildBaseMalformedReviewArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+): ReviewDiagnosticArtifactPath {
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(paths.dirs.reviews, `20-${suffix}-review-malformed.json`);
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-malformed`,
+  };
+}
+
+export function buildBaseReviewRepairArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  repairAttempt: number,
+): ReviewDiagnosticArtifactPath {
+  assertPositiveAttempt("Review repair attempt", repairAttempt);
+
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(
+    paths.dirs.reviews,
+    `21-${suffix}-review-repair-${repairAttempt}.json`,
+  );
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-repair-${repairAttempt}`,
+  };
+}
+
+export function buildBaseReviewResolutionArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  resolutionAttempt: number,
+): ReviewDiagnosticArtifactPath {
+  assertPositiveAttempt("Review resolution attempt", resolutionAttempt);
+
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(
+    paths.dirs.reviews,
+    `22-${suffix}-autonomous-resolution-${resolutionAttempt}.json`,
+  );
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-resolution-${resolutionAttempt}`,
+  };
+}
+
 export function buildFixAttemptArtifactPaths(
   paths: RunPaths,
   milestoneId: number,
   attempt: number,
 ): FixAttemptArtifactPaths {
-  if (!Number.isInteger(attempt) || attempt < 1) {
-    throw new Error(`Fix attempt must be a positive integer, got ${attempt}.`);
-  }
+  assertPositiveAttempt("Fix attempt", attempt);
 
   const suffix = `milestone-${milestoneId}`;
   const stateKey = `${milestoneId}-fix-${attempt}`;
@@ -105,4 +163,74 @@ export function buildFixAttemptArtifactPaths(
       evidence: `${stateKey}-evidence`,
     },
   };
+}
+
+export function buildFixAttemptMalformedReviewArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  fixAttempt: number,
+): ReviewDiagnosticArtifactPath {
+  assertPositiveAttempt("Fix attempt", fixAttempt);
+
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(
+    paths.dirs.reviews,
+    `24-${suffix}-review-after-fix-${fixAttempt}-malformed.json`,
+  );
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-fix-${fixAttempt}-malformed`,
+  };
+}
+
+export function buildFixAttemptReviewRepairArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  fixAttempt: number,
+  repairAttempt: number,
+): ReviewDiagnosticArtifactPath {
+  assertPositiveAttempt("Fix attempt", fixAttempt);
+  assertPositiveAttempt("Review repair attempt", repairAttempt);
+
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(
+    paths.dirs.reviews,
+    `61-${suffix}-post-fix-${fixAttempt}-review-repair-${repairAttempt}.json`,
+  );
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-fix-${fixAttempt}-repair-${repairAttempt}`,
+  };
+}
+
+export function buildFixAttemptReviewResolutionArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  fixAttempt: number,
+  resolutionAttempt: number,
+): ReviewDiagnosticArtifactPath {
+  assertPositiveAttempt("Fix attempt", fixAttempt);
+  assertPositiveAttempt("Review resolution attempt", resolutionAttempt);
+
+  const suffix = `milestone-${milestoneId}`;
+  const file = path.join(
+    paths.dirs.reviews,
+    `62-${suffix}-post-fix-${fixAttempt}-autonomous-resolution-${resolutionAttempt}.json`,
+  );
+
+  return {
+    file,
+    statePath: toRunRelativePath(paths.runDir, file),
+    stateKey: `${milestoneId}-fix-${fixAttempt}-resolution-${resolutionAttempt}`,
+  };
+}
+
+function assertPositiveAttempt(label: string, attempt: number): void {
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new Error(`${label} must be a positive integer, got ${attempt}.`);
+  }
 }

@@ -192,6 +192,7 @@ function fakeConfig(options: { checks: string[] }): OrchestratorConfig {
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
   };
 }
 
@@ -211,6 +212,7 @@ function codexConfig(options: { command: string }): OrchestratorConfig {
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
   };
 }
 

@@ -11,6 +11,9 @@ export type PromptName =
   | "final-milestone-plan"
   | "implement-milestone"
   | "review-milestone"
+  | "repair-review-verdict"
+  | "resolve-review-ambiguity"
+  | "resolve-resume-state"
   | "fix-review-findings";
 
 export interface LoadedPrompt {
@@ -36,6 +39,9 @@ const promptFiles: Record<PromptName, string> = {
   "final-milestone-plan": "final-milestone-plan.md",
   "implement-milestone": "implement-milestone.md",
   "review-milestone": "review-milestone.md",
+  "repair-review-verdict": "repair-review-verdict.md",
+  "resolve-review-ambiguity": "resolve-review-ambiguity.md",
+  "resolve-resume-state": "resolve-resume-state.md",
   "fix-review-findings": "fix-review-findings.md",
 };
 

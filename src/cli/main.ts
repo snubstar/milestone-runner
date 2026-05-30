@@ -368,6 +368,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
       maxFixAttempts: config.maxFixAttempts,
       milestonePlanPolicy: config.milestonePlanPolicy,
       milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
+      humanReviewPolicy: config.humanReviewPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -401,6 +402,7 @@ async function runNewWorkflow(options: CliOptions): Promise<number> {
     maxFixAttempts: config.maxFixAttempts,
     milestonePlanPolicy: config.milestonePlanPolicy,
     milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
+    humanReviewPolicy: config.humanReviewPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -655,6 +657,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
       milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
       savedMilestonePlanReviewPolicy:
         resumeResult.config.milestonePlanReviewPolicy,
+      humanReviewPolicy: config.humanReviewPolicy,
+      savedHumanReviewPolicy: resumeResult.config.humanReviewPolicy,
       gitRequired: gitPreflight.metadata.required,
       gitRoot: gitPreflight.metadata.root ?? "unavailable",
       gitDirty: gitPreflight.metadata.dirtyAtStart,
@@ -693,6 +697,8 @@ async function runResumeWorkflow(options: CliOptions): Promise<number> {
     milestonePlanReviewPolicy: config.milestonePlanReviewPolicy,
     savedMilestonePlanReviewPolicy:
       resumeResult.config.milestonePlanReviewPolicy,
+    humanReviewPolicy: config.humanReviewPolicy,
+    savedHumanReviewPolicy: resumeResult.config.humanReviewPolicy,
     gitRequired: gitPreflight.metadata.required,
     gitRoot: gitPreflight.metadata.root ?? "unavailable",
     gitDirty: gitPreflight.metadata.dirtyAtStart,

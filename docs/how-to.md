@@ -217,7 +217,7 @@ node dist/cli/main.js --runner codex-exec --milestone 1 \
   "Add a short manual testing section to README.md"
 ```
 
-The review policy can also be set explicitly:
+The milestone plan review policy can also be set explicitly:
 
 ```bash
 node dist/cli/main.js --runner codex-exec --milestone 1 \
@@ -237,6 +237,77 @@ passes `runner.options.profile` through to `codex exec` when configured and
 reports optional `runner.accountLabel` in dry-run/final output and diagnostics.
 That label is for operator clarity only; the pipeline cannot independently
 prove which remote Codex account the local CLI will use.
+
+## Autonomous Runs
+
+Use `humanReviewPolicy: "autonomous"` when a run should not ask a human to
+resolve newly encountered review or resume ambiguity. Store the policy in the
+config used to create the run:
+
+```json
+{
+  "checks": ["npm run typecheck", "npm run test:build"],
+  "runner": {
+    "type": "codex-exec",
+    "command": "codex",
+    "options": {
+      "sandboxForPlanning": "danger-full-access",
+      "sandboxForImplementation": "danger-full-access",
+      "approvalPolicy": "never",
+      "timeoutMs": 1800000,
+      "jsonEvents": false
+    }
+  },
+  "maxFixAttempts": 3,
+  "artifactRoot": ".agent-work",
+  "milestonePlanPolicy": "always",
+  "milestonePlanReviewPolicy": "scrupulous",
+  "humanReviewPolicy": "autonomous"
+}
+```
+
+`humanReviewPolicy` and the Codex sandbox/approval settings are separate
+controls. `humanReviewPolicy: "autonomous"` tells the orchestrator to repair or
+resolve human-review-equivalent conditions. The Codex settings above let the
+runner act without CLI approval prompts. Use that combination only for target
+repositories where unattended edits are intended.
+
+For autonomous runs that are expected to fix code, keep `maxFixAttempts` above
+`0`. The autonomous resolver can choose assumptions, repair malformed review
+JSON, convert ambiguous review output into actionable findings, and resolve
+unsafe transient resume states, but it still respects the configured
+code-changing fix budget.
+
+Run it like any other real Codex task:
+
+```bash
+node dist/cli/main.js \
+  --config orchestrator.autonomous.json \
+  --runner codex-exec \
+  --milestone 1 \
+  "Implement the next milestone from the supplied plan"
+```
+
+Exit codes remain the automation contract:
+
+- `0`: the requested run completed.
+- non-zero: deterministic checks, runner execution, orchestration validation,
+  or bounded autonomous repair/resolution failed.
+
+Autonomous runs write the normal run artifacts plus decision diagnostics:
+
+- `reviews/*review-repair-<n>.json`: malformed review repair attempts.
+- `reviews/*autonomous-resolution-<n>.json`: review ambiguity resolution
+  attempts with assumptions and rationale.
+- `logs/resolve-resume-state-<n>.json`: resume-state resolution attempts.
+- `milestones/25-milestone-<id>-review-summary.md`: review summary.
+- `milestones/90-goal-summary.md`: final goal summary with autonomous
+  decisions and residual risks.
+
+`humanReviewPolicy` is not a resume-time CLI override. Resume uses the policy
+snapshot saved when the run was created. To run autonomously, create the run
+with an autonomous config rather than trying to change the policy during
+resume.
 
 ## Task Launchers
 
@@ -268,7 +339,10 @@ Important locations:
 - `milestones/10-milestone-<id>-plan-draft.md` and `milestones/10-milestone-<id>-plan-review.md`: scrupulous-mode trace artifacts for the initial draft and its review.
 - `diffs/`: Git diffs captured by the orchestrator.
 - `checks/`: deterministic check reports.
-- `reviews/`: review verdict JSON.
+- `reviews/`: review verdict JSON plus autonomous review repair and resolution
+  diagnostics when applicable.
+- `logs/resolve-resume-state-<n>.json`: autonomous resume diagnostics when a
+  transient resume state needed resolution.
 - `runner/`: stdout, stderr, args, sandbox, timeout, and schema diagnostics for real runner calls.
 - `state.json`: final status and produced workflow artifact paths.
 
@@ -298,9 +372,9 @@ node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-policy auto
 node dist/cli/main.js --resume "$RUN_DIR" --milestone-plan-review-policy scrupulous
 ```
 
-Use `--allow-dirty` on resume only when the current working tree changes are intentional. Resume policy overrides are per-invocation and affect only future milestone planning work reached during that invocation.
+Use `--allow-dirty` on resume only when the current working tree changes are intentional. Milestone planning policy overrides are per-invocation and affect only future milestone planning work reached during that invocation.
 
-Scrupulous draft, review, and corrected-plan generation are internal to the existing `implementing` phase. If a run is interrupted during those steps, resume is conservative and stops for human review when implementation-ready artifacts are incomplete. The resume override above does not persist into the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state.
+Scrupulous draft, review, and corrected-plan generation are internal to the existing `implementing` phase. If a run is interrupted during those steps, the default `stop` policy is conservative and stops for human review when implementation-ready artifacts are incomplete. Under `humanReviewPolicy: "autonomous"`, the resume-state resolver gets bounded attempts to choose a safe continuation, normalization, or failure. The milestone plan override above does not persist into the saved config snapshot and does not regenerate artifacts for a milestone already stopped in a transient `implementing` state. `humanReviewPolicy` has no resume-time CLI override; resume uses the saved policy snapshot.
 
 ## Local Dashboard
 

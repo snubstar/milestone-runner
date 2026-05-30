@@ -124,6 +124,109 @@ test("writeGoalSummary writes a passed summary with changed files, artifacts, an
   }
 });
 
+test("writeGoalSummary includes autonomous decision artifacts and assumptions", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
+  try {
+    const paths = buildRunPaths({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-1",
+    });
+    await createRunDirectory(paths, "Add feature X");
+
+    const reviewResolutionPath = path.join(
+      paths.dirs.reviews,
+      "22-milestone-1-autonomous-resolution-1.json",
+    );
+    const resumeResolutionPath = path.join(
+      paths.dirs.logs,
+      "resolve-resume-state-1.json",
+    );
+    await writeJsonArtifact(reviewResolutionPath, {
+      phase: "resolve_review_ambiguity",
+      attempt: 1,
+      status: "resolved",
+      sourceCondition: "explicit_needs_human_review",
+      resolutionError: null,
+      resolution: {
+        resolution: {
+          summary: "Autonomous review accepted the milestone.",
+          rationale: "The recorded evidence covers the active milestone.",
+          assumptions: ["The diff maps to the active milestone."],
+          sourceCondition: "explicit_needs_human_review",
+        },
+        verdict: passingReview("Milestone 1 passed.", []),
+      },
+    });
+    await writeJsonArtifact(resumeResolutionPath, {
+      phase: "resolve_resume_state",
+      attempt: 1,
+      status: "resolved",
+      resolutionError: null,
+      resolution: {
+        action: "normalize_to_ready_for_review",
+        summary: "Autonomous resume normalized the state.",
+        rationale: "Required implementation artifacts were present.",
+        assumptions: ["Recorded implementation artifacts are complete."],
+        currentMilestoneId: 1,
+      },
+    });
+
+    const state: RunState = {
+      ...baseState(paths, tempDir),
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: null,
+      milestoneStatuses: {
+        "1": "passed",
+        "2": "pending",
+      },
+      artifacts: {
+        ...baseState(paths, tempDir).artifacts,
+        reviews: {
+          "1-resolution-1":
+            "reviews/22-milestone-1-autonomous-resolution-1.json",
+        },
+        logs: {
+          "resume-resolution-1": "logs/resolve-resume-state-1.json",
+        },
+      },
+      lastError: null,
+      updatedAt: "2026-05-10T12:00:00.000Z",
+    };
+
+    const result = await writeGoalSummary({
+      paths,
+      state,
+      metadata: testMilestoneMetadata(),
+      cwd: tempDir,
+      commandRunner: diffRunner({ stdout: "" }),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const content = await readFile(result.file, "utf8");
+    assert.match(content, /## Autonomous Decisions/);
+    assert.match(
+      content,
+      /Review resolution attempt 1 for milestone 1: resolved; artifact reviews\/22-milestone-1-autonomous-resolution-1\.json/,
+    );
+    assert.match(content, /source explicit_needs_human_review/);
+    assert.match(content, /assumptions The diff maps to the active milestone\./);
+    assert.match(
+      content,
+      /Resume resolution attempt 1 for milestone 1: resolved; artifact logs\/resolve-resume-state-1\.json; action normalize_to_ready_for_review/,
+    );
+    assert.match(
+      content,
+      /assumptions Recorded implementation artifacts are complete\./,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("writeGoalSummary writes blocked summaries with stop diagnostics and changed-file capture risk", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
   try {
@@ -312,6 +415,7 @@ function baseState(paths: RunPaths, cwd: string): RunState {
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
     now: new Date("2026-05-10T12:00:00.000Z"),
   });

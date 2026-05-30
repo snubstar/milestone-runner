@@ -908,6 +908,7 @@ test("runImplementationWorkflow persists check output and fails when checks fail
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
   try {
@@ -1009,6 +1010,7 @@ function implementationConfig(
     artifactRoot: ".agent-work",
     milestonePlanPolicy,
     milestonePlanReviewPolicy,
+    humanReviewPolicy: "stop",
   };
 }
 

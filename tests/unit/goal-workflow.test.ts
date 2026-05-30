@@ -656,6 +656,245 @@ test("runGoalWorkflow stops for human review on unsafe implementation resume", a
   }
 });
 
+test("runGoalWorkflow fails unsafe implementation resume under fail policy", async () => {
+  const context = await createReadyGoalContext({
+    config: testConfig({ humanReviewPolicy: "fail" }),
+  });
+  try {
+    const unsafeState: RunState = {
+      ...context.workflowOptions.initialState,
+      currentPhase: "implementing",
+      status: "implementing",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "implementing",
+        "2": "pending",
+      },
+      updatedAt: "2026-05-10T12:00:20.000Z",
+    };
+    await writeState(context.paths.files.state, unsafeState);
+
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: unsafeState,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /transient implementation work/);
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.milestoneStatuses["2"], "pending");
+    assert.deepEqual(runner.requests, []);
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "90-goal-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.match(summary, /transient implementation work/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow resolves ambiguous ready-for-review resume autonomously", async () => {
+  const context = await createReadyReviewGoalContext({
+    config: testConfig({ humanReviewPolicy: "autonomous" }),
+  });
+  try {
+    const ambiguousState: RunState = {
+      ...context.workflowOptions.initialState,
+      currentPhase: "ready_for_review",
+      status: "ready_for_review",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "planned",
+        "2": "pending",
+      },
+      updatedAt: "2026-05-10T12:00:20.000Z",
+    };
+    await writeState(context.paths.files.state, ambiguousState);
+
+    const runner = new RecordingRunner(new FakeRunner(), [
+      {
+        phase: "resolve_resume_state",
+        milestoneId: 1,
+        result: resumeResolutionResult({
+          action: "normalize_to_ready_for_review",
+          summary: "Normalize milestone 1 to ready for review.",
+        }),
+      },
+    ]);
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: ambiguousState,
+      runner,
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.state.currentPhase, "passed");
+    assert.equal(result.state.status, "passed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "passed");
+    assert.equal(result.state.milestoneStatuses["2"], "pending");
+    assert.equal(
+      result.state.artifacts.logs?.["resume-resolution-1"],
+      path.join("logs", "resolve-resume-state-1.json"),
+    );
+    assert.deepEqual(
+      runner.requests.slice(0, 2).map(({ phase, milestoneId }) => ({
+        phase,
+        milestoneId: milestoneId ?? null,
+      })),
+      [
+        { phase: "resolve_resume_state", milestoneId: 1 },
+        { phase: "review_milestone", milestoneId: 1 },
+      ],
+    );
+
+    const resolution = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.logs, "resolve-resume-state-1.json"),
+        "utf8",
+      ),
+    ) as { status?: string; resolution?: { action?: string } };
+    assert.equal(resolution.status, "resolved");
+    assert.equal(resolution.resolution?.action, "normalize_to_ready_for_review");
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow fails invalid autonomous resume resolution instead of asking for review", async () => {
+  const context = await createReadyReviewGoalContext({
+    config: testConfig({ humanReviewPolicy: "autonomous" }),
+  });
+  try {
+    const ambiguousState: RunState = {
+      ...context.workflowOptions.initialState,
+      currentPhase: "ready_for_review",
+      status: "ready_for_review",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "planned",
+        "2": "pending",
+      },
+      updatedAt: "2026-05-10T12:00:20.000Z",
+    };
+    await writeState(context.paths.files.state, ambiguousState);
+
+    const runner = new RecordingRunner(new FakeRunner(), [
+      {
+        phase: "resolve_resume_state",
+        milestoneId: 1,
+        result: resumeResolutionResult({
+          action: "normalize_to_passed",
+          summary: "Incorrectly normalize milestone 1 to passed.",
+        }),
+      },
+      {
+        phase: "resolve_resume_state",
+        milestoneId: 1,
+        result: resumeResolutionResult({
+          action: "normalize_to_passed",
+          summary: "Incorrectly normalize milestone 1 to passed again.",
+        }),
+      },
+    ]);
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: ambiguousState,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /Resume state resolution failed after 2 attempt/);
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.milestoneStatuses["2"], "pending");
+    assert.equal(
+      result.state.artifacts.logs?.["resume-resolution-2"],
+      path.join("logs", "resolve-resume-state-2.json"),
+    );
+    assert.equal(
+      runner.requests.some((request) => request.phase === "review_milestone"),
+      false,
+    );
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "90-goal-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.match(summary, /Resume state resolution failed after 2 attempt\(s\)\./);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow preserves already-terminal human-review resume under autonomous policy", async () => {
+  const context = await createReadyReviewGoalContext({
+    config: testConfig({ humanReviewPolicy: "autonomous" }),
+  });
+  try {
+    const terminalState: RunState = {
+      ...context.workflowOptions.initialState,
+      currentPhase: "needs_human_review",
+      status: "needs_human_review",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "needs_human_review",
+        "2": "pending",
+      },
+      lastError: {
+        message: "Legacy run already stopped for human review.",
+        phase: "needs_human_review",
+        occurredAt: "2026-05-10T12:00:20.000Z",
+      },
+      updatedAt: "2026-05-10T12:00:20.000Z",
+    };
+    await writeState(context.paths.files.state, terminalState);
+
+    const runner = new RecordingRunner(new FakeRunner());
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: terminalState,
+      runner,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.error, undefined);
+    assert.equal(result.state.currentPhase, "needs_human_review");
+    assert.equal(result.state.status, "needs_human_review");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "needs_human_review");
+    assert.deepEqual(runner.requests, []);
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "90-goal-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: needs_human_review/);
+    assert.match(summary, /Legacy run already stopped for human review/);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
 test("runGoalWorkflow stops for human review on unsafe review resume", async () => {
   const context = await createReadyReviewGoalContext();
   try {
@@ -922,6 +1161,126 @@ test("runGoalWorkflow does not request milestone 2 when milestone 1 needs human 
     assert.match(summary, /Status: needs_human_review/);
     assert.match(summary, /- 1: First milestone/);
     assert.match(summary, /manual product decision/);
+
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow fails fast when milestone 1 needs human review under fail policy", async () => {
+  const context = await createReadyGoalContext({
+    config: testConfig({ humanReviewPolicy: "fail" }),
+  });
+  try {
+    const runner = new RecordingRunner(new FakeRunner(), [
+      {
+        phase: "review_milestone",
+        milestoneId: 1,
+        result: reviewResult({
+          verdict: "needs_human_review",
+          summary: "The implementation depends on a manual product decision.",
+          findings: [],
+        }),
+      },
+    ]);
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /manual product decision/);
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.milestoneStatuses["2"], "pending");
+    assert.match(result.state.lastError?.message ?? "", /manual product decision/);
+    assert.equal(
+      result.state.artifacts.summaries?.goal,
+      path.join("milestones", "90-goal-summary.md"),
+    );
+    assertNoMilestone2Requests(runner.requests);
+
+    const reviewSummary = await readFile(
+      path.join(context.paths.dirs.milestones, "25-milestone-1-review-summary.md"),
+      "utf8",
+    );
+    assert.match(reviewSummary, /Status: failed/);
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "90-goal-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.match(summary, /- 1: First milestone/);
+    assert.match(summary, /manual product decision/);
+
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow fails autonomous unresolved review ambiguity without requesting milestone 2", async () => {
+  const context = await createReadyGoalContext({
+    config: testConfig({ humanReviewPolicy: "autonomous" }),
+  });
+  try {
+    const runner = new RecordingRunner(new FakeRunner(), [
+      {
+        phase: "review_milestone",
+        milestoneId: 1,
+        result: reviewResult({
+          verdict: "needs_human_review",
+          summary: "The implementation depends on a manual product decision.",
+          findings: [],
+        }),
+      },
+      {
+        phase: "resolve_review_ambiguity",
+        milestoneId: 1,
+        result: reviewResolutionResult({
+          verdict: "needs_human_review",
+          summary: "The resolver could not decide.",
+          findings: [],
+        }),
+      },
+      {
+        phase: "resolve_review_ambiguity",
+        milestoneId: 1,
+        result: reviewResolutionResult({
+          verdict: "needs_human_review",
+          summary: "The resolver could not decide.",
+          findings: [],
+        }),
+      },
+    ]);
+    const result = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /resolution failed after 2 attempt/);
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.currentMilestoneId, 1);
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.equal(result.state.milestoneStatuses["2"], "pending");
+    assertNoMilestone2Requests(runner.requests);
+    assert.equal(
+      result.state.artifacts.summaries?.goal,
+      path.join("milestones", "90-goal-summary.md"),
+    );
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "90-goal-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /Status: failed/);
+    assert.match(summary, /Review ambiguity resolution failed after 2 attempt\(s\)\./);
 
     assert.deepEqual(await readState(context.paths.files.state), result.state);
   } finally {
@@ -1342,6 +1701,7 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
     ...overrides,
   };
 }
@@ -1399,6 +1759,63 @@ function reviewResult(options: {
           "diffs/12-milestone-1.diff",
           "checks/13-milestone-1-checks.txt",
         ],
+      },
+      null,
+      2,
+    ),
+    exitCode: 0,
+  };
+}
+
+function reviewResolutionResult(options: {
+  verdict: "pass" | "fail" | "needs_human_review";
+  summary: string;
+  findings: unknown[];
+}): AgentRunResult {
+  return {
+    text: JSON.stringify(
+      {
+        resolution: {
+          summary: "Resolved review ambiguity autonomously.",
+          rationale: "The resolver selected the safest supported verdict.",
+          assumptions: [],
+          sourceCondition: "explicit_needs_human_review",
+        },
+        verdict: {
+          verdict: options.verdict,
+          summary: options.summary,
+          findings: options.findings,
+          reviewedArtifacts: [
+            "reviews/20-milestone-1-review.json",
+            "diffs/12-milestone-1.diff",
+            "checks/13-milestone-1-checks.txt",
+          ],
+        },
+      },
+      null,
+      2,
+    ),
+    exitCode: 0,
+  };
+}
+
+function resumeResolutionResult(options: {
+  action:
+    | "continue"
+    | "normalize_to_ready_for_review"
+    | "normalize_to_passed"
+    | "fail";
+  summary: string;
+  currentMilestoneId?: number | null;
+}): AgentRunResult {
+  return {
+    text: JSON.stringify(
+      {
+        action: options.action,
+        summary: options.summary,
+        rationale: "The fake resolver selected the requested resume action.",
+        assumptions: [],
+        currentMilestoneId: options.currentMilestoneId ?? 1,
       },
       null,
       2,

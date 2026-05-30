@@ -104,6 +104,11 @@
       "type": "string",
       "description": "Controls whether per-milestone implementation plans are reviewed before implementation. Missing values default to normal.",
       "enum": ["normal", "scrupulous"]
+    },
+    "humanReviewPolicy": {
+      "type": "string",
+      "description": "Controls how human-review-equivalent outcomes are handled. Missing values default to stop.",
+      "enum": ["stop", "fail", "autonomous"]
     }
   }
 }

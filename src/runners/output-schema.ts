@@ -8,6 +8,9 @@ export type OutputSchemaResult =
 const phaseSchemaRelativePaths = new Map<string, string>([
   ["final_plan_json", path.join("schemas", "milestones.schema.json")],
   ["review_milestone", path.join("schemas", "review-verdict.schema.json")],
+  ["repair_review_verdict", path.join("schemas", "review-verdict.schema.json")],
+  ["resolve_review_ambiguity", path.join("schemas", "review-resolution.schema.json")],
+  ["resolve_resume_state", path.join("schemas", "resume-resolution.schema.json")],
 ]);
 
 export function outputSchemaRelativePathForPhase(phase: string): string | null {

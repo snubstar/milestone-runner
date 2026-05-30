@@ -450,6 +450,7 @@ function state(options: {
         artifactRoot: ".agent-work",
         milestonePlanPolicy: "always",
         milestonePlanReviewPolicy: "normal",
+        humanReviewPolicy: "stop",
       },
       now: new Date("2026-05-10T12:00:00.000Z"),
     }),

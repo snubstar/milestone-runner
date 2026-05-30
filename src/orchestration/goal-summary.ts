@@ -33,12 +33,31 @@ export interface GoalSummaryReviewRef extends GoalSummaryArtifactRef {
   error?: string;
 }
 
+export interface GoalSummaryAutonomousDecisionRef {
+  kind:
+    | "review_repair"
+    | "review_resolution"
+    | "resume_resolution"
+    | "unknown";
+  path: string;
+  milestoneId: number | null;
+  attempt: number | null;
+  status: string | null;
+  action?: string;
+  sourceCondition?: string;
+  summary?: string;
+  rationale?: string;
+  assumptions: string[];
+  error?: string;
+}
+
 export interface FormatGoalSummaryOptions {
   state: RunState;
   metadata: MilestoneMetadata;
   changedFiles: string[];
   latestChecks: GoalSummaryArtifactRef[];
   latestReviews: GoalSummaryReviewRef[];
+  autonomousDecisions: GoalSummaryAutonomousDecisionRef[];
   residualRisks: string[];
 }
 
@@ -90,6 +109,10 @@ export async function writeGoalSummary(
       options.state,
       options.metadata,
     );
+    const autonomousDecisions = await readAutonomousDecisionArtifacts(
+      options.paths.runDir,
+      options.state,
+    );
     const residualRisks = buildResidualRisks({
       state: options.state,
       metadata: options.metadata,
@@ -97,6 +120,7 @@ export async function writeGoalSummary(
       changedFiles,
       latestChecks,
       latestReviews,
+      autonomousDecisions,
     });
 
     const content = formatGoalSummary({
@@ -105,6 +129,7 @@ export async function writeGoalSummary(
       changedFiles: changedFiles.files,
       latestChecks,
       latestReviews,
+      autonomousDecisions,
       residualRisks,
     });
 
@@ -168,6 +193,10 @@ export function formatGoalSummary(options: FormatGoalSummaryOptions): string {
     "## Latest Reviews",
     "",
     ...formatReviewRefs(options.latestReviews),
+    "",
+    "## Autonomous Decisions",
+    "",
+    ...formatAutonomousDecisionRefs(options.autonomousDecisions),
     "",
     "## Fix Attempts",
     "",
@@ -370,6 +399,7 @@ function buildResidualRisks(options: {
   changedFiles: ChangedFilesResult;
   latestChecks: GoalSummaryArtifactRef[];
   latestReviews: GoalSummaryReviewRef[];
+  autonomousDecisions: GoalSummaryAutonomousDecisionRef[];
 }): string[] {
   const risks: string[] = [];
 
@@ -386,6 +416,15 @@ function buildResidualRisks(options: {
 
   for (const diagnostic of options.diagnostics) {
     risks.push(formatDiagnostic(diagnostic));
+  }
+
+  if (options.state.status !== "passed") {
+    for (const decision of options.autonomousDecisions) {
+      if (decision.error === undefined && decision.status !== "unresolved") continue;
+      const subject = formatAutonomousDecisionSubject(decision);
+      const reason = decision.error ?? "unresolved";
+      risks.push(`${subject} at ${decision.path} did not resolve: ${reason}`);
+    }
   }
 
   for (const review of options.latestReviews) {
@@ -456,6 +495,283 @@ function formatReviewRefs(refs: GoalSummaryReviewRef[]): string[] {
   });
 }
 
+async function readAutonomousDecisionArtifacts(
+  runDir: string,
+  state: RunState,
+): Promise<GoalSummaryAutonomousDecisionRef[]> {
+  const refs: Array<{ key: string; path: string }> = [];
+  for (const [key, artifactPath] of Object.entries(state.artifacts.reviews ?? {})) {
+    if (isAutonomousReviewArtifact(key, artifactPath)) {
+      refs.push({ key, path: artifactPath });
+    }
+  }
+  for (const [key, artifactPath] of Object.entries(state.artifacts.logs ?? {})) {
+    if (isResumeResolutionArtifact(key, artifactPath)) {
+      refs.push({ key, path: artifactPath });
+    }
+  }
+
+  const decisions = await Promise.all(
+    refs.map((ref) => readAutonomousDecisionArtifact(runDir, ref)),
+  );
+  return decisions.sort(compareAutonomousDecisionRefs);
+}
+
+async function readAutonomousDecisionArtifact(
+  runDir: string,
+  ref: { key: string; path: string },
+): Promise<GoalSummaryAutonomousDecisionRef> {
+  const fallback = autonomousDecisionFallback(ref.key, ref.path);
+  const resolvedPath = resolveRunArtifactPath(runDir, ref.path);
+  if (!resolvedPath.ok) {
+    return {
+      ...fallback,
+      error: resolvedPath.error,
+    };
+  }
+
+  try {
+    const raw = await readFile(resolvedPath.path, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return autonomousDecisionFromDiagnostic(ref.key, ref.path, parsed);
+  } catch (error) {
+    return {
+      ...fallback,
+      error: formatError(error),
+    };
+  }
+}
+
+function autonomousDecisionFromDiagnostic(
+  key: string,
+  artifactPath: string,
+  value: unknown,
+): GoalSummaryAutonomousDecisionRef {
+  const fallback = autonomousDecisionFallback(key, artifactPath);
+  if (!isRecord(value)) {
+    return {
+      ...fallback,
+      error: "Autonomous decision artifact is not a JSON object.",
+    };
+  }
+
+  const kind = kindFromPhase(stringField(value.phase)) ?? fallback.kind;
+  const status = stringField(value.status);
+  const attempt = numberField(value.attempt) ?? fallback.attempt;
+  const resolution = recordField(value.resolution);
+
+  if (kind === "review_resolution") {
+    const resolutionMetadata = recordField(resolution?.resolution);
+    return {
+      kind,
+      path: artifactPath,
+      milestoneId: fallback.milestoneId,
+      attempt,
+      status,
+      sourceCondition:
+        stringField(value.sourceCondition) ??
+        stringField(resolutionMetadata?.sourceCondition) ??
+        undefined,
+      summary: stringField(resolutionMetadata?.summary) ?? undefined,
+      rationale: stringField(resolutionMetadata?.rationale) ?? undefined,
+      assumptions: stringListField(resolutionMetadata?.assumptions),
+      error: stringField(value.resolutionError) ?? undefined,
+    };
+  }
+
+  if (kind === "resume_resolution") {
+    return {
+      kind,
+      path: artifactPath,
+      milestoneId:
+        numberField(resolution?.currentMilestoneId) ??
+        numberField(recordField(value.originalDecision)?.currentMilestoneId) ??
+        fallback.milestoneId,
+      attempt,
+      status,
+      action: stringField(resolution?.action) ?? undefined,
+      summary: stringField(resolution?.summary) ?? undefined,
+      rationale: stringField(resolution?.rationale) ?? undefined,
+      assumptions: stringListField(resolution?.assumptions),
+      error: stringField(value.resolutionError) ?? undefined,
+    };
+  }
+
+  if (kind === "review_repair") {
+    return {
+      kind,
+      path: artifactPath,
+      milestoneId: fallback.milestoneId,
+      attempt,
+      status,
+      summary: stringField(recordField(value.repairedVerdict)?.summary) ?? undefined,
+      assumptions: [],
+      error: stringField(value.repairError) ?? undefined,
+    };
+  }
+
+  return {
+    ...fallback,
+    status,
+    error: stringField(value.error) ?? undefined,
+  };
+}
+
+function autonomousDecisionFallback(
+  key: string,
+  artifactPath: string,
+): GoalSummaryAutonomousDecisionRef {
+  return {
+    kind: kindFromArtifact(key, artifactPath),
+    path: artifactPath,
+    milestoneId: milestoneIdFromAutonomousArtifact(key, artifactPath),
+    attempt: attemptFromAutonomousArtifact(key, artifactPath),
+    status: null,
+    assumptions: [],
+  };
+}
+
+function isAutonomousReviewArtifact(key: string, artifactPath: string): boolean {
+  return (
+    /(?:^|-)repair-\d+$/.test(key) ||
+    /(?:^|-)resolution-\d+$/.test(key) ||
+    /review-repair-\d+\.json$/.test(artifactPath) ||
+    /autonomous-resolution-\d+\.json$/.test(artifactPath)
+  );
+}
+
+function isResumeResolutionArtifact(key: string, artifactPath: string): boolean {
+  return (
+    /^resume-resolution-\d+$/.test(key) ||
+    /resolve-resume-state-\d+\.json$/.test(artifactPath)
+  );
+}
+
+function kindFromPhase(
+  phase: string | null,
+): GoalSummaryAutonomousDecisionRef["kind"] | null {
+  if (phase === "repair_review_verdict") return "review_repair";
+  if (phase === "resolve_review_ambiguity") return "review_resolution";
+  if (phase === "resolve_resume_state") return "resume_resolution";
+  return null;
+}
+
+function kindFromArtifact(
+  key: string,
+  artifactPath: string,
+): GoalSummaryAutonomousDecisionRef["kind"] {
+  if (isResumeResolutionArtifact(key, artifactPath)) return "resume_resolution";
+  if (/(?:^|-)repair-\d+$/.test(key) || /review-repair-\d+\.json$/.test(artifactPath)) {
+    return "review_repair";
+  }
+  if (
+    /(?:^|-)resolution-\d+$/.test(key) ||
+    /autonomous-resolution-\d+\.json$/.test(artifactPath)
+  ) {
+    return "review_resolution";
+  }
+  return "unknown";
+}
+
+function milestoneIdFromAutonomousArtifact(
+  key: string,
+  artifactPath: string,
+): number | null {
+  const keyMatch = key.match(/^(\d+)(?:$|-)/);
+  const pathMatch = artifactPath.match(/milestone-(\d+)/);
+  const value = keyMatch?.[1] ?? pathMatch?.[1];
+  if (value === undefined) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function attemptFromAutonomousArtifact(
+  key: string,
+  artifactPath: string,
+): number | null {
+  const keyMatch = key.match(/(?:repair|resolution)-(\d+)$/);
+  const pathMatch = artifactPath.match(
+    /(?:repair|resolution|resolve-resume-state)-(\d+)\.json$/,
+  );
+  const value = keyMatch?.[1] ?? pathMatch?.[1];
+  if (value === undefined) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function compareAutonomousDecisionRefs(
+  left: GoalSummaryAutonomousDecisionRef,
+  right: GoalSummaryAutonomousDecisionRef,
+): number {
+  const milestoneCompare =
+    (left.milestoneId ?? Number.MAX_SAFE_INTEGER) -
+    (right.milestoneId ?? Number.MAX_SAFE_INTEGER);
+  if (milestoneCompare !== 0) return milestoneCompare;
+
+  const kindCompare = kindSortValue(left.kind) - kindSortValue(right.kind);
+  if (kindCompare !== 0) return kindCompare;
+
+  const attemptCompare =
+    (left.attempt ?? Number.MAX_SAFE_INTEGER) -
+    (right.attempt ?? Number.MAX_SAFE_INTEGER);
+  if (attemptCompare !== 0) return attemptCompare;
+
+  return left.path.localeCompare(right.path);
+}
+
+function kindSortValue(kind: GoalSummaryAutonomousDecisionRef["kind"]): number {
+  switch (kind) {
+    case "review_repair":
+      return 1;
+    case "review_resolution":
+      return 2;
+    case "resume_resolution":
+      return 3;
+    case "unknown":
+      return 4;
+  }
+}
+
+function formatAutonomousDecisionRefs(
+  refs: GoalSummaryAutonomousDecisionRef[],
+): string[] {
+  if (refs.length === 0) {
+    return ["- No autonomous repair or resolution artifacts recorded."];
+  }
+
+  return refs.map((ref) => {
+    const parts = [
+      `${formatAutonomousDecisionSubject(ref)}: ${ref.status ?? "unknown"}`,
+      `artifact ${ref.path}`,
+    ];
+    if (ref.action) parts.push(`action ${ref.action}`);
+    if (ref.sourceCondition) parts.push(`source ${ref.sourceCondition}`);
+    if (ref.summary) parts.push(`summary ${ref.summary}`);
+    if (ref.assumptions.length > 0) {
+      parts.push(`assumptions ${ref.assumptions.join("; ")}`);
+    }
+    if (ref.error) parts.push(`error ${ref.error}`);
+    return `- ${parts.join("; ")}`;
+  });
+}
+
+function formatAutonomousDecisionSubject(
+  ref: GoalSummaryAutonomousDecisionRef,
+): string {
+  const milestone = ref.milestoneId === null ? "" : ` for milestone ${ref.milestoneId}`;
+  const attempt = ref.attempt === null ? "" : ` attempt ${ref.attempt}`;
+  switch (ref.kind) {
+    case "review_repair":
+      return `Review repair${attempt}${milestone}`;
+    case "review_resolution":
+      return `Review resolution${attempt}${milestone}`;
+    case "resume_resolution":
+      return `Resume resolution${attempt}${milestone}`;
+    case "unknown":
+      return `Autonomous decision${attempt}${milestone}`;
+  }
+}
+
 function formatFixAttempts(state: RunState, milestones: Milestone[]): string[] {
   if (milestones.length === 0) return ["- None"];
 
@@ -505,6 +821,29 @@ function formatDetails(value: string | object | unknown[] | null): string {
   if (typeof value === "string") return value;
   if (value === null) return "null";
   return JSON.stringify(sortJson(value));
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function recordField(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
+}
+
+function stringListField(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sortJson(value: unknown): unknown {

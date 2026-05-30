@@ -312,7 +312,13 @@ test("milestone prompts render with workflow-shaped values", async () => {
 });
 
 test("review prompts expose the expected variables", async () => {
-  const prompts = await loadPrompts(["review-milestone", "fix-review-findings"], {
+  const prompts = await loadPrompts([
+    "review-milestone",
+    "repair-review-verdict",
+    "resolve-review-ambiguity",
+    "resolve-resume-state",
+    "fix-review-findings",
+  ], {
     cwd: process.cwd(),
   });
 
@@ -332,6 +338,57 @@ test("review prompts expose the expected variables", async () => {
     "reviewedArtifacts",
     "state",
   ]);
+  assert.deepEqual(findPromptVariables(prompts.value["repair-review-verdict"]?.text ?? ""), [
+    "activeMilestone",
+    "checks",
+    "diff",
+    "expectedSchemaContract",
+    "goal",
+    "implementationReport",
+    "latestChecksPassed",
+    "milestonePlan",
+    "previousRepairError",
+    "previousRepairOutput",
+    "rawOutput",
+    "repairAttempt",
+    "reviewEvidence",
+    "reviewedArtifacts",
+    "state",
+    "validationError",
+  ]);
+  assert.deepEqual(findPromptVariables(prompts.value["resolve-review-ambiguity"]?.text ?? ""), [
+    "activeMilestone",
+    "checks",
+    "diff",
+    "expectedSchemaContract",
+    "goal",
+    "implementationReport",
+    "latestChecksPassed",
+    "milestonePlan",
+    "previousResolutionError",
+    "previousResolutionOutput",
+    "reason",
+    "resolutionAttempt",
+    "reviewEvidence",
+    "reviewedArtifacts",
+    "sourceCondition",
+    "sourceReviewPath",
+    "sourceVerdict",
+    "state",
+  ]);
+  assert.deepEqual(findPromptVariables(prompts.value["resolve-resume-state"]?.text ?? ""), [
+    "allowedActions",
+    "artifactSummary",
+    "expectedSchemaContract",
+    "goal",
+    "milestoneMetadata",
+    "originalDecisionDetails",
+    "originalDecisionMessage",
+    "previousResolutionError",
+    "previousResolutionOutput",
+    "resolutionAttempt",
+    "state",
+  ]);
   assert.deepEqual(findPromptVariables(prompts.value["fix-review-findings"]?.text ?? ""), [
     "activeMilestone",
     "blockingFindings",
@@ -344,7 +401,13 @@ test("review prompts expose the expected variables", async () => {
 });
 
 test("review prompts render with workflow-shaped values", async () => {
-  const prompts = await loadPrompts(["review-milestone", "fix-review-findings"], {
+  const prompts = await loadPrompts([
+    "review-milestone",
+    "repair-review-verdict",
+    "resolve-review-ambiguity",
+    "resolve-resume-state",
+    "fix-review-findings",
+  ], {
     cwd: process.cwd(),
   });
 
@@ -376,6 +439,81 @@ test("review prompts render with workflow-shaped values", async () => {
     assert.match(reviewPrompt.value, /review evidence artifact/);
   }
 
+  const repairPrompt = renderPrompt(prompts.value["repair-review-verdict"]?.text ?? "", {
+    goal: "Add feature X",
+    activeMilestone: { id: 1, title: "Milestone 1" },
+    milestonePlan: "# Milestone Plan",
+    implementationReport: "# Implementation",
+    diff: "diff --git a/file b/file",
+    checks: "Overall: passed",
+    latestChecksPassed: true,
+    reviewEvidence: "# Review Evidence",
+    reviewedArtifacts: ["reviews/20-milestone-1-review-malformed.json"],
+    state: { currentPhase: "reviewing" },
+    repairAttempt: 1,
+    validationError: "Invalid review verdict JSON",
+    previousRepairOutput: "None.",
+    previousRepairError: "None.",
+    rawOutput: "not json",
+    expectedSchemaContract: "Return a verdict object.",
+  });
+  assert.equal(repairPrompt.ok, true);
+  if (repairPrompt.ok) {
+    assert.match(repairPrompt.value, /Repair malformed milestone review output/);
+    assert.match(repairPrompt.value, /Invalid review verdict JSON/);
+    assert.match(repairPrompt.value, /Return a verdict object/);
+  }
+
+  const resolutionPrompt = renderPrompt(prompts.value["resolve-review-ambiguity"]?.text ?? "", {
+    goal: "Add feature X",
+    activeMilestone: { id: 1, title: "Milestone 1" },
+    milestonePlan: "# Milestone Plan",
+    implementationReport: "# Implementation",
+    diff: "diff --git a/file b/file",
+    checks: "Overall: passed",
+    latestChecksPassed: true,
+    reviewEvidence: "# Review Evidence",
+    reviewedArtifacts: ["reviews/20-milestone-1-review.json"],
+    state: { currentPhase: "reviewing" },
+    resolutionAttempt: 1,
+    sourceCondition: "explicit_needs_human_review",
+    reason: "Reviewer requested human judgment.",
+    previousResolutionOutput: "None.",
+    previousResolutionError: "None.",
+    expectedSchemaContract: "Return a resolution wrapper.",
+    sourceReviewPath: "reviews/20-milestone-1-review.json",
+    sourceVerdict: { verdict: "needs_human_review" },
+  });
+  assert.equal(resolutionPrompt.ok, true);
+  if (resolutionPrompt.ok) {
+    assert.match(resolutionPrompt.value, /Resolve a review verdict/);
+    assert.match(resolutionPrompt.value, /explicit_needs_human_review/);
+    assert.match(resolutionPrompt.value, /Return a resolution wrapper/);
+  }
+
+  const resumeResolutionPrompt = renderPrompt(
+    prompts.value["resolve-resume-state"]?.text ?? "",
+    {
+      goal: "Add feature X",
+      state: { currentPhase: "ready_for_review" },
+      milestoneMetadata: { milestones: [{ id: 1, title: "Milestone 1" }] },
+      resolutionAttempt: 1,
+      originalDecisionMessage: "Resume state is ambiguous.",
+      originalDecisionDetails: { milestoneId: 1 },
+      previousResolutionOutput: "None.",
+      previousResolutionError: "None.",
+      expectedSchemaContract: "Return a resume action.",
+      allowedActions: ["normalize_to_ready_for_review", "fail"],
+      artifactSummary: "- summaries.1: milestones/14-milestone-1-summary.md (exists)",
+    },
+  );
+  assert.equal(resumeResolutionPrompt.ok, true);
+  if (resumeResolutionPrompt.ok) {
+    assert.match(resumeResolutionPrompt.value, /Resolve a saved run state/);
+    assert.match(resumeResolutionPrompt.value, /Resume state is ambiguous/);
+    assert.match(resumeResolutionPrompt.value, /Return a resume action/);
+  }
+
   const fixPrompt = renderPrompt(prompts.value["fix-review-findings"]?.text ?? "", {
     goal: "Add feature X",
     activeMilestone: { id: 1, title: "Milestone 1" },
@@ -404,6 +542,9 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
     "final-milestone-plan",
     "implement-milestone",
     "review-milestone",
+    "repair-review-verdict",
+    "resolve-review-ambiguity",
+    "resolve-resume-state",
     "fix-review-findings",
   ], {
     cwd: process.cwd(),
@@ -452,6 +593,18 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
   assert.match(text("review-milestone"), /This phase is schema-constrained/);
   assert.match(text("review-milestone"), /Return only JSON matching `schemas\/review-verdict\.schema\.json`/);
   assert.match(text("review-milestone"), /Do not update files, run commands, create commits, or change state/);
+
+  assert.match(text("repair-review-verdict"), /Repair malformed milestone review output/);
+  assert.match(text("repair-review-verdict"), /Return only JSON matching `schemas\/review-verdict\.schema\.json`/);
+  assert.match(text("repair-review-verdict"), /choose the safest valid verdict supported by the evidence/);
+
+  assert.match(text("resolve-review-ambiguity"), /Resolve a review verdict/);
+  assert.match(text("resolve-review-ambiguity"), /Return only JSON matching `schemas\/review-resolution\.schema\.json`/);
+  assert.match(text("resolve-review-ambiguity"), /Return `pass` only when latest deterministic checks passed/);
+
+  assert.match(text("resolve-resume-state"), /Resolve a saved run state/);
+  assert.match(text("resolve-resume-state"), /Return only JSON matching `schemas\/resume-resolution\.schema\.json`/);
+  assert.match(text("resolve-resume-state"), /Do not invent artifact paths/);
 
   assert.match(text("fix-review-findings"), /The orchestrator will capture the Git diff, rerun checks/);
   assert.match(text("fix-review-findings"), /Do not fix non-blocking findings/);

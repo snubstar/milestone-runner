@@ -119,6 +119,73 @@ test("readDashboardRun exposes review evidence artifacts in the reviews group", 
   }
 });
 
+test("readDashboardRun exposes autonomous repair and resolution artifacts", async () => {
+  const context = await createDashboardRunContext("run-autonomous-artifacts");
+  try {
+    await writeFile(
+      path.join(context.paths.dirs.reviews, "21-milestone-1-review-repair-1.json"),
+      "{}",
+      "utf8",
+    );
+    await writeFile(
+      path.join(
+        context.paths.dirs.reviews,
+        "22-milestone-1-autonomous-resolution-1.json",
+      ),
+      "{}",
+      "utf8",
+    );
+    await writeFile(
+      path.join(context.paths.dirs.logs, "resolve-resume-state-1.json"),
+      "{}",
+      "utf8",
+    );
+    await writeDashboardState(context.paths, {
+      currentPhase: "passed",
+      status: "passed",
+      currentMilestoneId: 1,
+      milestoneStatuses: { "1": "passed" },
+      artifacts: {
+        reviews: {
+          "1-repair-1": "reviews/21-milestone-1-review-repair-1.json",
+          "1-resolution-1":
+            "reviews/22-milestone-1-autonomous-resolution-1.json",
+        },
+        logs: {
+          "resume-resolution-1": "logs/resolve-resume-state-1.json",
+        },
+      },
+    });
+
+    const result = await readDashboardRun(
+      readerOptions(context, "run-autonomous-artifacts"),
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(
+        result.run.artifacts.reviews.map((artifact) => artifact.relativePath),
+        [
+          "reviews/21-milestone-1-review-repair-1.json",
+          "reviews/22-milestone-1-autonomous-resolution-1.json",
+        ],
+      );
+      assert.equal(result.run.artifacts.reviews[0]?.milestoneId, 1);
+      assert.equal(result.run.artifacts.reviews[1]?.milestoneId, 1);
+      assert.equal(
+        result.run.artifacts.logs.some(
+          (artifact) =>
+            artifact.relativePath === "logs/resolve-resume-state-1.json" &&
+            artifact.source === "state",
+        ),
+        true,
+      );
+    }
+  } finally {
+    await rm(context.tempDir, { recursive: true, force: true });
+  }
+});
+
 test("readDashboardRun exposes normalized input provenance with safe artifact links", async () => {
   const context = await createDashboardRunContext("run-inputs");
   try {

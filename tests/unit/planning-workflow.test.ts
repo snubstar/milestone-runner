@@ -1029,6 +1029,7 @@ async function createWorkflowContext(): Promise<WorkflowContext> {
     artifactRoot: ".agent-work",
     milestonePlanPolicy: "always",
     milestonePlanReviewPolicy: "normal",
+    humanReviewPolicy: "stop",
   };
 
   await createRunDirectory(paths, goal);

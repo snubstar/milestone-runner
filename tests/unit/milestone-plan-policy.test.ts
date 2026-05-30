@@ -290,6 +290,7 @@ function state(): RunState {
       artifactRoot: ".agent-work",
       milestonePlanPolicy: "always",
       milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
     },
   });
 }
