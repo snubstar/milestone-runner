@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,16 @@ import {
   outputSchemaRelativePathForPhase,
   resolveOutputSchemaPathForPhase,
 } from "../../src/runners/output-schema.js";
+
+const schemaConstrainedPhases = [
+  "final_plan_json",
+  "review_milestone",
+  "repair_review_verdict",
+  "resolve_review_ambiguity",
+  "resolve_resume_state",
+];
+
+const unsupportedCodexOutputSchemaKeywords = new Set(["uniqueItems"]);
 
 test("outputSchemaRelativePathForPhase maps schema-constrained phases", () => {
   assert.equal(
@@ -107,3 +117,43 @@ test("resolveOutputSchemaPathForPhase reports missing required schemas", async (
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("Codex output schemas do not use known unsupported JSON Schema keywords", async () => {
+  const schemaPaths = new Set(
+    schemaConstrainedPhases
+      .map((phase) => outputSchemaRelativePathForPhase(phase))
+      .filter((schemaPath): schemaPath is string => schemaPath !== null),
+  );
+  const violations: string[] = [];
+
+  for (const relativeSchemaPath of schemaPaths) {
+    const schemaPath = path.resolve(process.cwd(), relativeSchemaPath);
+    const schema = JSON.parse(await readFile(schemaPath, "utf8")) as unknown;
+    collectUnsupportedSchemaKeywords(schema, relativeSchemaPath, violations);
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+function collectUnsupportedSchemaKeywords(
+  value: unknown,
+  jsonPath: string,
+  violations: string[],
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      collectUnsupportedSchemaKeywords(item, `${jsonPath}[${index}]`, violations);
+    });
+    return;
+  }
+
+  if (value === null || typeof value !== "object") return;
+
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = `${jsonPath}.${key}`;
+    if (unsupportedCodexOutputSchemaKeywords.has(key)) {
+      violations.push(`${childPath} is not supported by Codex output schemas.`);
+    }
+    collectUnsupportedSchemaKeywords(child, childPath, violations);
+  }
+}
