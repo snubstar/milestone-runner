@@ -1,12 +1,13 @@
-import { access, readFile } from "node:fs/promises";
+import { access, copyFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { resolveRunArtifactPath } from "../artifacts/paths.js";
+import { resolveRunArtifactPath, type RunPaths } from "../artifacts/paths.js";
 import {
   buildPlanningArtifactPaths,
   writeJsonArtifact,
 } from "../artifacts/planning-artifacts.js";
 import { runImplementationWorkflow } from "../implementation/implementation-workflow.js";
+import { captureGitTree } from "../git/git-diff.js";
 import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
 import { runPlanningWorkflow } from "../planning/planning-workflow.js";
@@ -39,6 +40,7 @@ import {
   type TimingWarning,
 } from "../timings/timing-types.js";
 import { writeGoalSummary, type GoalSummaryDiagnostic } from "./goal-summary.js";
+import { resolveMilestoneBaseline } from "./milestone-baseline.js";
 import {
   selectNextRunnableMilestone,
   type MilestoneSelectionDecision,
@@ -47,6 +49,7 @@ import {
   normalizeStateForGoalResume,
   type ResumeDecision,
 } from "./resume-state.js";
+import { actionForResumeRecoveryMode } from "./resume-recovery.js";
 import {
   isSupervisedHumanReviewPolicy,
   shouldAttemptAutonomousResolution,
@@ -66,6 +69,12 @@ const emptyMetadata: MilestoneMetadata = { milestones: [] };
 const resumeWithoutMilestoneNextAction =
   "resume without --milestone to continue remaining milestones";
 const resumeResolutionAttemptLimit = 2;
+const retryResetArtifactMapKeys = [
+  "diffs",
+  "checks",
+  "summaries",
+  "checkFailures",
+] as const;
 const resumeResolutionSchemaContract = [
   "Return a JSON object with exactly these root fields:",
   '- action: one of "continue", "normalize_to_ready_for_review", "normalize_to_passed", or "fail"',
@@ -316,6 +325,10 @@ export async function runGoalWorkflow(
   async function finalizeWorkflowResult(
     primaryResult: GoalWorkflowResult,
   ): Promise<GoalWorkflowResult> {
+    if (primaryResult.nextAction === "blocked_dirty_retry_worktree") {
+      return primaryResult;
+    }
+
     const runEndedAt = clock().toISOString();
     await appendInvocationTimelineEvent({
       paths: options.paths,
@@ -407,7 +420,9 @@ export async function runGoalWorkflow(
   }
 
   async function applyResumeNormalization(): Promise<GoalWorkflowResult | null> {
+    const recoveryMode = options.resumeRecoveryMode ?? "none";
     if (
+      recoveryMode === "none" &&
       state.status !== "failed" &&
       state.status !== "needs_human_review" &&
       isPlanningResumePhase(state.currentPhase)
@@ -438,7 +453,7 @@ export async function runGoalWorkflow(
     if (targetExistsResult) return targetExistsResult;
 
     return handleResumeDecision(
-      normalizeStateForGoalResume(state, metadata),
+      normalizeStateForGoalResume(state, metadata, { recoveryMode }),
       metadata,
     );
   }
@@ -447,6 +462,17 @@ export async function runGoalWorkflow(
     decision: ResumeDecision,
     selectedMetadata: MilestoneMetadata,
   ): Promise<GoalWorkflowResult | null> {
+    if (options.resumeRecoveryMode !== undefined && options.resumeRecoveryMode !== "none") {
+      if (decision.kind !== "recover") {
+        return {
+          ok: false,
+          state,
+          error: `Recovery mode ${options.resumeRecoveryMode} cannot continue from this resume state.`,
+          nextAction: "blocked_unsafe_resume",
+        };
+      }
+    }
+
     if (decision.kind === "continue") {
       state = decision.state;
       return null;
@@ -500,6 +526,10 @@ export async function runGoalWorkflow(
       });
     }
 
+    if (decision.kind === "recover") {
+      return handleRecoveryResumeDecision(decision, selectedMetadata);
+    }
+
     if (decision.kind === "normalize_to_ready_for_review") {
       const now = clock();
       let nextState = setStatePhase(state, "ready_for_review", now);
@@ -533,6 +563,206 @@ export async function runGoalWorkflow(
     }
 
     return handleResumeNeedsHumanReview(decision, selectedMetadata);
+  }
+
+  async function handleRecoveryResumeDecision(
+    decision: Extract<ResumeDecision, { kind: "recover" }>,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult | null> {
+    const targetMilestoneId = options.executionLimits?.targetMilestoneId;
+    if (
+      targetMilestoneId !== undefined &&
+      targetMilestoneId !== decision.milestoneId
+    ) {
+      return {
+        ok: false,
+        state,
+        error: `Recovery mode ${decision.mode} targets active failed milestone ${decision.milestoneId}; requested milestone ${targetMilestoneId} is not recoverable.`,
+        nextAction: "blocked_unsafe_resume",
+      };
+    }
+
+    const nextAction = actionForResumeRecoveryMode(decision.mode);
+    if (decision.mode === "retry_failed") {
+      return retryFailedMilestoneFromResume(decision, selectedMetadata);
+    }
+
+    if (decision.mode === "repair_failed" || decision.mode === "recheck_failed") {
+      const result = await runImplementationWorkflow({
+        goal: options.goal,
+        config: options.config,
+        paths: options.paths,
+        initialState: state,
+        runner: options.runner,
+        commandRunner: options.commandRunner,
+        cwd: options.cwd,
+        promptDir: options.promptDir,
+        schemaRoot: options.schemaRoot,
+        checkTimingCollector,
+        timingWarnings,
+        resumeRecoveryMode: decision.mode,
+        now: clock,
+      });
+
+      state = result.state;
+      if (!result.ok) {
+        return finishTerminal({
+          state,
+          metadata: await readMetadataOrEmpty(),
+          ok: false,
+          originalError: result.error,
+        });
+      }
+
+      metadata = result.metadata;
+      return null;
+    }
+
+    return {
+      ok: false,
+      state,
+      error: `Unsupported recovery action ${nextAction}.`,
+      nextAction,
+    };
+  }
+
+  async function retryFailedMilestoneFromResume(
+    decision: Extract<ResumeDecision, { kind: "recover" }>,
+    selectedMetadata: MilestoneMetadata,
+  ): Promise<GoalWorkflowResult | null> {
+    const milestoneId = decision.milestoneId;
+    const dependencyBlock = failedRecoveryDependencyBlock(
+      state,
+      selectedMetadata,
+      milestoneId,
+    );
+    if (dependencyBlock) {
+      return {
+        ok: false,
+        state,
+        error: dependencyBlock,
+        nextAction: "blocked_unsafe_resume",
+      };
+    }
+
+    const missingArtifacts = missingRetryRecoveryArtifacts(state, milestoneId);
+    if (missingArtifacts.length > 0) {
+      return {
+        ok: false,
+        state,
+        error: `Recovery mode retry_failed is missing required milestone artifacts: ${missingArtifacts.join(", ")}.`,
+        nextAction: "blocked_unsafe_resume",
+      };
+    }
+
+    const baseline = await resolveMilestoneBaseline({
+      state,
+      metadata: selectedMetadata,
+      milestoneId,
+      paths: options.paths,
+      cwd: options.cwd,
+      commandRunner: options.commandRunner,
+    });
+    if (!baseline.ok) {
+      return {
+        ok: false,
+        state,
+        error: baseline.error,
+        nextAction: "blocked_missing_milestone_baseline",
+      };
+    }
+
+    const treeResult = await captureGitTree({
+      cwd: options.cwd,
+      commandRunner: options.commandRunner,
+      excludedPaths: [options.paths.runDir],
+    });
+    if (!treeResult.ok) {
+      return {
+        ok: false,
+        state,
+        error: treeResult.error,
+        nextAction: "blocked_unsafe_resume",
+      };
+    }
+
+    if (treeResult.tree !== baseline.baselineTree) {
+      return {
+        ok: false,
+        state,
+        error: `Retry requires the worktree to match the milestone ${milestoneId} baseline. Use --repair-failed or --recheck, or restore the worktree manually before retrying.`,
+        nextAction: "blocked_dirty_retry_worktree",
+      };
+    }
+
+    const preserved = await preserveRetryBaseArtifacts(state, milestoneId);
+    if (!preserved.ok) {
+      return {
+        ok: false,
+        state,
+        error: preserved.error,
+        nextAction: "blocked_unsafe_resume",
+      };
+    }
+
+    const now = clock();
+    let nextState = setStatePhase(preserved.state, "ready_for_milestone", now);
+    nextState = setMilestoneStatus(nextState, milestoneId, "pending", now);
+    nextState = clearRetryBaseArtifacts(nextState, milestoneId, now);
+    state = await persist({
+      ...nextState,
+      lastError: null,
+      updatedAt: now.toISOString(),
+    });
+
+    return null;
+  }
+
+  async function preserveRetryBaseArtifacts(
+    currentState: RunState,
+    milestoneId: number,
+  ): Promise<{ ok: true; state: RunState } | { ok: false; error: string }> {
+    const artifactKey = selectRetryPreservationArtifactKey(currentState, milestoneId);
+    let nextState = currentState;
+
+    for (const artifactMapKey of retryResetArtifactMapKeys) {
+      const baseArtifactPath = nextState.artifacts[artifactMapKey]?.[String(milestoneId)];
+      if (!baseArtifactPath) continue;
+      if (nextState.artifacts[artifactMapKey]?.[artifactKey]) continue;
+
+      const source = resolveRunArtifactPath(options.paths.runDir, baseArtifactPath);
+      if (!source.ok) {
+        return {
+          ok: false,
+          error: `Cannot preserve ${artifactMapKey}.${milestoneId} before retry: ${source.error}`,
+        };
+      }
+
+      const target = retryPreservedArtifactPath(
+        options.paths,
+        milestoneId,
+        artifactKey,
+        artifactMapKey,
+      );
+      try {
+        await copyFile(source.path, target.file);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `Cannot preserve ${artifactMapKey}.${milestoneId} before retry: ${formatError(error)}`,
+        };
+      }
+
+      nextState = recordArtifactByKey(
+        nextState,
+        artifactMapKey,
+        artifactKey,
+        target.statePath,
+        clock(),
+      );
+    }
+
+    return { ok: true, state: nextState };
   }
 
   async function handleResumeNeedsHumanReview(
@@ -1267,6 +1497,147 @@ function hasPendingMilestones(
   return metadata.milestones.some(
     (milestone) => state.milestoneStatuses[String(milestone.id)] === "pending",
   );
+}
+
+function failedRecoveryDependencyBlock(
+  state: RunState,
+  metadata: MilestoneMetadata,
+  milestoneId: number,
+): string | null {
+  const milestone = metadata.milestones.find((candidate) => candidate.id === milestoneId);
+  if (!milestone) return `Milestone ${milestoneId} is missing from metadata.`;
+
+  const unmetDependencies = milestone.dependencies.filter(
+    (dependencyId) => state.milestoneStatuses[String(dependencyId)] !== "passed",
+  );
+  if (unmetDependencies.length === 0) return null;
+
+  return `Milestone ${milestoneId} cannot be recovered because dependencies are not passed: ${unmetDependencies.join(", ")}.`;
+}
+
+function missingRetryRecoveryArtifacts(
+  state: RunState,
+  milestoneId: number,
+): string[] {
+  const key = String(milestoneId);
+  const missing: string[] = [];
+
+  if (!state.artifacts.milestones) missing.push("milestones");
+  if (!state.artifacts.finalMajorPlanMarkdown) missing.push("finalMajorPlanMarkdown");
+  if (!state.artifacts.milestonePlans?.[key]) missing.push("milestonePlans");
+  if (!state.artifacts.implementations?.[key]) missing.push("implementations");
+  if (!state.artifacts.diffs?.[key]) missing.push("diffs");
+  if (!state.artifacts.checks?.[key]) missing.push("checks");
+
+  return missing;
+}
+
+function selectRetryPreservationArtifactKey(
+  state: RunState,
+  milestoneId: number,
+): string {
+  const pattern = new RegExp(`^${milestoneId}-(failed|repair|recheck)-(\\d+)$`);
+  let latest: { key: string; rank: number } | null = null;
+
+  for (const artifactMapKey of retryResetArtifactMapKeys) {
+    for (const artifactKey of Object.keys(state.artifacts[artifactMapKey] ?? {})) {
+      const match = pattern.exec(artifactKey);
+      if (!match) continue;
+
+      const source = match[1] as "failed" | "repair" | "recheck";
+      const attempt = Number(match[2]);
+      if (!Number.isInteger(attempt) || attempt < 1) continue;
+
+      const rank = retryPreservationArtifactRank(source, attempt);
+      if (latest === null || rank > latest.rank) {
+        latest = { key: artifactKey, rank };
+      }
+    }
+  }
+
+  return latest?.key ?? `${milestoneId}-failed-1`;
+}
+
+function retryPreservationArtifactRank(
+  source: "failed" | "repair" | "recheck",
+  attempt: number,
+): number {
+  const sourceRank = {
+    failed: 0,
+    repair: 1,
+    recheck: 2,
+  }[source];
+
+  return sourceRank * 1_000_000 + attempt;
+}
+
+function retryPreservedArtifactPath(
+  paths: RunPaths,
+  milestoneId: number,
+  artifactKey: string,
+  artifactMapKey: (typeof retryResetArtifactMapKeys)[number],
+): { file: string; statePath: string } {
+  const label = artifactKey.replace(`${milestoneId}-`, "");
+
+  switch (artifactMapKey) {
+    case "diffs": {
+      const statePath = path.join("diffs", `12-milestone-${milestoneId}-${label}.diff`);
+      return {
+        file: path.join(paths.runDir, statePath),
+        statePath,
+      };
+    }
+    case "checks": {
+      const statePath = path.join("checks", `13-milestone-${milestoneId}-checks-${label}.txt`);
+      return {
+        file: path.join(paths.runDir, statePath),
+        statePath,
+      };
+    }
+    case "summaries": {
+      const statePath = path.join("milestones", `14-milestone-${milestoneId}-summary-${label}.md`);
+      return {
+        file: path.join(paths.runDir, statePath),
+        statePath,
+      };
+    }
+    case "checkFailures": {
+      const statePath = path.join("checks", `13-milestone-${milestoneId}-check-failure-${label}.json`);
+      return {
+        file: path.join(paths.runDir, statePath),
+        statePath,
+      };
+    }
+  }
+}
+
+function clearRetryBaseArtifacts(
+  state: RunState,
+  milestoneId: number,
+  now: Date,
+): RunState {
+  const artifactKey = String(milestoneId);
+  const artifacts = { ...state.artifacts };
+
+  for (const artifactMapKey of retryResetArtifactMapKeys) {
+    const existingArtifacts = artifacts[artifactMapKey];
+    if (!existingArtifacts || !(artifactKey in existingArtifacts)) continue;
+
+    const nextArtifacts = { ...existingArtifacts };
+    delete nextArtifacts[artifactKey];
+
+    if (Object.keys(nextArtifacts).length === 0) {
+      delete artifacts[artifactMapKey];
+    } else {
+      artifacts[artifactMapKey] = nextArtifacts;
+    }
+  }
+
+  return {
+    ...state,
+    artifacts,
+    updatedAt: now.toISOString(),
+  };
 }
 
 function collectArtifactEntries(

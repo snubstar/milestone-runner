@@ -66,6 +66,36 @@ test("loadResumeRun resolves a direct state.json path", async () => {
   }
 });
 
+test("loadResumeRun backfills check recovery fields for older state files", async () => {
+  const repo = await createFixtureRepo();
+  try {
+    const fixture = await createResumeFixture(repo.path);
+    const legacyState: Record<string, unknown> = { ...fixture.state };
+    delete legacyState.checkFixAttempts;
+    delete legacyState.milestoneBaselines;
+    await writeFile(
+      fixture.paths.files.state,
+      `${JSON.stringify(legacyState, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = await loadResumeRun({
+      cwd: repo.path,
+      artifactRoot: ".agent-work",
+      resumeValue: fixture.paths.files.state,
+      commandRunner: nodeCommandRunner,
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.state.checkFixAttempts, {});
+      assert.deepEqual(result.state.milestoneBaselines, {});
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
 test("loadResumeRun direct-path resume uses saved workspace target when repo is omitted", async () => {
   const repo = await createFixtureRepo();
   const invocationDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-loader-"));

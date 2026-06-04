@@ -122,6 +122,43 @@ test("validateConfig accepts extended codex runner options", () => {
   }
 });
 
+test("validateConfig accepts optional maxCheckFixAttempts", () => {
+  const result = validateConfig({
+    checks: [],
+    runner: {
+      type: "fake",
+    },
+    maxFixAttempts: 2,
+    maxCheckFixAttempts: 4,
+    artifactRoot: ".agent-work",
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.maxFixAttempts, 2);
+    assert.equal(result.value.maxCheckFixAttempts, 4);
+  }
+});
+
+test("validateConfig rejects invalid maxCheckFixAttempts", () => {
+  for (const maxCheckFixAttempts of [-1, 1.5, "2"]) {
+    const result = validateConfig({
+      checks: [],
+      runner: {
+        type: "fake",
+      },
+      maxFixAttempts: 2,
+      maxCheckFixAttempts,
+      artifactRoot: ".agent-work",
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /maxCheckFixAttempts/);
+    }
+  }
+});
+
 test("validateConfig preserves optional runner account label", () => {
   const result = validateConfig({
     checks: [],

@@ -18,6 +18,9 @@ const allowedStatuses = new Set<MilestoneStatus>([
   "ready_for_review",
   "implementing",
   "checking",
+  "checks_failed",
+  "repairing_checks",
+  "rechecking",
   "reviewing",
   "fixing",
   "passed",
@@ -30,11 +33,14 @@ const inProgressStatuses = new Set<MilestoneStatus>([
   "ready_for_review",
   "implementing",
   "checking",
+  "repairing_checks",
+  "rechecking",
   "reviewing",
   "fixing",
 ]);
 
 const blockingTerminalStatuses = new Set<MilestoneStatus>([
+  "checks_failed",
   "failed",
   "needs_human_review",
 ]);

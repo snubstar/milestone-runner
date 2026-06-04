@@ -63,6 +63,66 @@ test("buildReviewEvidence excludes runDir and changed Markdown from authoritativ
   }
 });
 
+test("buildReviewEvidence flags run-specific references added to a seeded roadmap", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
+  try {
+    const result = await buildReviewEvidence({
+      cwd: repo,
+      gitRoot: repo,
+      runDir: path.join(repo, ".agent-work", "run-1"),
+      runId: "run-1",
+      milestoneId: 1,
+      reviewRound: { kind: "base" },
+      seededMajorPlanPath: "docs/seeded-major-plan.md",
+      diff: markdownDiffForFile(
+        "docs/seeded-major-plan.md",
+        "- Current status: checks_failed in run-1.",
+        "- Check artifact: `.agent-work/run-1/checks/13-milestone-1-checks.txt`.",
+      ),
+    });
+
+    const pollutionWarnings = result.warnings.filter(
+      (warning) => warning.code === "seeded_roadmap_run_state_reference",
+    );
+    assert.equal(pollutionWarnings.length, 2);
+    assert.equal(pollutionWarnings[0]?.file, "docs/seeded-major-plan.md");
+    assert.match(pollutionWarnings[0]?.message ?? "", /dedicated ledger files/);
+    assert.match(result.markdown, /seeded_roadmap_run_state_reference/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("buildReviewEvidence allows seeded roadmap references for explicit roadmap edits", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
+  try {
+    const result = await buildReviewEvidence({
+      cwd: repo,
+      gitRoot: repo,
+      runDir: path.join(repo, ".agent-work", "run-1"),
+      runId: "run-1",
+      milestoneId: 1,
+      reviewRound: { kind: "base" },
+      seededMajorPlanPath: "docs/seeded-major-plan.md",
+      roadmapMutationAllowed: true,
+      diff: markdownDiffForFile(
+        "docs/seeded-major-plan.md",
+        "- Current status: checks_failed in run-1.",
+        "- Check artifact: `.agent-work/run-1/checks/13-milestone-1-checks.txt`.",
+      ),
+    });
+
+    assert.equal(
+      result.warnings.some(
+        (warning) => warning.code === "seeded_roadmap_run_state_reference",
+      ),
+      false,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("buildReviewEvidence ignores packageJsonPath outside the repository root", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-evidence-"));
   try {
@@ -495,10 +555,14 @@ function assertSnippetExtracted(
 }
 
 function markdownDiff(...addedLines: string[]): string {
+  return markdownDiffForFile("docs/smoke.md", ...addedLines);
+}
+
+function markdownDiffForFile(file: string, ...addedLines: string[]): string {
   return [
-    "diff --git a/docs/smoke.md b/docs/smoke.md",
-    "--- a/docs/smoke.md",
-    "+++ b/docs/smoke.md",
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
     `@@ -0,0 +1,${addedLines.length} @@`,
     ...addedLines.map((line) => `+${line}`),
     "",

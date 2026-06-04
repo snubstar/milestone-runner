@@ -91,6 +91,10 @@
       "type": "integer",
       "minimum": 0
     },
+    "maxCheckFixAttempts": {
+      "type": "integer",
+      "minimum": 0
+    },
     "artifactRoot": {
       "type": "string",
       "minLength": 1

@@ -1,3 +1,5 @@
+import type { ResumeRecoveryMode } from "../orchestration/resume-recovery.js";
+
 export type DashboardArtifactGroup =
   | "goal"
   | "inputs"
@@ -96,6 +98,7 @@ export interface DashboardRunsResponse {
 export type DashboardLaunchRunner = "fake" | "codex-exec";
 export type DashboardMilestonePlanPolicy = "always" | "auto" | "light";
 export type DashboardMilestonePlanReviewPolicy = "normal" | "scrupulous";
+export type DashboardResumeRecoveryMode = ResumeRecoveryMode;
 
 export interface DashboardBootstrapResponse {
   dashboardToken: string;
@@ -131,6 +134,7 @@ export interface DashboardResumeOptions {
   allowDirty?: boolean;
   allowNonGitPlanning?: boolean;
   milestone?: number;
+  resumeRecoveryMode?: DashboardResumeRecoveryMode;
   milestonePlanPolicy?: DashboardMilestonePlanPolicy;
   milestonePlanReviewPolicy?: DashboardMilestonePlanReviewPolicy;
 }
@@ -146,7 +150,10 @@ export interface DashboardResumeDryRunResponse {
   nextAction: string;
   warnings: string[];
   options: Required<
-    Pick<DashboardResumeOptions, "allowDirty" | "allowNonGitPlanning">
+    Pick<
+      DashboardResumeOptions,
+      "allowDirty" | "allowNonGitPlanning" | "resumeRecoveryMode"
+    >
   > &
     Pick<
       DashboardResumeOptions,

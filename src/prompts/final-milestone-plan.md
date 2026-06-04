@@ -60,6 +60,10 @@ Rules:
 - Keep the plan scoped to concrete file or code changes for this milestone.
 - The plan must lead to a non-empty Git diff.
 - Do not preserve inspection-only, research-only, planning-only, review-only, or no-op work as the milestone outcome; fold any needed inspection into the steps that change files.
+- Treat seeded roadmaps and major-plan documents as durable project planning inputs, not run ledgers.
+- Do not tell implementation agents to write `.agent-work` paths, run ids, transient check paths, or current execution status into seeded roadmaps by default.
+- Use orchestrator artifacts or dedicated ledger files for execution notes, batch locks, inspection bundles, check artifacts, and other run-specific details.
+- Preserve or add roadmap file edits only when the original user goal or active milestone scope explicitly asks for roadmap or planning-document edits.
 - Do not plan work for later milestones.
 - Do not give implementation agents orchestration authority.
 - Do not ask implementation agents to decide status, run completion, commits, acceptance, Git diff capture, checks, review decisions, or fix loops.

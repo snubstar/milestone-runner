@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -15,7 +15,12 @@ import type {
   AgentRunResult,
 } from "../../src/runners/agent-runner.js";
 import { FakeRunner } from "../../src/runners/fake/fake-runner.js";
-import { nodeCommandRunner } from "../../src/shell/command-runner.js";
+import {
+  nodeCommandRunner,
+  type CommandRequest,
+  type CommandResult,
+  type CommandRunner,
+} from "../../src/shell/command-runner.js";
 import { createInitialState } from "../../src/state/initial-state.js";
 import { readState, writeState } from "../../src/state/state-store.js";
 import type { RunState } from "../../src/state/state-types.js";
@@ -1047,7 +1052,7 @@ test("runGoalWorkflow does not request milestone 2 when milestone 1 checks fail"
 
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /Checks failed for milestone 1/);
-    assert.equal(result.state.currentPhase, "checking");
+    assert.equal(result.state.currentPhase, "failed");
     assert.equal(result.state.status, "failed");
     assert.equal(result.state.currentMilestoneId, 1);
     assert.equal(result.state.milestoneStatuses["1"], "failed");
@@ -1072,6 +1077,334 @@ test("runGoalWorkflow does not request milestone 2 when milestone 1 checks fail"
     assert.match(summary, /Stop reason: Checks failed for milestone 1\./);
 
     assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow repairs failed checks during explicit repair_failed recovery", async () => {
+  const checkCommand = goalFixedFileCheckCommand();
+  const context = await createReadyGoalContext({
+    config: testConfig({
+      checks: [checkCommand],
+      maxFixAttempts: 0,
+    }),
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const resumeRunner = new ScenarioRunner([
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair\n\nCreated fixed.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+    {
+      phase: "review_milestone",
+      text: reviewResult({
+        verdict: "pass",
+        summary: "The repaired milestone is acceptable.",
+        findings: [],
+      }).text,
+      exitCode: 0,
+    },
+  ]);
+
+  try {
+    const failed = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.state.currentPhase, "failed");
+    assert.equal(failed.state.status, "failed");
+
+    const repaired = await runGoalWorkflow({
+      ...context.workflowOptions,
+      config: {
+        ...context.workflowOptions.config,
+        maxFixAttempts: 1,
+      },
+      initialState: failed.state,
+      runner: resumeRunner,
+      resumeRecoveryMode: "repair_failed",
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(repaired.ok, true);
+    assert.equal(
+      repaired.nextAction,
+      "resume without --milestone to continue remaining milestones",
+    );
+    assert.equal(repaired.state.currentPhase, "passed");
+    assert.equal(repaired.state.currentMilestoneId, 1);
+    assert.equal(repaired.state.milestoneStatuses["1"], "passed");
+    assert.equal(repaired.state.milestoneStatuses["2"], "pending");
+    assert.deepEqual(resumeRunner.phases(), [
+      "fix_check_failures",
+      "review_milestone",
+    ]);
+    assertNoMilestone2Requests(resumeRunner.requests);
+    assert.deepEqual(repaired.state.checkFixAttempts, { "1": 1 });
+    assert.deepEqual(await readState(context.paths.files.state), repaired.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow rechecks manually repaired failed checks during explicit recheck recovery", async () => {
+  const checkCommand = goalFixedFileCheckCommand();
+  const context = await createReadyGoalContext({
+    config: testConfig({
+      checks: [checkCommand],
+      maxFixAttempts: 0,
+    }),
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const resumeRunner = new ScenarioRunner([
+    {
+      phase: "review_milestone",
+      text: reviewResult({
+        verdict: "pass",
+        summary: "The rechecked milestone is acceptable.",
+        findings: [],
+      }).text,
+      exitCode: 0,
+    },
+  ]);
+
+  try {
+    const failed = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.state.currentPhase, "failed");
+    assert.equal(failed.state.status, "failed");
+
+    await writeFile(path.join(context.repo, "fixed.txt"), "fixed\n", "utf8");
+
+    const rechecked = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: resumeRunner,
+      resumeRecoveryMode: "recheck_failed",
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(rechecked.ok, true);
+    assert.equal(
+      rechecked.nextAction,
+      "resume without --milestone to continue remaining milestones",
+    );
+    assert.equal(rechecked.state.currentPhase, "passed");
+    assert.equal(rechecked.state.currentMilestoneId, 1);
+    assert.equal(rechecked.state.milestoneStatuses["1"], "passed");
+    assert.equal(rechecked.state.milestoneStatuses["2"], "pending");
+    assert.deepEqual(resumeRunner.phases(), ["review_milestone"]);
+    assert.equal(
+      rechecked.state.artifacts.diffs?.["1"],
+      path.join("diffs", "30-milestone-1-recheck-1.diff"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.checks?.["1"],
+      path.join("checks", "31-milestone-1-recheck-1.txt"),
+    );
+    assertNoMilestone2Requests(resumeRunner.requests);
+    assert.deepEqual(await readState(context.paths.files.state), rechecked.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow blocks retry_failed recovery when failed worktree changes remain", async () => {
+  const checkCommand = goalFixedFileCheckCommand();
+  const context = await createReadyGoalContext({
+    config: testConfig({
+      checks: [checkCommand],
+      maxFixAttempts: 0,
+    }),
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const retryRunner = new ScenarioRunner([]);
+
+  try {
+    const failed = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    const stateBeforeRetry = await readState(context.paths.files.state);
+
+    const retried = await runGoalWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: retryRunner,
+      resumeRecoveryMode: "retry_failed",
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(retried.ok, false);
+    assert.equal(retried.nextAction, "blocked_dirty_retry_worktree");
+    assert.match(retried.error ?? "", /Use --repair-failed or --recheck/);
+    assert.deepEqual(retryRunner.phases(), []);
+    assert.deepEqual(retried.state, stateBeforeRetry);
+    assert.deepEqual(await readState(context.paths.files.state), stateBeforeRetry);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runGoalWorkflow retries a failed milestone after the worktree is restored to baseline", async () => {
+  const checkCommand = goalFixedFileCheckCommand();
+  const context = await createReadyGoalContext({
+    config: testConfig({
+      checks: [checkCommand],
+      maxFixAttempts: 0,
+    }),
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const retryRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Retry Plan\n\nCreate fixed.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Retry Implementation\n\nCreated fixed.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+    {
+      phase: "review_milestone",
+      text: reviewResult({
+        verdict: "pass",
+        summary: "The retried milestone is acceptable.",
+        findings: [],
+      }).text,
+      exitCode: 0,
+    },
+  ]);
+  const commandRunner = new RecordingCommandRunner(nodeCommandRunner);
+
+  try {
+    const failed = await runGoalWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.state.milestoneStatuses["2"], "pending");
+
+    await rm(path.join(context.repo, "feature.txt"), { force: true });
+
+    const retried = await runGoalWorkflow({
+      ...context.workflowOptions,
+      commandRunner,
+      initialState: failed.state,
+      runner: retryRunner,
+      resumeRecoveryMode: "retry_failed",
+      executionLimits: {
+        targetMilestoneId: 1,
+        stopAfterTargetMilestone: true,
+      },
+    });
+
+    assert.equal(retried.ok, true);
+    assert.equal(
+      retried.nextAction,
+      "resume without --milestone to continue remaining milestones",
+    );
+    assert.equal(retried.state.currentPhase, "passed");
+    assert.equal(retried.state.currentMilestoneId, 1);
+    assert.equal(retried.state.milestoneStatuses["1"], "passed");
+    assert.equal(retried.state.milestoneStatuses["2"], "pending");
+    assert.deepEqual(retryRunner.phases(), [
+      "milestone_plan",
+      "implement_milestone",
+      "review_milestone",
+    ]);
+    assertNoMilestone2Requests(retryRunner.requests);
+    assert.equal(
+      retried.state.artifacts.diffs?.["1-failed-1"],
+      path.join("diffs", "12-milestone-1-failed-1.diff"),
+    );
+    assert.equal(
+      retried.state.artifacts.checks?.["1-failed-1"],
+      path.join("checks", "13-milestone-1-checks-failed-1.txt"),
+    );
+    assert.equal(
+      retried.state.artifacts.checkFailures?.["1-failed-1"],
+      path.join("checks", "13-milestone-1-check-failure-1.json"),
+    );
+    assert.equal(
+      retried.state.artifacts.diffs?.["1"],
+      path.join("diffs", "12-milestone-1.diff"),
+    );
+    assert.equal(
+      retried.state.artifacts.checks?.["1"],
+      path.join("checks", "13-milestone-1-checks.txt"),
+    );
+    await access(path.join(context.paths.runDir, "diffs", "12-milestone-1-failed-1.diff"));
+    await access(path.join(context.paths.runDir, "checks", "13-milestone-1-checks-failed-1.txt"));
+    assertNoDestructiveGitCommands(commandRunner.requests);
+    assert.deepEqual(await readState(context.paths.files.state), retried.state);
   } finally {
     await context.cleanup();
   }
@@ -1546,6 +1879,20 @@ class RecordingRunner implements AgentRunner {
   }
 }
 
+class RecordingCommandRunner implements CommandRunner {
+  readonly requests: CommandRequest[] = [];
+
+  constructor(private readonly inner: CommandRunner) {}
+
+  async run(request: CommandRequest): Promise<CommandResult> {
+    this.requests.push({
+      ...request,
+      args: [...request.args],
+    });
+    return this.inner.run(request);
+  }
+}
+
 interface GoalContextOptions {
   config?: OrchestratorConfig;
 }
@@ -1706,8 +2053,26 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
   };
 }
 
+function goalFixedFileCheckCommand(): string {
+  const script = "const fs = require('node:fs'); if (!fs.existsSync('fixed.txt')) { process.stderr.write('missing fixed file'); process.exit(2); } process.stdout.write('fixed ok');";
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+}
+
 function promptDir(): string {
   return path.join(process.cwd(), "src", "prompts");
+}
+
+function assertNoDestructiveGitCommands(requests: CommandRequest[]): void {
+  const destructiveCommands = new Set(["reset", "checkout", "restore", "clean"]);
+  const destructiveGitRequests = requests
+    .filter(
+      (request) =>
+        request.command === "git" &&
+        request.args.some((arg) => destructiveCommands.has(arg)),
+    )
+    .map((request) => `git ${request.args.join(" ")}`);
+
+  assert.deepEqual(destructiveGitRequests, []);
 }
 
 async function assertTimingArtifacts(paths: RunPaths, state: RunState): Promise<void> {

@@ -30,5 +30,9 @@ Milestone rules:
 - Each proposed milestone must be implementation-capable and expected to produce a non-empty Git diff.
 - Do not create standalone inspection, research, planning, review, or no-op milestones.
 - If context inspection is useful, include it as a step inside the same milestone that makes the required file or code change.
+- Treat seeded roadmaps and major-plan documents as durable project planning inputs, not run ledgers.
+- Do not add `.agent-work` paths, run ids, transient check paths, or current execution status to seeded roadmaps by default.
+- Put execution notes, batch locks, inspection bundles, check paths, and other run-specific details in orchestrator artifacts or dedicated ledger files instead.
+- Plan roadmap file edits only when the user goal explicitly asks to edit roadmap or planning documents.
 
 Do not implement code. Do not run commands. Do not claim any milestone has already passed. Do not assign orchestration decisions to the implementation agent.

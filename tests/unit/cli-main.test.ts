@@ -1246,14 +1246,14 @@ test("main prints final summary artifact when fake workflow fails after writing 
 
     assert.equal(result.exitCode, 1);
     assert.match(result.stderr, /Checks failed for milestone 1/);
-    assert.match(result.stdout, /State: checking/);
+    assert.match(result.stdout, /State: failed/);
     assert.match(result.stdout, /Current milestone: 1/);
     assert.match(result.stdout, /Last error: Checks failed for milestone 1\./);
     assert.match(result.stdout, /Milestones:\n  1: failed\n  2: pending/);
     assert.match(result.stdout, /Final summary artifact: milestones\/90-goal-summary\.md/);
 
     const state = await readOnlyRunState(repo);
-    assert.equal(state.currentPhase, "checking");
+    assert.equal(state.currentPhase, "failed");
     assert.equal(state.status, "failed");
     assert.equal(state.artifacts.summaries?.goal, path.join("milestones", "90-goal-summary.md"));
 

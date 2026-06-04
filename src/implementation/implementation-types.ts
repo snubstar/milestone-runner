@@ -11,7 +11,8 @@ export type ImplementationRunnerPhase =
   | "milestone_plan"
   | "milestone_plan_review"
   | "final_milestone_plan"
-  | "implement_milestone";
+  | "implement_milestone"
+  | "fix_check_failures";
 
 export interface ImplementationWorkflowOptions {
   goal: string;
@@ -25,6 +26,7 @@ export interface ImplementationWorkflowOptions {
   schemaRoot?: string;
   checkTimingCollector?: CheckTimingCollector;
   timingWarnings?: TimingWarningCollector;
+  resumeRecoveryMode?: "repair_failed" | "recheck_failed";
   now?: () => Date;
 }
 

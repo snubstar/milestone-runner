@@ -23,6 +23,7 @@ test("dryRunDashboardResume stores an allowed resume dry-run confirmation", asyn
       "run-1",
       {
         allowDirty: true,
+        resumeRecoveryMode: "repair_failed",
         milestonePlanPolicy: "auto",
         milestonePlanReviewPolicy: "scrupulous",
       },
@@ -40,6 +41,7 @@ test("dryRunDashboardResume stores an allowed resume dry-run confirmation", asyn
       assert.equal(result.response.nextAction, "continue_milestone");
       assert.equal(typeof result.response.confirmationToken, "string");
       assert.equal(result.response.options.allowDirty, true);
+      assert.equal(result.response.options.resumeRecoveryMode, "repair_failed");
       assert.equal(result.response.options.milestonePlanPolicy, "auto");
 
       const record = JSON.parse(
@@ -66,6 +68,7 @@ test("dryRunDashboardResume stores an allowed resume dry-run confirmation", asyn
       assert.equal(args.includes("run-1"), true);
       assert.equal(args.includes("--run-id"), false);
       assert.equal(args.includes("--allow-dirty"), true);
+      assert.equal(args.includes("--repair-failed"), true);
       assert.equal(args.includes("--milestone-plan-policy"), true);
       assert.equal(args.includes("--milestone-plan-review-policy"), true);
     }
@@ -125,6 +128,7 @@ test("resumeDashboardRun consumes one allowed dry-run confirmation", async () =>
       {
         allowDirty: true,
         milestone: 2,
+        resumeRecoveryMode: "recheck_failed",
         milestonePlanPolicy: "light",
       },
       {
@@ -165,6 +169,7 @@ test("resumeDashboardRun consumes one allowed dry-run confirmation", async () =>
     assert.equal(args.includes("--allow-dirty"), true);
     assert.equal(args.includes("--milestone"), true);
     assert.equal(args.includes("2"), true);
+    assert.equal(args.includes("--recheck"), true);
 
     if (result.ok) {
       await waitForDiagnostics(

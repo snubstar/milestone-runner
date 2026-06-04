@@ -7,9 +7,15 @@ import type {
   DashboardError,
   DashboardMilestonePlanPolicy,
   DashboardMilestonePlanReviewPolicy,
+  DashboardResumeRecoveryMode,
   DashboardResumeDryRunResponse,
   DashboardResumeResponse,
 } from "./api-types.js";
+import {
+  flagForResumeRecoveryMode,
+  resumeRecoveryModes,
+  type ResumeRecoveryMode,
+} from "../orchestration/resume-recovery.js";
 import {
   type DashboardCliDiagnostics,
   formatError,
@@ -62,6 +68,7 @@ interface NormalizedResumeOptions {
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
   milestone?: number;
+  resumeRecoveryMode: ResumeRecoveryMode;
   milestonePlanPolicy?: DashboardMilestonePlanPolicy;
   milestonePlanReviewPolicy?: DashboardMilestonePlanReviewPolicy;
 }
@@ -100,6 +107,8 @@ const milestonePlanReviewPolicies = new Set<DashboardMilestonePlanReviewPolicy>(
   "normal",
   "scrupulous",
 ]);
+const dashboardResumeRecoveryModes =
+  resumeRecoveryModes as Set<DashboardResumeRecoveryMode>;
 const resumeDryRunTtlMs = 5 * 60 * 1000;
 
 export async function dryRunDashboardResume(
@@ -468,6 +477,9 @@ function buildResumeCliArgs(options: {
   if (options.options.milestone !== undefined) {
     args.push("--milestone", String(options.options.milestone));
   }
+  if (options.options.resumeRecoveryMode !== "none") {
+    args.push(flagForResumeRecoveryMode(options.options.resumeRecoveryMode));
+  }
   if (options.options.milestonePlanPolicy) {
     args.push("--milestone-plan-policy", options.options.milestonePlanPolicy);
   }
@@ -553,12 +565,22 @@ function normalizeResumeOptions(
     return invalidResumeRequest(milestonePlanReviewPolicy.error);
   }
 
+  const resumeRecoveryMode = optionalEnum(
+    body.resumeRecoveryMode,
+    dashboardResumeRecoveryModes,
+    "resumeRecoveryMode",
+  );
+  if (!resumeRecoveryMode.ok) {
+    return invalidResumeRequest(resumeRecoveryMode.error);
+  }
+
   return {
     ok: true,
     value: {
       allowDirty: booleanField(body.allowDirty, false),
       allowNonGitPlanning: booleanField(body.allowNonGitPlanning, false),
       milestone: milestone.value,
+      resumeRecoveryMode: resumeRecoveryMode.value ?? "none",
       milestonePlanPolicy: milestonePlanPolicy.value,
       milestonePlanReviewPolicy: milestonePlanReviewPolicy.value,
     },

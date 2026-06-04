@@ -43,4 +43,11 @@ Write a concise Markdown implementation plan for the active milestone only. Incl
 
 The plan must lead to concrete file or code changes for the active milestone and a non-empty Git diff. Do not produce an inspection-only or no-op milestone plan; include any needed inspection as an early step before the file changes.
 
+Roadmap and run-state rules:
+
+- Treat seeded roadmaps and major-plan documents as durable project planning inputs, not run ledgers.
+- Do not tell the implementation agent to write `.agent-work` paths, run ids, transient check paths, or current execution status into seeded roadmaps by default.
+- Use orchestrator artifacts or dedicated ledger files for execution notes, batch locks, inspection bundles, check artifacts, and other run-specific details.
+- Include roadmap file edits only when the original user goal or active milestone scope explicitly asks for roadmap or planning-document edits.
+
 Do not implement code. Do not run commands. Do not plan work for later milestones. Do not mark the milestone complete or passed. Do not tell the implementation agent to create commits or run destructive Git commands.

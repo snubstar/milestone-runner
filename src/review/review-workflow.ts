@@ -1428,6 +1428,15 @@ export async function runReviewWorkflow(
         milestoneId: activeMilestoneId ?? 0,
         reviewRound: optionsForEvidence.reviewRound,
         diff: optionsForEvidence.diff,
+        seededMajorPlanPath:
+          state.inputs?.majorPlanSource?.type === "seed"
+            ? state.inputs.majorPlanSource.path
+            : null,
+        roadmapMutationAllowed: roadmapMutationRequested({
+          goal: options.goal,
+          milestone: reviewedMilestone,
+          milestonePlan: milestonePlanText,
+        }),
       });
       await writeTextArtifact(optionsForEvidence.filePath, evidenceResult.markdown);
       state = await persist(
@@ -1694,6 +1703,30 @@ function formatReviewSummary(options: {
 }
 
 type ReviewSummaryStatus = ReviewVerdictDocument["verdict"] | "failed";
+
+function roadmapMutationRequested(options: {
+  goal: string;
+  milestone: Milestone;
+  milestonePlan: string;
+}): boolean {
+  const text = [
+    options.goal,
+    options.milestone.title,
+    options.milestone.summary,
+    ...options.milestone.scope,
+    ...options.milestone.acceptanceCriteria,
+    options.milestonePlan,
+  ].join("\n");
+
+  return (
+    /\b(?:roadmap|major plan|seeded plan|seeded roadmap|planning document|plan document|project plan)\b/i.test(
+      text,
+    ) &&
+    /\b(?:update|edit|modify|change|amend|revise|refresh|sync|synchronize|maintain|document|record|write)\b/i.test(
+      text,
+    )
+  );
+}
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

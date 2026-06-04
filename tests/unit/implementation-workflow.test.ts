@@ -56,6 +56,8 @@ test("runImplementationWorkflow implements one fake milestone and stops ready fo
     assert.deepEqual(result.state.artifacts.summaries, {
       "1": path.join("milestones", "14-milestone-1-summary.md"),
     });
+    assert.deepEqual(Object.keys(result.state.milestoneBaselines), ["1"]);
+    assert.match(result.state.milestoneBaselines["1"] ?? "", /^[0-9a-f]+$/);
 
     const implementationFile = path.join(context.repo, "fake-milestone-1-implementation.txt");
     assert.match(await readFile(implementationFile, "utf8"), /Milestone: 1/);
@@ -158,8 +160,8 @@ test("runImplementationWorkflow passes target cwd to milestone runner phases", a
     assert.equal(implementationDiagnostic.milestoneId, 1);
     assert.equal(implementationDiagnostic.runner, "codex-exec");
     assert.equal(implementationDiagnostic.cwd, context.repo);
-    assert.equal(implementationDiagnostic.startedAt, "2026-05-10T12:01:06.000Z");
-    assert.equal(implementationDiagnostic.endedAt, "2026-05-10T12:01:07.000Z");
+    assert.equal(implementationDiagnostic.startedAt, "2026-05-10T12:01:07.000Z");
+    assert.equal(implementationDiagnostic.endedAt, "2026-05-10T12:01:08.000Z");
     assert.equal(implementationDiagnostic.durationMs, 1000);
     assert.equal("prompt" in implementationDiagnostic, false);
   } finally {
@@ -921,12 +923,25 @@ test("runImplementationWorkflow persists check output and fails when checks fail
     if (result.ok) return;
     assert.match(result.error, /Checks failed/);
     assert.equal(result.state.status, "failed");
-    assert.equal(result.state.currentPhase, "checking");
+    assert.equal(result.state.currentPhase, "failed");
     assert.equal(result.state.milestoneStatuses["1"], "failed");
     assert.deepEqual(result.state.artifacts.checks, {
       "1": path.join("checks", "13-milestone-1-checks.txt"),
     });
+    assert.deepEqual(result.state.artifacts.checkFailures, {
+      "1-failed-1": path.join("checks", "13-milestone-1-check-failure-1.json"),
+    });
     assert.equal(result.state.artifacts.summaries, undefined);
+    assert.equal(
+      (result.state.lastError?.details as { checkFailureSummary?: string }).checkFailureSummary,
+      path.join("checks", "13-milestone-1-check-failure-1.json"),
+    );
+    const failedCheckResults = (result.state.lastError?.details as {
+      results?: Array<{ command: string; exitCode: number | null; stderr: string }>;
+    }).results;
+    assert.equal(failedCheckResults?.[0]?.command, `${JSON.stringify(process.execPath)} -e "process.stderr.write('check failed'); process.exit(2)"`);
+    assert.equal(failedCheckResults?.[0]?.exitCode, 2);
+    assert.equal(failedCheckResults?.[0]?.stderr, "check failed");
 
     const checks = await readFile(
       path.join(context.paths.dirs.checks, "13-milestone-1-checks.txt"),
@@ -934,7 +949,704 @@ test("runImplementationWorkflow persists check output and fails when checks fail
     );
     assert.match(checks, /Overall: failed/);
     assert.match(checks, /check failed/);
+    const checkFailure = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.checks, "13-milestone-1-check-failure-1.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(checkFailure.kind, "check_failure_summary");
+    assert.equal(checkFailure.fullCheckReportArtifactPath, path.join("checks", "13-milestone-1-checks.txt"));
+    assert.equal(checkFailure.failedChecks[0].stderr.snippet, "check failed");
     assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow repairs failed checks and stops ready for review", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 1,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const checkTimingCollector = createCheckTimingCollector();
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair\n\nCreated fixed.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+      checkTimingCollector,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan",
+      "implement_milestone",
+      "fix_check_failures",
+    ]);
+    assert.match(runner.requests[2]?.prompt ?? "", /missing fixed file/);
+    assert.match(runner.requests[2]?.prompt ?? "", /Check repair attempts completed/);
+    assert.equal(result.state.currentPhase, "ready_for_review");
+    assert.equal(result.state.status, "ready_for_review");
+    assert.equal(result.state.milestoneStatuses["1"], "ready_for_review");
+    assert.equal(result.state.lastError, null);
+    assert.deepEqual(result.state.checkFixAttempts, { "1": 1 });
+    assert.deepEqual(result.state.fixAttempts, {});
+    assert.equal(
+      result.state.artifacts.fixes?.["1-repair-1"],
+      path.join("fixes", "21-milestone-1-check-repair-1.md"),
+    );
+    assert.equal(
+      result.state.artifacts.diffs?.["1-repair-1"],
+      path.join("diffs", "22-milestone-1-diff-after-check-repair-1.diff"),
+    );
+    assert.equal(
+      result.state.artifacts.diffs?.["1"],
+      path.join("diffs", "22-milestone-1-diff-after-check-repair-1.diff"),
+    );
+    assert.equal(
+      result.state.artifacts.checks?.["1-repair-1"],
+      path.join("checks", "23-milestone-1-checks-after-check-repair-1.txt"),
+    );
+    assert.equal(
+      result.state.artifacts.checks?.["1"],
+      path.join("checks", "23-milestone-1-checks-after-check-repair-1.txt"),
+    );
+    assert.deepEqual(result.state.artifacts.checkFailures, {
+      "1-failed-1": path.join("checks", "13-milestone-1-check-failure-1.json"),
+    });
+
+    const summary = await readFile(
+      path.join(context.paths.dirs.milestones, "14-milestone-1-summary.md"),
+      "utf8",
+    );
+    assert.match(summary, /22-milestone-1-diff-after-check-repair-1\.diff/);
+    assert.match(summary, /23-milestone-1-checks-after-check-repair-1\.txt/);
+
+    const checkTimings = checkTimingCollector.list();
+    assert.equal(checkTimings.length, 2);
+    assert.equal(checkTimings[0]?.stateKey, "1");
+    assert.equal(checkTimings[0]?.attempt, null);
+    assert.equal(checkTimings[1]?.stateKey, "1-repair-1");
+    assert.equal(checkTimings[1]?.attempt, 1);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow exhausts failed check repairs using maxCheckFixAttempts", async () => {
+  const context = await createImplementationContext({
+    config: {
+      checks: [`${JSON.stringify(process.execPath)} -e "process.stderr.write('still failing'); process.exit(2)"`],
+      runner: { type: "fake" },
+      maxFixAttempts: 5,
+      maxCheckFixAttempts: 2,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const runner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair 1\n\nChanged feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "repair 1\n" }],
+    },
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair 2\n\nChanged feature.txt again.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "repair 2\n" }],
+    },
+  ]);
+
+  try {
+    const result = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /Check repair attempts exhausted after 2 attempt/);
+    assert.equal(result.state.currentPhase, "failed");
+    assert.equal(result.state.status, "failed");
+    assert.equal(result.state.milestoneStatuses["1"], "failed");
+    assert.deepEqual(result.state.checkFixAttempts, { "1": 2 });
+    assert.deepEqual(result.state.fixAttempts, {});
+    assert.equal(
+      result.state.artifacts.fixes?.["1-repair-1"],
+      path.join("fixes", "21-milestone-1-check-repair-1.md"),
+    );
+    assert.equal(
+      result.state.artifacts.fixes?.["1-repair-2"],
+      path.join("fixes", "21-milestone-1-check-repair-2.md"),
+    );
+    assert.equal(
+      result.state.artifacts.checks?.["1-repair-2"],
+      path.join("checks", "23-milestone-1-checks-after-check-repair-2.txt"),
+    );
+    assert.equal(
+      result.state.artifacts.checkFailures?.["1-repair-2"],
+      path.join("checks", "23-milestone-1-check-failure-after-check-repair-2.json"),
+    );
+    assert.equal(
+      result.state.artifacts.diffs?.["1"],
+      path.join("diffs", "22-milestone-1-diff-after-check-repair-2.diff"),
+    );
+    assert.equal(
+      (result.state.lastError?.details as { latestCheckFailureSummary?: string })
+        .latestCheckFailureSummary,
+      path.join("checks", "23-milestone-1-check-failure-after-check-repair-2.json"),
+    );
+    assert.deepEqual(runner.phases(), [
+      "milestone_plan",
+      "implement_milestone",
+      "fix_check_failures",
+      "fix_check_failures",
+    ]);
+    assert.deepEqual(await readState(context.paths.files.state), result.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow resumes explicit repair_failed recovery", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const resumeRunner = new ScenarioRunner([
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair\n\nCreated fixed.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+  ]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+    assert.equal(failed.state.currentPhase, "failed");
+    assert.equal(failed.state.status, "failed");
+
+    const resumed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      config: {
+        ...context.workflowOptions.config,
+        maxFixAttempts: 1,
+      },
+      initialState: failed.state,
+      runner: resumeRunner,
+      resumeRecoveryMode: "repair_failed",
+    });
+
+    assert.equal(resumed.ok, true);
+    if (!resumed.ok) return;
+    assert.deepEqual(resumeRunner.phases(), ["fix_check_failures"]);
+    assert.equal(resumed.state.currentPhase, "ready_for_review");
+    assert.equal(resumed.state.milestoneStatuses["1"], "ready_for_review");
+    assert.deepEqual(resumed.state.checkFixAttempts, { "1": 1 });
+    assert.equal(resumed.state.lastError, null);
+    assert.deepEqual(await readState(context.paths.files.state), resumed.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow synthesizes a check failure summary for legacy repair recovery", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const resumeRunner = new ScenarioRunner([
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair\n\nCreated fixed.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+  ]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+
+    await rm(
+      path.join(context.paths.dirs.checks, "13-milestone-1-check-failure-1.json"),
+      { force: true },
+    );
+    const legacyState: RunState = {
+      ...failed.state,
+      currentPhase: "checking",
+      status: "failed",
+      artifacts: {
+        ...failed.state.artifacts,
+        checkFailures: undefined,
+      },
+      lastError: {
+        message: "Checks failed for milestone 1.",
+        phase: "checking",
+        occurredAt: failed.state.updatedAt,
+      },
+    };
+
+    const resumed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      config: {
+        ...context.workflowOptions.config,
+        maxFixAttempts: 1,
+      },
+      initialState: legacyState,
+      runner: resumeRunner,
+      resumeRecoveryMode: "repair_failed",
+    });
+
+    assert.equal(resumed.ok, true);
+    if (!resumed.ok) return;
+    assert.deepEqual(resumeRunner.phases(), ["fix_check_failures"]);
+    assert.match(resumeRunner.requests[0]?.prompt ?? "", /missing fixed file/);
+    assert.equal(
+      resumed.state.artifacts.checkFailures?.["1-failed-1"],
+      path.join("checks", "13-milestone-1-check-failure-1.json"),
+    );
+    const synthesizedSummary = JSON.parse(
+      await readFile(
+        path.join(context.paths.dirs.checks, "13-milestone-1-check-failure-1.json"),
+        "utf8",
+      ),
+    );
+    assert.match(
+      synthesizedSummary.failedChecks[0].command,
+      /legacy failed check report artifact/,
+    );
+    assert.equal(resumed.state.currentPhase, "ready_for_review");
+    assert.deepEqual(await readState(context.paths.files.state), resumed.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow rechecks a manually repaired failed milestone", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const recheckRunner = new ScenarioRunner([]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+
+    await writeFile(path.join(context.repo, "fixed.txt"), "fixed\n", "utf8");
+
+    const rechecked = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: recheckRunner,
+      resumeRecoveryMode: "recheck_failed",
+    });
+
+    assert.equal(rechecked.ok, true);
+    if (!rechecked.ok) return;
+    assert.deepEqual(recheckRunner.phases(), []);
+    assert.equal(rechecked.state.currentPhase, "ready_for_review");
+    assert.equal(rechecked.state.status, "ready_for_review");
+    assert.equal(rechecked.state.milestoneStatuses["1"], "ready_for_review");
+    assert.equal(rechecked.state.lastError, null);
+    assert.equal(
+      rechecked.state.artifacts.diffs?.["1-recheck-1"],
+      path.join("diffs", "30-milestone-1-recheck-1.diff"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.checks?.["1-recheck-1"],
+      path.join("checks", "31-milestone-1-recheck-1.txt"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.summaries?.["1-recheck-1"],
+      path.join("milestones", "32-milestone-1-recheck-1-summary.md"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.diffs?.["1"],
+      path.join("diffs", "30-milestone-1-recheck-1.diff"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.checks?.["1"],
+      path.join("checks", "31-milestone-1-recheck-1.txt"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.summaries?.["1"],
+      path.join("milestones", "32-milestone-1-recheck-1-summary.md"),
+    );
+
+    const recheckSummary = await readFile(
+      path.join(context.paths.dirs.milestones, "32-milestone-1-recheck-1-summary.md"),
+      "utf8",
+    );
+    assert.match(recheckSummary, /Original failed checks: checks\/13-milestone-1-checks\.txt/);
+    assert.match(recheckSummary, /Promoted: yes/);
+    assert.deepEqual(await readState(context.paths.files.state), rechecked.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow keeps a still-failing manual recheck blocked", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+
+    const rechecked = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: new ScenarioRunner([]),
+      resumeRecoveryMode: "recheck_failed",
+    });
+
+    assert.equal(rechecked.ok, false);
+    if (rechecked.ok) return;
+    assert.equal(rechecked.state.currentPhase, "checks_failed");
+    assert.equal(rechecked.state.status, "checks_failed");
+    assert.equal(rechecked.state.milestoneStatuses["1"], "checks_failed");
+    assert.equal(
+      rechecked.state.artifacts.checks?.["1"],
+      path.join("checks", "13-milestone-1-checks.txt"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.checks?.["1-recheck-1"],
+      path.join("checks", "31-milestone-1-recheck-1.txt"),
+    );
+    assert.equal(
+      rechecked.state.artifacts.checkFailures?.["1-recheck-1"],
+      path.join("checks", "31-milestone-1-check-failure-after-recheck-1.json"),
+    );
+    assert.equal(
+      (rechecked.state.lastError?.details as { checkFailureSummary?: string }).checkFailureSummary,
+      path.join("checks", "31-milestone-1-check-failure-after-recheck-1.json"),
+    );
+    const recheckSummary = await readFile(
+      path.join(context.paths.dirs.milestones, "32-milestone-1-recheck-1-summary.md"),
+      "utf8",
+    );
+    assert.match(recheckSummary, /Promoted: no/);
+    assert.deepEqual(await readState(context.paths.files.state), rechecked.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow repairs from the latest failure after a failed recheck", async () => {
+  const checkCommand = stagedCheckRepairCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+  const repairRunner = new ScenarioRunner([
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair 1\n\nCreated repair marker.",
+      exitCode: 0,
+      writeFiles: [{ path: "repair-marker.txt", content: "repair attempted\n" }],
+    },
+    {
+      phase: "fix_check_failures",
+      text: "# Check Repair 2\n\nCreated fixed marker.",
+      exitCode: 0,
+      writeFiles: [{ path: "fixed.txt", content: "fixed\n" }],
+    },
+  ]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+
+    const rechecked = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: new ScenarioRunner([]),
+      resumeRecoveryMode: "recheck_failed",
+    });
+    assert.equal(rechecked.ok, false);
+    if (rechecked.ok) return;
+    assert.equal(
+      rechecked.state.artifacts.checkFailures?.["1-recheck-1"],
+      path.join("checks", "31-milestone-1-check-failure-after-recheck-1.json"),
+    );
+
+    const repaired = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      config: {
+        ...context.workflowOptions.config,
+        maxFixAttempts: 2,
+      },
+      initialState: rechecked.state,
+      runner: repairRunner,
+      resumeRecoveryMode: "repair_failed",
+    });
+
+    assert.equal(repaired.ok, true);
+    if (!repaired.ok) return;
+    assert.deepEqual(repairRunner.phases(), [
+      "fix_check_failures",
+      "fix_check_failures",
+    ]);
+    assert.match(
+      repairRunner.requests[0]?.prompt ?? "",
+      /initial check missing repair marker/,
+    );
+    assert.match(
+      repairRunner.requests[1]?.prompt ?? "",
+      /repair marker present but fixed marker missing/,
+    );
+    assert.match(
+      repairRunner.requests[1]?.prompt ?? "",
+      /Full check report: checks\/23-milestone-1-checks-after-check-repair-1\.txt/,
+    );
+    assert.doesNotMatch(
+      repairRunner.requests[1]?.prompt ?? "",
+      /Full check report: checks\/31-milestone-1-recheck-1\.txt/,
+    );
+    assert.equal(
+      repaired.state.artifacts.checkFailures?.["1-repair-1"],
+      path.join("checks", "23-milestone-1-check-failure-after-check-repair-1.json"),
+    );
+    assert.equal(
+      repaired.state.artifacts.checks?.["1"],
+      path.join("checks", "23-milestone-1-checks-after-check-repair-2.txt"),
+    );
+    assert.deepEqual(await readState(context.paths.files.state), repaired.state);
+  } finally {
+    await context.cleanup();
+  }
+});
+
+test("runImplementationWorkflow blocks manual recheck promotion for an empty reconciled diff", async () => {
+  const checkCommand = fixedFileCheckCommand();
+  const context = await createImplementationContext({
+    config: {
+      checks: [checkCommand],
+      runner: { type: "fake" },
+      maxFixAttempts: 0,
+      artifactRoot: ".agent-work",
+      milestonePlanPolicy: "always",
+      milestonePlanReviewPolicy: "normal",
+      humanReviewPolicy: "stop",
+    },
+  });
+  const initialRunner = new ScenarioRunner([
+    {
+      phase: "milestone_plan",
+      text: "# Plan\n\nCreate feature.txt.",
+      exitCode: 0,
+    },
+    {
+      phase: "implement_milestone",
+      text: "# Implementation\n\nCreated feature.txt.",
+      exitCode: 0,
+      writeFiles: [{ path: "feature.txt", content: "initial\n" }],
+    },
+  ]);
+
+  try {
+    const failed = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      runner: initialRunner,
+    });
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+
+    await rm(path.join(context.repo, "feature.txt"), { force: true });
+
+    const rechecked = await runImplementationWorkflow({
+      ...context.workflowOptions,
+      initialState: failed.state,
+      runner: new ScenarioRunner([]),
+      resumeRecoveryMode: "recheck_failed",
+    });
+
+    assert.equal(rechecked.ok, false);
+    if (rechecked.ok) return;
+    assert.match(rechecked.error, /reconciled diff is empty/);
+    assert.equal(rechecked.state.currentPhase, "checks_failed");
+    assert.equal(rechecked.state.milestoneStatuses["1"], "checks_failed");
+    assert.equal(rechecked.state.artifacts.diffs?.["1-recheck-1"], undefined);
+    assert.equal(
+      (rechecked.state.lastError?.details as { reason?: string }).reason,
+      "empty_reconciled_diff",
+    );
+    assert.deepEqual(await readState(context.paths.files.state), rechecked.state);
   } finally {
     await context.cleanup();
   }
@@ -1014,11 +1726,33 @@ function implementationConfig(
   };
 }
 
+function fixedFileCheckCommand(): string {
+  const script = "const fs = require('node:fs'); if (!fs.existsSync('fixed.txt')) { process.stderr.write('missing fixed file'); process.exit(2); } process.stdout.write('fixed ok');";
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+}
+
+function stagedCheckRepairCommand(): string {
+  const script = [
+    "const fs = require('node:fs');",
+    "if (!fs.existsSync('repair-marker.txt')) {",
+    "  process.stderr.write('initial check missing repair marker');",
+    "  process.exit(2);",
+    "}",
+    "if (!fs.existsSync('fixed.txt')) {",
+    "  process.stderr.write('repair marker present but fixed marker missing');",
+    "  process.exit(3);",
+    "}",
+    "process.stdout.write('fixed ok');",
+  ].join(" ");
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+}
+
 type ImplementationPhase =
   | "milestone_plan"
   | "milestone_plan_review"
   | "final_milestone_plan"
-  | "implement_milestone";
+  | "implement_milestone"
+  | "fix_check_failures";
 
 class ScriptedImplementationRunner implements AgentRunner {
   readonly type = "scripted";

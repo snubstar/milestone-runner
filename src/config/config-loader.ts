@@ -25,6 +25,7 @@ const configKeys = new Set([
   "checks",
   "runner",
   "maxFixAttempts",
+  "maxCheckFixAttempts",
   "artifactRoot",
   "milestonePlanPolicy",
   "milestonePlanReviewPolicy",
@@ -269,6 +270,16 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
     return { ok: false, error: "`maxFixAttempts` must be a non-negative integer." };
   }
 
+  const maxCheckFixAttempts = value.maxCheckFixAttempts;
+  if (
+    maxCheckFixAttempts !== undefined &&
+    (typeof maxCheckFixAttempts !== "number" ||
+      !Number.isInteger(maxCheckFixAttempts) ||
+      maxCheckFixAttempts < 0)
+  ) {
+    return { ok: false, error: "`maxCheckFixAttempts` must be a non-negative integer when provided." };
+  }
+
   if (!isNonEmptyString(value.artifactRoot)) {
     return { ok: false, error: "`artifactRoot` must be a non-empty string." };
   }
@@ -308,6 +319,7 @@ export function validateConfig(value: unknown): ConfigResult<OrchestratorConfig>
       checks,
       runner: runnerConfig,
       maxFixAttempts,
+      ...(maxCheckFixAttempts === undefined ? {} : { maxCheckFixAttempts }),
       artifactRoot: value.artifactRoot,
       milestonePlanPolicy,
       milestonePlanReviewPolicy,
@@ -322,6 +334,7 @@ export function applyConfigOverrides(
     artifactRoot?: string;
     runnerType?: string;
     maxFixAttempts?: number;
+    maxCheckFixAttempts?: number;
     milestonePlanPolicy?: MilestonePlanPolicy;
     milestonePlanReviewPolicy?: MilestonePlanReviewPolicy;
   },
@@ -330,6 +343,8 @@ export function applyConfigOverrides(
     ...config,
     artifactRoot: overrides.artifactRoot ?? config.artifactRoot,
     maxFixAttempts: overrides.maxFixAttempts ?? config.maxFixAttempts,
+    maxCheckFixAttempts:
+      overrides.maxCheckFixAttempts ?? config.maxCheckFixAttempts,
     milestonePlanPolicy: overrides.milestonePlanPolicy ?? config.milestonePlanPolicy,
     milestonePlanReviewPolicy:
       overrides.milestonePlanReviewPolicy ?? config.milestonePlanReviewPolicy,

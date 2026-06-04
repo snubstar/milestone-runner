@@ -15,6 +15,7 @@ import type { GitMetadata } from "../git/git-types.js";
 import { runnerIdentityDetails } from "../runners/runner-identity.js";
 import type { RunState } from "../state/state-types.js";
 import type { TimingWarning } from "../timings/timing-types.js";
+import type { ResumeRecoveryMode } from "../orchestration/resume-recovery.js";
 import type { DryRunReport } from "./dry-run.js";
 
 export interface RunReportOptions {
@@ -26,6 +27,7 @@ export interface RunReportOptions {
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
   targetMilestone: number | null;
+  resumeRecoveryMode?: ResumeRecoveryMode;
   runnerType: string;
   runnerConfig?: RunnerConfig;
   configPath: string | null;
@@ -34,6 +36,8 @@ export interface RunReportOptions {
   checks: string[];
   maxFixAttempts: number;
   savedMaxFixAttempts?: number;
+  maxCheckFixAttempts: number;
+  savedMaxCheckFixAttempts?: number;
   milestonePlanPolicy: MilestonePlanPolicy;
   savedMilestonePlanPolicy?: MilestonePlanPolicy;
   milestonePlanReviewPolicy: MilestonePlanReviewPolicy;
@@ -79,6 +83,9 @@ export function printRunReport(options: RunReportOptions): void {
   console.log(`Allow dirty: ${options.allowDirty}`);
   console.log(`Allow non-Git planning: ${options.allowNonGitPlanning}`);
   console.log(`Target milestone: ${options.targetMilestone ?? "none"}`);
+  if (options.mode === "resume") {
+    console.log(`Resume recovery mode: ${options.resumeRecoveryMode ?? "none"}`);
+  }
   console.log(`Runner: ${options.runnerType}`);
   printRunnerIdentity(options);
   console.log(`Config: ${options.configPath}`);
@@ -91,6 +98,13 @@ export function printRunReport(options: RunReportOptions): void {
     options.savedMaxFixAttempts !== options.maxFixAttempts
   ) {
     console.log(`Saved max fix attempts: ${options.savedMaxFixAttempts}`);
+  }
+  console.log(`Effective max check-fix attempts: ${options.maxCheckFixAttempts}`);
+  if (
+    options.savedMaxCheckFixAttempts !== undefined &&
+    options.savedMaxCheckFixAttempts !== options.maxCheckFixAttempts
+  ) {
+    console.log(`Saved max check-fix attempts: ${options.savedMaxCheckFixAttempts}`);
   }
   console.log(`Milestone plan policy: ${options.milestonePlanPolicy}`);
   if (
@@ -200,6 +214,8 @@ export function buildRunJsonReport(
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone,
+      resumeRecoveryMode:
+        options.mode === "resume" ? options.resumeRecoveryMode ?? "none" : undefined,
       runner: options.runnerType,
       ...runnerIdentityDetails(runnerConfigForReport(options)),
       config: options.configPath,
@@ -208,6 +224,8 @@ export function buildRunJsonReport(
       checks: options.checks,
       maxFixAttempts: options.maxFixAttempts,
       savedMaxFixAttempts: options.savedMaxFixAttempts,
+      maxCheckFixAttempts: options.maxCheckFixAttempts,
+      savedMaxCheckFixAttempts: options.savedMaxCheckFixAttempts,
       milestonePlanPolicy: options.milestonePlanPolicy,
       savedMilestonePlanPolicy: options.savedMilestonePlanPolicy,
       milestonePlanReviewPolicy: options.milestonePlanReviewPolicy,

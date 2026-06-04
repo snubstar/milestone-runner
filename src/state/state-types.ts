@@ -9,6 +9,9 @@ export type OrchestratorPhase =
   | "ready_for_review"
   | "implementing"
   | "checking"
+  | "checks_failed"
+  | "repairing_checks"
+  | "rechecking"
   | "reviewing"
   | "fixing"
   | "passed"
@@ -21,6 +24,9 @@ export type MilestoneStatus =
   | "ready_for_review"
   | "implementing"
   | "checking"
+  | "checks_failed"
+  | "repairing_checks"
+  | "rechecking"
   | "reviewing"
   | "fixing"
   | "passed"
@@ -51,6 +57,7 @@ export interface StateArtifacts {
   implementations?: Record<string, string>;
   diffs?: Record<string, string>;
   checks?: Record<string, string>;
+  checkFailures?: Record<string, string>;
   reviews?: Record<string, string>;
   summaries?: Record<string, string>;
   fixes?: Record<string, string>;
@@ -94,6 +101,8 @@ export interface RunState {
   };
   milestoneStatuses: Record<string, MilestoneStatus>;
   fixAttempts: Record<string, number>;
+  checkFixAttempts: Record<string, number>;
+  milestoneBaselines: Record<string, string>;
   artifacts: StateArtifacts;
   lastError: StateError | null;
   createdAt: string;

@@ -21,6 +21,7 @@ export type MilestoneArtifactStateKey =
 
 export type ArtifactMapStateKey =
   | MilestoneArtifactStateKey
+  | "checkFailures"
   | "reviews"
   | "fixes"
   | "logs";
@@ -97,6 +98,22 @@ export function setMilestoneStatus(
     milestoneStatuses: {
       ...state.milestoneStatuses,
       [String(milestoneId)]: status,
+    },
+    updatedAt: now.toISOString(),
+  };
+}
+
+export function recordMilestoneBaseline(
+  state: RunState,
+  milestoneId: number,
+  baselineTree: string,
+  now = new Date(),
+): RunState {
+  return {
+    ...state,
+    milestoneBaselines: {
+      ...state.milestoneBaselines,
+      [String(milestoneId)]: baselineTree,
     },
     updatedAt: now.toISOString(),
   };

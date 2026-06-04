@@ -355,6 +355,8 @@ function normalizeLoadedState(options: {
       targetCwd: options.targetCwd,
     },
     inputs: normalizeStateInputs(options.state.inputs),
+    checkFixAttempts: normalizeNumberRecord(options.state.checkFixAttempts),
+    milestoneBaselines: normalizeStringRecord(options.state.milestoneBaselines),
     artifactRoot: options.paths.artifactRoot,
     runDir: options.paths.runDir,
   };
@@ -493,6 +495,33 @@ function isRunStateLike(value: unknown): value is RunState {
     isRecord(value.artifacts) &&
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string"
+  );
+}
+
+function normalizeNumberRecord(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, number] => {
+      return typeof entry[0] === "string" &&
+        entry[0].length > 0 &&
+        typeof entry[1] === "number" &&
+        Number.isInteger(entry[1]) &&
+        entry[1] >= 0;
+    }),
+  );
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => {
+      return typeof entry[0] === "string" &&
+        entry[0].length > 0 &&
+        typeof entry[1] === "string" &&
+        entry[1].length > 0;
+    }),
   );
 }
 

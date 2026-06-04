@@ -5,6 +5,7 @@ import type { AgentRunner } from "../runners/agent-runner.js";
 import type { CommandRunner } from "../shell/command-runner.js";
 import type { RunState } from "../state/state-types.js";
 import type { TimingWarning } from "../timings/timing-types.js";
+import type { ResumeRecoveryMode } from "./resume-recovery.js";
 
 export interface GoalWorkflowOptions {
   goal: string;
@@ -20,6 +21,7 @@ export interface GoalWorkflowOptions {
   milestonesSchema?: string | object;
   resolvedSeedMajorPlan?: ResolvedSeedMajorPlan;
   executionLimits?: GoalWorkflowExecutionLimits;
+  resumeRecoveryMode?: ResumeRecoveryMode;
   invocationId?: string;
   timingWarnings?: TimingWarning[];
   now?: () => Date;

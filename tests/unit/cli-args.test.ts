@@ -141,6 +141,20 @@ test("parseArgs accepts resume by run id with artifact root", () => {
   }
 });
 
+test("parseArgs accepts recovery flags with resume", () => {
+  const result = parseArgs([
+    "--resume",
+    ".agent-work/run-1",
+    "--repair-failed",
+  ]);
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.options.goal, null);
+    assert.equal(result.options.resumeRecoveryMode, "repair_failed");
+  }
+});
+
 test("parseArgs accepts milestone plan policy with resume", () => {
   const result = parseArgs([
     "--resume",
@@ -270,6 +284,30 @@ test("parseArgs rejects config with resume", () => {
   assert.deepEqual(result, {
     ok: false,
     error: "--config cannot be combined with --resume in Milestone 8.",
+  });
+});
+
+test("parseArgs rejects recovery flags without resume", () => {
+  const result = parseArgs(["--recheck", "Add feature X"]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error:
+      "--repair-failed, --recheck, and --retry-failed can only be used with --resume.",
+  });
+});
+
+test("parseArgs rejects multiple recovery flags", () => {
+  const result = parseArgs([
+    "--resume",
+    "run-1",
+    "--repair-failed",
+    "--retry-failed",
+  ]);
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Only one recovery flag can be supplied.",
   });
 });
 

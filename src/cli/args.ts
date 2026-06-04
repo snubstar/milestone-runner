@@ -4,6 +4,7 @@ import type {
 } from "../config/config-types.js";
 import type { RunnerType } from "../runners/runner-types.js";
 import { isSafeRunId } from "../artifacts/paths.js";
+import type { ResumeRecoveryMode } from "../orchestration/resume-recovery.js";
 
 export interface CliOptions {
   goal: string | null;
@@ -19,6 +20,7 @@ export interface CliOptions {
   dryRun: boolean;
   json: boolean;
   resume?: string;
+  resumeRecoveryMode: ResumeRecoveryMode;
   runId?: string;
   maxFixAttempts?: number;
   milestone?: number;
@@ -46,6 +48,7 @@ export function parseArgs(argv: string[]): ParseArgsResult {
     allowNonGitPlanning: false,
     dryRun: false,
     json: false,
+    resumeRecoveryMode: "none",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -78,6 +81,36 @@ export function parseArgs(argv: string[]): ParseArgsResult {
 
     if (arg === "--json") {
       options.json = true;
+      continue;
+    }
+
+    if (arg === "--repair-failed") {
+      const recovery = setResumeRecoveryMode(
+        options.resumeRecoveryMode,
+        "repair_failed",
+      );
+      if (!recovery.ok) return recovery;
+      options.resumeRecoveryMode = recovery.value;
+      continue;
+    }
+
+    if (arg === "--recheck") {
+      const recovery = setResumeRecoveryMode(
+        options.resumeRecoveryMode,
+        "recheck_failed",
+      );
+      if (!recovery.ok) return recovery;
+      options.resumeRecoveryMode = recovery.value;
+      continue;
+    }
+
+    if (arg === "--retry-failed") {
+      const recovery = setResumeRecoveryMode(
+        options.resumeRecoveryMode,
+        "retry_failed",
+      );
+      if (!recovery.ok) return recovery;
+      options.resumeRecoveryMode = recovery.value;
       continue;
     }
 
@@ -232,6 +265,14 @@ export function parseArgs(argv: string[]): ParseArgsResult {
   }
 
   const goal = goalParts.join(" ").trim();
+  if (!options.resume && options.resumeRecoveryMode !== "none") {
+    return {
+      ok: false,
+      error:
+        "--repair-failed, --recheck, and --retry-failed can only be used with --resume.",
+    };
+  }
+
   if (options.resume) {
     if (options.runId) {
       return {
@@ -341,6 +382,20 @@ function parseIntegerOption(
   return { ok: true, value: parsed };
 }
 
+function setResumeRecoveryMode(
+  current: ResumeRecoveryMode,
+  next: ResumeRecoveryMode,
+): { ok: true; value: ResumeRecoveryMode } | { ok: false; error: string } {
+  if (current !== "none") {
+    return {
+      ok: false,
+      error: "Only one recovery flag can be supplied.",
+    };
+  }
+
+  return { ok: true, value: next };
+}
+
 export function usage(): string {
   return [
     "Usage: milestone-runner [options] <goal>",
@@ -362,6 +417,9 @@ export function usage(): string {
     "  --json                  Print the dry-run or final run report as JSON.",
     "  --run-id <id>           Use a specific filesystem-safe id for a new run.",
     "  --resume <value>        Resume from a run directory, state.json path, or run id.",
+    "  --repair-failed         With --resume, repair a failed check milestone.",
+    "  --recheck               With --resume, rerun checks after manual repair.",
+    "  --retry-failed          With --resume, retry a failed milestone from its baseline.",
     "  --max-fix-attempts <n>  Override the configured max fix attempts.",
     "  --milestone <id>        Constrain execution to one milestone.",
     "  --milestone-plan-policy <policy>",

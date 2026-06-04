@@ -10,6 +10,7 @@ import {
   failState,
   recordArtifactByKey,
   recordMilestoneArtifact,
+  recordMilestoneBaseline,
   recordPlanningArtifact,
   setMilestoneStatus,
   setStatePhase,
@@ -273,6 +274,26 @@ test("recordArtifactByKey records string-keyed artifact paths", () => {
     "1-fix-1": "fixes/21-milestone-1-fix-attempt-1.md",
   });
   assert.equal(state.updatedAt, "2026-05-10T12:00:07.000Z");
+});
+
+test("recordMilestoneBaseline records per-milestone baseline trees", () => {
+  const state = recordMilestoneBaseline(
+    {
+      ...initialState(),
+      milestoneBaselines: {
+        "1": "tree-1",
+      },
+    },
+    2,
+    "tree-2",
+    new Date("2026-05-10T12:00:07.500Z"),
+  );
+
+  assert.deepEqual(state.milestoneBaselines, {
+    "1": "tree-1",
+    "2": "tree-2",
+  });
+  assert.equal(state.updatedAt, "2026-05-10T12:00:07.500Z");
 });
 
 test("setMilestoneStatus updates one milestone without changing others", () => {

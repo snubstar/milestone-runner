@@ -189,6 +189,98 @@ test("normalizeStateForGoalResume returns failed and human-review states as stop
   );
 });
 
+test("normalizeStateForGoalResume recognizes explicit checks_failed recovery", () => {
+  const decision = normalizeStateForGoalResume(
+    state({
+      currentPhase: "checks_failed",
+      status: "checks_failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "checks_failed",
+        "2": "pending",
+      },
+    }),
+    metadata(),
+    { recoveryMode: "repair_failed" },
+  );
+
+  assert.deepEqual(decision, {
+    kind: "recover",
+    mode: "repair_failed",
+    milestoneId: 1,
+    legacyFailedCheck: false,
+  });
+});
+
+test("normalizeStateForGoalResume recognizes explicit legacy failed-check recovery", () => {
+  const decision = normalizeStateForGoalResume(
+    state({
+      currentPhase: "checking",
+      status: "failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "failed",
+        "2": "pending",
+      },
+    }),
+    metadata(),
+    { recoveryMode: "recheck_failed" },
+  );
+
+  assert.deepEqual(decision, {
+    kind: "recover",
+    mode: "recheck_failed",
+    milestoneId: 1,
+    legacyFailedCheck: true,
+  });
+});
+
+test("normalizeStateForGoalResume recognizes explicit terminal failed-check recovery", () => {
+  const decision = normalizeStateForGoalResume(
+    state({
+      currentPhase: "failed",
+      status: "failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "failed",
+        "2": "pending",
+      },
+      artifacts: {
+        checkFailures: {
+          "1-failed-1": "checks/13-milestone-1-check-failure-1.json",
+        },
+      },
+    }),
+    metadata(),
+    { recoveryMode: "repair_failed" },
+  );
+
+  assert.deepEqual(decision, {
+    kind: "recover",
+    mode: "repair_failed",
+    milestoneId: 1,
+    legacyFailedCheck: false,
+  });
+});
+
+test("normalizeStateForGoalResume rejects recovery mode outside check failure states", () => {
+  const decision = normalizeStateForGoalResume(
+    state({
+      currentPhase: "failed",
+      status: "failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "failed",
+        "2": "pending",
+      },
+    }),
+    metadata(),
+    { recoveryMode: "retry_failed" },
+  );
+
+  assertNeedsHumanReview(decision, /can only resume from checks_failed/);
+});
+
 test("normalizeStateForGoalResume recovers implementation transients with completed artifacts", () => {
   const decision = normalizeStateForGoalResume(
     state({

@@ -2,12 +2,21 @@ import { readFile } from "node:fs/promises";
 
 import { buildPlanningArtifactPaths } from "../artifacts/planning-artifacts.js";
 import type { RunPaths } from "../artifacts/paths.js";
+import { effectiveMaxCheckFixAttempts } from "../config/check-fix-attempts.js";
 import type { OrchestratorConfig } from "../config/config-types.js";
 import type { EnvironmentDiagnostic } from "../diagnostics/environment-validator.js";
+import { captureGitTree } from "../git/git-diff.js";
 import type { GitMetadata } from "../git/git-types.js";
+import type { MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseMilestoneMetadataJson } from "../milestones/milestone-validator.js";
+import { resolveMilestoneBaseline } from "../orchestration/milestone-baseline.js";
+import {
+  actionForResumeRecoveryMode,
+  type ResumeRecoveryMode,
+} from "../orchestration/resume-recovery.js";
 import { normalizeStateForGoalResume } from "../orchestration/resume-state.js";
 import { runnerIdentityDetails } from "../runners/runner-identity.js";
+import type { CommandRunner } from "../shell/command-runner.js";
 import type { RunState } from "../state/state-types.js";
 import {
   describeHumanReviewPolicyMode,
@@ -64,6 +73,9 @@ export interface ResumeDryRunOptions {
   allowDirty: boolean;
   allowNonGitPlanning: boolean;
   targetMilestone?: number;
+  resumeRecoveryMode?: ResumeRecoveryMode;
+  cwd?: string;
+  commandRunner?: CommandRunner;
   git: GitMetadata;
   runnerType: string;
   diagnostics?: EnvironmentDiagnostic[];
@@ -108,6 +120,7 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
       config: options.configPath,
       artifactRoot: options.config.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
+      maxCheckFixAttempts: effectiveMaxCheckFixAttempts(options.config),
       milestonePlanPolicy: options.config.milestonePlanPolicy,
       milestonePlanReviewPolicy: options.config.milestonePlanReviewPolicy,
       humanReviewPolicy: options.config.humanReviewPolicy,
@@ -137,6 +150,7 @@ export function buildNewRunDryRunReport(options: NewRunDryRunOptions): DryRunRep
 export async function buildResumeDryRunReport(
   options: ResumeDryRunOptions,
 ): Promise<DryRunReport> {
+  const resumeRecoveryMode = options.resumeRecoveryMode ?? "none";
   const savedPlanPolicy = savedMilestonePlanPolicy(options.state);
   const savedReviewPolicy = savedMilestonePlanReviewPolicy(options.state);
   const savedHumanPolicy = savedHumanReviewPolicy(options.state);
@@ -151,7 +165,15 @@ export async function buildResumeDryRunReport(
   let allowed = nextAction === undefined;
 
   if (!nextAction) {
-    const action = await resumeNextAction(options.state, options.paths, options.config);
+    const action = await resumeNextAction({
+      state: options.state,
+      paths: options.paths,
+      config: options.config,
+      targetMilestone: options.targetMilestone,
+      resumeRecoveryMode,
+      cwd: options.cwd,
+      commandRunner: options.commandRunner,
+    });
     nextAction = action.nextAction;
     allowed = action.allowed;
     warnings.push(...action.warnings);
@@ -184,11 +206,13 @@ export async function buildResumeDryRunReport(
       allowDirty: options.allowDirty,
       allowNonGitPlanning: options.allowNonGitPlanning,
       targetMilestone: options.targetMilestone ?? null,
+      resumeRecoveryMode,
       runner: options.runnerType,
       runnerExecution: runnerExecutionDescription(options.config),
       ...runnerIdentityDetails(options.config),
       artifactRoot: options.paths.artifactRoot,
       maxFixAttempts: options.config.maxFixAttempts,
+      maxCheckFixAttempts: effectiveMaxCheckFixAttempts(options.config),
       milestonePlanPolicy: options.config.milestonePlanPolicy,
       ...(savedPlanPolicy !== options.config.milestonePlanPolicy
         ? { savedMilestonePlanPolicy: savedPlanPolicy }
@@ -253,15 +277,24 @@ function savedHumanReviewPolicy(state: RunState): OrchestratorConfig["humanRevie
 }
 
 async function resumeNextAction(
-  state: RunState,
-  paths: RunPaths,
-  config: OrchestratorConfig,
+  options: {
+    state: RunState;
+    paths: RunPaths;
+    config: OrchestratorConfig;
+    targetMilestone?: number;
+    resumeRecoveryMode: ResumeRecoveryMode;
+    cwd?: string;
+    commandRunner?: CommandRunner;
+  },
 ): Promise<{ allowed: boolean; nextAction: string; warnings: string[] }> {
-  if (isPlanningResumePhase(state.currentPhase)) {
+  if (
+    options.resumeRecoveryMode === "none" &&
+    isPlanningResumePhase(options.state.currentPhase)
+  ) {
     return { allowed: true, nextAction: "continue_planning", warnings: [] };
   }
 
-  const metadataResult = await readMilestoneMetadata(paths);
+  const metadataResult = await readMilestoneMetadata(options.paths);
   if (!metadataResult.ok) {
     return {
       allowed: false,
@@ -270,7 +303,18 @@ async function resumeNextAction(
     };
   }
 
-  const decision = normalizeStateForGoalResume(state, metadataResult.metadata);
+  if (options.resumeRecoveryMode !== "none") {
+    return resumeRecoveryNextAction({
+      ...options,
+      metadata: metadataResult.metadata,
+      recoveryMode: options.resumeRecoveryMode,
+    });
+  }
+
+  const decision = normalizeStateForGoalResume(
+    options.state,
+    metadataResult.metadata,
+  );
   switch (decision.kind) {
     case "continue":
       return {
@@ -312,7 +356,7 @@ async function resumeNextAction(
         warnings: [],
       };
     case "needs_human_review":
-      if (config.humanReviewPolicy === "autonomous") {
+      if (options.config.humanReviewPolicy === "autonomous") {
         return {
           allowed: true,
           nextAction: "resolve_resume_state",
@@ -320,7 +364,7 @@ async function resumeNextAction(
         };
       }
 
-      if (config.humanReviewPolicy === "fail") {
+      if (options.config.humanReviewPolicy === "fail") {
         return {
           allowed: true,
           nextAction: "fail_unsafe_resume",
@@ -333,7 +377,257 @@ async function resumeNextAction(
         nextAction: "blocked_unsafe_resume",
         warnings: [decision.message],
       };
+    case "recover":
+      return {
+        allowed: false,
+        nextAction: "blocked_unsafe_resume",
+        warnings: ["Recovery decisions require an explicit recovery mode."],
+      };
   }
+}
+
+async function resumeRecoveryNextAction(options: {
+  state: RunState;
+  paths: RunPaths;
+  config: OrchestratorConfig;
+  metadata: MilestoneMetadata;
+  targetMilestone?: number;
+  recoveryMode: Exclude<ResumeRecoveryMode, "none">;
+  cwd?: string;
+  commandRunner?: CommandRunner;
+}): Promise<{ allowed: boolean; nextAction: string; warnings: string[] }> {
+  const decision = normalizeStateForGoalResume(options.state, options.metadata, {
+    recoveryMode: options.recoveryMode,
+  });
+  if (decision.kind !== "recover") {
+    return {
+      allowed: false,
+      nextAction: "blocked_unsafe_resume",
+      warnings: [messageForNonRecoveryDecision(decision)],
+    };
+  }
+
+  if (
+    options.targetMilestone !== undefined &&
+    options.targetMilestone !== decision.milestoneId
+  ) {
+    return {
+      allowed: false,
+      nextAction: "blocked_unsafe_resume",
+      warnings: [
+        `Recovery mode ${options.recoveryMode} targets active failed milestone ${decision.milestoneId}; requested milestone ${options.targetMilestone} is not recoverable.`,
+      ],
+    };
+  }
+
+  const dependencyBlock = failedRecoveryDependencyBlock(
+    options.state,
+    options.metadata,
+    decision.milestoneId,
+  );
+  if (dependencyBlock) {
+    return {
+      allowed: false,
+      nextAction: "blocked_unsafe_resume",
+      warnings: [dependencyBlock],
+    };
+  }
+
+  const missingArtifacts = missingRecoveryArtifacts(
+    options.state,
+    decision.milestoneId,
+    options.recoveryMode,
+  );
+  if (missingArtifacts.length > 0) {
+    return {
+      allowed: false,
+      nextAction: "blocked_unsafe_resume",
+      warnings: [
+        `Recovery mode ${options.recoveryMode} is missing required milestone artifacts: ${missingArtifacts.join(", ")}.`,
+      ],
+    };
+  }
+
+  const baseline = await resolveRecoveryBaseline({
+    state: options.state,
+    metadata: options.metadata,
+    milestoneId: decision.milestoneId,
+    paths: options.paths,
+    cwd: options.cwd,
+    commandRunner: options.commandRunner,
+  });
+  if (!baseline.ok) {
+    return {
+      allowed: false,
+      nextAction: "blocked_missing_milestone_baseline",
+      warnings: [baseline.error],
+    };
+  }
+
+  if (options.recoveryMode === "retry_failed") {
+    if (!options.cwd || !options.commandRunner) {
+      return {
+        allowed: false,
+        nextAction: "blocked_unsafe_resume",
+        warnings: [
+          "Retry dry-run requires a target cwd and command runner to compare the current worktree with the milestone baseline.",
+        ],
+      };
+    }
+
+    const treeResult = await captureGitTree({
+      cwd: options.cwd,
+      commandRunner: options.commandRunner,
+      excludedPaths: [options.paths.runDir],
+    });
+    if (!treeResult.ok) {
+      return {
+        allowed: false,
+        nextAction: "blocked_unsafe_resume",
+        warnings: [treeResult.error],
+      };
+    }
+
+    if (treeResult.tree !== baseline.baselineTree) {
+      return {
+        allowed: false,
+        nextAction: "blocked_dirty_retry_worktree",
+        warnings: [
+          `Retry requires the worktree to match the milestone ${decision.milestoneId} baseline. Use --repair-failed or --recheck, or restore the worktree manually before retrying.`,
+        ],
+      };
+    }
+  }
+
+  const warnMissingCheckFailureSummary =
+    options.recoveryMode === "repair_failed" &&
+    !hasRecoveryCheckFailureSummary(options.state, decision.milestoneId);
+
+  return {
+    allowed: true,
+    nextAction: actionForResumeRecoveryMode(options.recoveryMode),
+    warnings: [
+      ...(baseline.source === "reconstructed"
+        ? [
+            `Milestone ${decision.milestoneId} baseline was reconstructed from legacy artifacts.`,
+          ]
+        : []),
+      ...(warnMissingCheckFailureSummary
+        ? [
+            `Milestone ${decision.milestoneId} has no structured check-failure summary; repair recovery will synthesize one from the saved check report.`,
+          ]
+        : []),
+    ],
+  };
+}
+
+function messageForNonRecoveryDecision(
+  decision: ReturnType<typeof normalizeStateForGoalResume>,
+): string {
+  if (decision.kind === "needs_human_review") return decision.message;
+  if (decision.kind === "stopped") {
+    return `Recovery cannot resume stopped state ${decision.state.currentPhase}/${decision.state.status}.`;
+  }
+  return `Recovery cannot resume from decision ${decision.kind}.`;
+}
+
+function failedRecoveryDependencyBlock(
+  state: RunState,
+  metadata: MilestoneMetadata,
+  milestoneId: number,
+): string | null {
+  const milestone = metadata.milestones.find((candidate) => candidate.id === milestoneId);
+  if (!milestone) return `Milestone ${milestoneId} is missing from metadata.`;
+
+  const unmetDependencies = milestone.dependencies.filter(
+    (dependencyId) => state.milestoneStatuses[String(dependencyId)] !== "passed",
+  );
+  if (unmetDependencies.length === 0) return null;
+
+  return `Milestone ${milestoneId} cannot be recovered because dependencies are not passed: ${unmetDependencies.join(", ")}.`;
+}
+
+function missingRecoveryArtifacts(
+  state: RunState,
+  milestoneId: number,
+  recoveryMode: Exclude<ResumeRecoveryMode, "none">,
+): string[] {
+  const key = String(milestoneId);
+  const missing: string[] = [];
+
+  if (!state.artifacts.milestonePlans?.[key]) missing.push("milestonePlans");
+  if (!state.artifacts.implementations?.[key]) missing.push("implementations");
+  if (!state.artifacts.checks?.[key]) missing.push("checks");
+  if (recoveryMode === "repair_failed" && !state.artifacts.diffs?.[key]) {
+    missing.push("diffs");
+  }
+
+  return missing;
+}
+
+function hasRecoveryCheckFailureSummary(
+  state: RunState,
+  milestoneId: number,
+): boolean {
+  const pattern = new RegExp(`^${milestoneId}-(failed|repair|recheck)-\\d+$`);
+  return Object.keys(state.artifacts.checkFailures ?? {}).some((artifactKey) =>
+    pattern.test(artifactKey),
+  );
+}
+
+async function resolveRecoveryBaseline(options: {
+  state: RunState;
+  metadata: MilestoneMetadata;
+  milestoneId: number;
+  paths: RunPaths;
+  cwd?: string;
+  commandRunner?: CommandRunner;
+}): Promise<
+  | { ok: true; baselineTree: string; source: "stored" | "reconstructed" }
+  | { ok: false; error: string }
+> {
+  const storedBaseline = options.state.milestoneBaselines[String(options.milestoneId)];
+  if (storedBaseline) {
+    return {
+      ok: true,
+      baselineTree: storedBaseline,
+      source: "stored",
+    };
+  }
+
+  if (!options.state.git.startSha) {
+    return {
+      ok: false,
+      error:
+        "Missing milestone baseline and state.git.startSha; legacy baseline reconstruction is unavailable.",
+    };
+  }
+
+  if (!options.cwd || !options.commandRunner) {
+    return {
+      ok: false,
+      error:
+        "Missing milestone baseline and dry-run was not provided the Git context required for legacy baseline reconstruction.",
+    };
+  }
+
+  const baselineResult = await resolveMilestoneBaseline({
+    state: options.state,
+    metadata: options.metadata,
+    milestoneId: options.milestoneId,
+    paths: options.paths,
+    cwd: options.cwd,
+    commandRunner: options.commandRunner,
+  });
+
+  if (!baselineResult.ok) {
+    return {
+      ok: false,
+      error: baselineResult.error,
+    };
+  }
+
+  return baselineResult;
 }
 
 async function readMilestoneMetadata(paths: RunPaths) {

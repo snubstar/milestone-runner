@@ -15,6 +15,9 @@ const phases = new Set([
   "ready_for_review",
   "implementing",
   "checking",
+  "checks_failed",
+  "repairing_checks",
+  "rechecking",
   "reviewing",
   "fixing",
   "passed",
@@ -28,6 +31,9 @@ const milestoneStatuses = new Set([
   "ready_for_review",
   "implementing",
   "checking",
+  "checks_failed",
+  "repairing_checks",
+  "rechecking",
   "reviewing",
   "fixing",
   "passed",
@@ -47,6 +53,8 @@ const topLevelStateFields = [
   "config",
   "milestoneStatuses",
   "fixAttempts",
+  "checkFixAttempts",
+  "milestoneBaselines",
   "artifacts",
   "lastError",
   "createdAt",
@@ -69,6 +77,7 @@ const mapArtifactFields = [
   "implementations",
   "diffs",
   "checks",
+  "checkFailures",
   "reviews",
   "summaries",
   "fixes",
@@ -97,6 +106,8 @@ export function assertRunStateShape(value: unknown): asserts value is RunState {
   assertConfigShape(value.config);
   assertMilestoneStatusRecord(value.milestoneStatuses, "RunState.milestoneStatuses");
   assertFixAttemptRecord(value.fixAttempts, "RunState.fixAttempts");
+  assertFixAttemptRecord(value.checkFixAttempts, "RunState.checkFixAttempts");
+  assertStringRecord(value.milestoneBaselines, "RunState.milestoneBaselines");
   assertArtifactsShape(value.artifacts);
   assertStateErrorShape(value.lastError);
   assertIsoTimestamp(value.createdAt, "RunState.createdAt");
@@ -241,6 +252,12 @@ function assertConfigShape(value: unknown): void {
     value.snapshot.maxFixAttempts,
     "RunState.config.snapshot.maxFixAttempts",
   );
+  if ("maxCheckFixAttempts" in value.snapshot) {
+    assertNonNegativeInteger(
+      value.snapshot.maxCheckFixAttempts,
+      "RunState.config.snapshot.maxCheckFixAttempts",
+    );
+  }
   assertNonEmptyString(value.snapshot.artifactRoot, "RunState.config.snapshot.artifactRoot");
 }
 

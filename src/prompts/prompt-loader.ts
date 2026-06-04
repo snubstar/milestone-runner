@@ -14,7 +14,8 @@ export type PromptName =
   | "repair-review-verdict"
   | "resolve-review-ambiguity"
   | "resolve-resume-state"
-  | "fix-review-findings";
+  | "fix-review-findings"
+  | "fix-check-failures";
 
 export interface LoadedPrompt {
   name: PromptName;
@@ -43,6 +44,7 @@ const promptFiles: Record<PromptName, string> = {
   "resolve-review-ambiguity": "resolve-review-ambiguity.md",
   "resolve-resume-state": "resolve-resume-state.md",
   "fix-review-findings": "fix-review-findings.md",
+  "fix-check-failures": "fix-check-failures.md",
 };
 
 export async function loadPrompt(

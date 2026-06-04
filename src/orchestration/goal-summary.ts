@@ -4,6 +4,10 @@ import path from "node:path";
 import { buildGoalArtifactPaths } from "../artifacts/goal-artifacts.js";
 import { resolveRunArtifactPath, type RunPaths } from "../artifacts/paths.js";
 import { writeTextArtifact } from "../artifacts/planning-artifacts.js";
+import {
+  parseCheckFailureSummaryArtifact,
+  type CheckFailureSummaryArtifact,
+} from "../checks/check-failure-summary.js";
 import type { Milestone, MilestoneMetadata } from "../milestones/milestone-types.js";
 import { parseReviewVerdictJson } from "../review/review-verdict-validator.js";
 import type {
@@ -21,15 +25,24 @@ export interface GoalSummaryDiagnostic {
   details?: string | object | unknown[] | null;
 }
 
+type GoalSummaryArtifactSource = "base" | "fix" | "repair" | "recheck";
+
 export interface GoalSummaryArtifactRef {
   milestoneId: number;
   stateKey: string;
   path: string;
   attempt: number | null;
+  artifactSource?: GoalSummaryArtifactSource;
 }
 
 export interface GoalSummaryReviewRef extends GoalSummaryArtifactRef {
   verdict?: ReviewVerdictDocument;
+  error?: string;
+}
+
+export interface GoalSummaryCheckFailureRef extends GoalSummaryArtifactRef {
+  source: "failed" | "repair" | "recheck";
+  summary?: CheckFailureSummaryArtifact;
   error?: string;
 }
 
@@ -56,6 +69,7 @@ export interface FormatGoalSummaryOptions {
   metadata: MilestoneMetadata;
   changedFiles: string[];
   latestChecks: GoalSummaryArtifactRef[];
+  latestCheckFailures: GoalSummaryCheckFailureRef[];
   latestReviews: GoalSummaryReviewRef[];
   autonomousDecisions: GoalSummaryAutonomousDecisionRef[];
   residualRisks: string[];
@@ -103,6 +117,12 @@ export async function writeGoalSummary(
     const latestChecks = latestArtifactsByMilestone(
       options.state.artifacts.checks,
       options.metadata,
+      ["fix", "repair", "recheck"],
+    );
+    const latestCheckFailures = await latestCheckFailureArtifactsByMilestone(
+      options.paths.runDir,
+      options.state,
+      options.metadata,
     );
     const latestReviews = await latestReviewArtifactsByMilestone(
       options.paths.runDir,
@@ -119,6 +139,7 @@ export async function writeGoalSummary(
       diagnostics: options.diagnostics ?? [],
       changedFiles,
       latestChecks,
+      latestCheckFailures,
       latestReviews,
       autonomousDecisions,
     });
@@ -128,6 +149,7 @@ export async function writeGoalSummary(
       metadata: options.metadata,
       changedFiles: changedFiles.files,
       latestChecks,
+      latestCheckFailures,
       latestReviews,
       autonomousDecisions,
       residualRisks,
@@ -189,6 +211,10 @@ export function formatGoalSummary(options: FormatGoalSummaryOptions): string {
     "## Latest Checks",
     "",
     ...formatArtifactRefs(options.latestChecks, "No check artifacts recorded."),
+    "",
+    "## Latest Check Failures",
+    "",
+    ...formatCheckFailureRefs(options.latestCheckFailures),
     "",
     "## Latest Reviews",
     "",
@@ -303,9 +329,12 @@ function excludeRunDirectory(
 function latestArtifactsByMilestone(
   artifacts: Record<string, string> | undefined,
   metadata: MilestoneMetadata,
+  attemptSources: GoalSummaryArtifactSource[] = ["fix"],
 ): GoalSummaryArtifactRef[] {
   return sortedMilestones(metadata)
-    .map((milestone) => latestArtifactForMilestone(artifacts, milestone.id))
+    .map((milestone) =>
+      latestArtifactForMilestone(artifacts, milestone.id, attemptSources),
+    )
     .filter((artifact): artifact is GoalSummaryArtifactRef => artifact !== null);
 }
 
@@ -350,30 +379,117 @@ async function latestReviewArtifactsByMilestone(
   );
 }
 
+async function latestCheckFailureArtifactsByMilestone(
+  runDir: string,
+  state: RunState,
+  metadata: MilestoneMetadata,
+): Promise<GoalSummaryCheckFailureRef[]> {
+  const checkFailureRefs = sortedMilestones(metadata)
+    .map((milestone) =>
+      latestCheckFailureArtifactForMilestone(
+        state,
+        milestone.id,
+      ),
+    )
+    .filter((artifact): artifact is GoalSummaryCheckFailureRef => artifact !== null);
+
+  return Promise.all(
+    checkFailureRefs.map(async (ref): Promise<GoalSummaryCheckFailureRef> => {
+      try {
+        const resolvedPath = resolveRunArtifactPath(runDir, ref.path);
+        if (!resolvedPath.ok) {
+          return {
+            ...ref,
+            error: resolvedPath.error,
+          };
+        }
+
+        const raw = await readFile(resolvedPath.path, "utf8");
+        const parsedJson = safeJsonParse(raw);
+        if (!parsedJson.ok) {
+          return {
+            ...ref,
+            error: parsedJson.error,
+          };
+        }
+
+        const parsedSummary = parseCheckFailureSummaryArtifact(parsedJson.value);
+        if (!parsedSummary.ok) {
+          return {
+            ...ref,
+            error: parsedSummary.error,
+          };
+        }
+
+        return {
+          ...ref,
+          summary: parsedSummary.value,
+        };
+      } catch (error) {
+        return {
+          ...ref,
+          error: formatError(error),
+        };
+      }
+    }),
+  );
+}
+
 function latestArtifactForMilestone(
   artifacts: Record<string, string> | undefined,
   milestoneId: number,
+  attemptSources: GoalSummaryArtifactSource[],
 ): GoalSummaryArtifactRef | null {
   if (!artifacts) return null;
 
   const baseKey = String(milestoneId);
+  const basePath = artifacts[baseKey];
+  const attemptSourcePattern = attemptSources
+    .filter((source) => source !== "base")
+    .join("|");
+  const attemptKeyPattern = new RegExp(
+    `^${milestoneId}-(${attemptSourcePattern})-(\\d+)$`,
+  );
+  const baseAttempt = basePath
+    ? artifactAttemptMatchingPath(artifacts, attemptKeyPattern, basePath)
+    : null;
+
+  if (basePath && baseAttempt) {
+    return {
+      milestoneId,
+      stateKey: baseKey,
+      path: basePath,
+      attempt: baseAttempt.attempt,
+      artifactSource: baseAttempt.artifactSource,
+    };
+  }
+
   let selected:
     | {
         stateKey: string;
         path: string;
         attempt: number | null;
+        artifactSource: GoalSummaryArtifactSource;
       }
-    | null = artifacts[baseKey]
-    ? { stateKey: baseKey, path: artifacts[baseKey], attempt: null }
+    | null = basePath
+    ? {
+        stateKey: baseKey,
+        path: basePath,
+        attempt: null,
+        artifactSource: "base",
+      }
     : null;
 
-  const fixKeyPattern = new RegExp(`^${milestoneId}-fix-(\\d+)$`);
   for (const [stateKey, artifactPath] of Object.entries(artifacts)) {
-    const match = fixKeyPattern.exec(stateKey);
+    const match = attemptKeyPattern.exec(stateKey);
     if (!match) continue;
 
-    const attempt = Number(match[1]);
-    if (selected?.attempt !== null && selected?.attempt !== undefined && selected.attempt >= attempt) {
+    const artifactSource = match[1] as GoalSummaryArtifactSource;
+    const attempt = Number(match[2]);
+    if (
+      selected !== null &&
+      compareArtifactRefOrder({ artifactSource, attempt }, selected) <= 0
+    ) {
       continue;
     }
 
@@ -381,6 +497,7 @@ function latestArtifactForMilestone(
       stateKey,
       path: artifactPath,
       attempt,
+      artifactSource,
     };
   }
 
@@ -392,6 +509,167 @@ function latestArtifactForMilestone(
   };
 }
 
+function artifactAttemptMatchingPath(
+  artifacts: Record<string, string>,
+  attemptKeyPattern: RegExp,
+  artifactPath: string,
+): { artifactSource: GoalSummaryArtifactSource; attempt: number } | null {
+  let selected: { artifactSource: GoalSummaryArtifactSource; attempt: number } | null = null;
+
+  for (const [stateKey, candidatePath] of Object.entries(artifacts)) {
+    if (candidatePath !== artifactPath) continue;
+
+    const match = attemptKeyPattern.exec(stateKey);
+    if (!match) continue;
+
+    const artifactSource = match[1] as GoalSummaryArtifactSource;
+    const attempt = Number(match[2]);
+    if (!Number.isInteger(attempt) || attempt < 1) continue;
+
+    if (
+      selected !== null &&
+      compareArtifactRefOrder({ artifactSource, attempt }, selected) <= 0
+    ) {
+      continue;
+    }
+
+    selected = { artifactSource, attempt };
+  }
+
+  return selected;
+}
+
+function latestCheckFailureArtifactForMilestone(
+  state: RunState,
+  milestoneId: number,
+): GoalSummaryCheckFailureRef | null {
+  const artifacts = state.artifacts.checkFailures;
+  if (!artifacts) return null;
+
+  const lastErrorSelection = checkFailureArtifactFromLastError(state, milestoneId, artifacts);
+  if (lastErrorSelection) {
+    return {
+      milestoneId,
+      ...lastErrorSelection,
+    };
+  }
+
+  let selected:
+    | {
+        stateKey: string;
+        path: string;
+        attempt: number;
+        source: "failed" | "repair" | "recheck";
+      }
+    | null = null;
+
+  const keyPattern = new RegExp(`^${milestoneId}-(failed|repair|recheck)-(\\d+)$`);
+  for (const [stateKey, artifactPath] of Object.entries(artifacts)) {
+    const match = keyPattern.exec(stateKey);
+    if (!match) continue;
+
+    const source = match[1] as "failed" | "repair" | "recheck";
+    const attempt = Number(match[2]);
+    if (
+      selected &&
+      compareCheckFailureOrder(
+        { source, attempt },
+        { source: selected.source, attempt: selected.attempt },
+      ) <= 0
+    ) {
+      continue;
+    }
+
+    selected = {
+      stateKey,
+      path: artifactPath,
+      attempt,
+      source,
+    };
+  }
+
+  if (!selected) return null;
+
+  return {
+    milestoneId,
+    stateKey: selected.stateKey,
+    path: selected.path,
+    attempt: selected.attempt,
+    source: selected.source,
+  };
+}
+
+function checkFailureArtifactFromLastError(
+  state: RunState,
+  milestoneId: number,
+  artifacts: Record<string, string>,
+): Omit<GoalSummaryCheckFailureRef, "milestoneId"> | null {
+  const statePath = lastErrorCheckFailurePath(state);
+  if (!statePath) return null;
+
+  for (const [stateKey, artifactPath] of Object.entries(artifacts)) {
+    if (artifactPath !== statePath) continue;
+
+    const parsed = parseCheckFailureArtifactKey(milestoneId, stateKey);
+    if (!parsed) continue;
+
+    return {
+      stateKey,
+      path: artifactPath,
+      attempt: parsed.attempt,
+      source: parsed.source,
+    };
+  }
+
+  return null;
+}
+
+function lastErrorCheckFailurePath(state: RunState): string | null {
+  const details = state.lastError?.details;
+  if (!isRecord(details)) return null;
+
+  if (typeof details.checkFailureSummary === "string") {
+    return details.checkFailureSummary;
+  }
+
+  if (typeof details.latestCheckFailureSummary === "string") {
+    return details.latestCheckFailureSummary;
+  }
+
+  return null;
+}
+
+function parseCheckFailureArtifactKey(
+  milestoneId: number,
+  stateKey: string,
+): { source: "failed" | "repair" | "recheck"; attempt: number } | null {
+  const match = new RegExp(`^${milestoneId}-(failed|repair|recheck)-(\\d+)$`).exec(stateKey);
+  if (!match) return null;
+
+  const attempt = Number(match[2]);
+  if (!Number.isInteger(attempt) || attempt < 1) return null;
+
+  return {
+    source: match[1] as "failed" | "repair" | "recheck",
+    attempt,
+  };
+}
+
+function compareCheckFailureOrder(
+  left: { source: "failed" | "repair" | "recheck"; attempt: number },
+  right: { source: "failed" | "repair" | "recheck"; attempt: number },
+): number {
+  const sourceRank = {
+    failed: 0,
+    repair: 1,
+    recheck: 2,
+  };
+  const leftRank = sourceRank[left.source];
+  const rightRank = sourceRank[right.source];
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return left.attempt - right.attempt;
+}
+
 function buildResidualRisks(options: {
   state: RunState;
   metadata: MilestoneMetadata;
@@ -400,6 +678,7 @@ function buildResidualRisks(options: {
   latestChecks: GoalSummaryArtifactRef[];
   latestReviews: GoalSummaryReviewRef[];
   autonomousDecisions: GoalSummaryAutonomousDecisionRef[];
+  latestCheckFailures: GoalSummaryCheckFailureRef[];
 }): string[] {
   const risks: string[] = [];
 
@@ -419,6 +698,13 @@ function buildResidualRisks(options: {
   }
 
   if (options.state.status !== "passed") {
+    for (const checkFailure of options.latestCheckFailures) {
+      if (!checkFailure.error) continue;
+      risks.push(
+        `Milestone ${checkFailure.milestoneId} check-failure artifact ${checkFailure.path} could not be parsed: ${checkFailure.error}`,
+      );
+    }
+
     for (const decision of options.autonomousDecisions) {
       if (decision.error === undefined && decision.status !== "unresolved") continue;
       const subject = formatAutonomousDecisionSubject(decision);
@@ -479,7 +765,7 @@ function formatArtifactRefs(
   if (refs.length === 0) return [`- ${emptyText}`];
 
   return refs.map((ref) => {
-    const suffix = ref.attempt === null ? "" : ` (after fix ${ref.attempt})`;
+    const suffix = artifactRefSuffix(ref);
     return `- Milestone ${ref.milestoneId}: ${ref.path}${suffix}`;
   });
 }
@@ -490,9 +776,93 @@ function formatReviewRefs(refs: GoalSummaryReviewRef[]): string[] {
   return refs.map((ref) => {
     const verdict = ref.verdict ? ` (${ref.verdict.verdict})` : "";
     const error = ref.error ? ` (unreadable: ${ref.error})` : "";
-    const suffix = ref.attempt === null ? "" : ` (after fix ${ref.attempt})`;
+    const suffix = artifactRefSuffix(ref);
     return `- Milestone ${ref.milestoneId}: ${ref.path}${suffix}${verdict}${error}`;
   });
+}
+
+function artifactRefSuffix(ref: GoalSummaryArtifactRef): string {
+  if (ref.attempt === null) return "";
+
+  switch (ref.artifactSource ?? "fix") {
+    case "fix":
+      return ` (after fix ${ref.attempt})`;
+    case "repair":
+      return ` (after check repair ${ref.attempt})`;
+    case "recheck":
+      return ` (manual recheck ${ref.attempt})`;
+    case "base":
+      return "";
+  }
+}
+
+function compareArtifactRefOrder(
+  left: {
+    artifactSource: GoalSummaryArtifactSource;
+    attempt: number | null;
+  },
+  right: {
+    artifactSource: GoalSummaryArtifactSource;
+    attempt: number | null;
+  },
+): number {
+  const sourceRank = {
+    base: 0,
+    fix: 1,
+    repair: 2,
+    recheck: 3,
+  };
+  const sourceDelta =
+    sourceRank[left.artifactSource] - sourceRank[right.artifactSource];
+  if (sourceDelta !== 0) return sourceDelta;
+
+  return (left.attempt ?? 0) - (right.attempt ?? 0);
+}
+
+function formatCheckFailureRefs(refs: GoalSummaryCheckFailureRef[]): string[] {
+  if (refs.length === 0) return ["- No check-failure summaries recorded."];
+
+  return refs.map((ref) => {
+    const summary = ref.summary;
+    const source = formatCheckFailureSource(ref.source, ref.attempt);
+    const unreadable = ref.error ? ` (unreadable: ${ref.error})` : "";
+    if (!summary) {
+      return `- Milestone ${ref.milestoneId}: ${ref.path} (${source})${unreadable}`;
+    }
+
+    const firstFailedCheck = summary.failedChecks[0];
+    const command = firstFailedCheck ? `; command: ${firstFailedCheck.command}` : "";
+    const tests =
+      firstFailedCheck && firstFailedCheck.failingNodeTestNames.length > 0
+        ? `; tests: ${firstFailedCheck.failingNodeTestNames.join("; ")}`
+        : "";
+    const errors =
+      firstFailedCheck && firstFailedCheck.assertionMessages.length > 0
+        ? `; errors: ${firstFailedCheck.assertionMessages.join("; ")}`
+        : "";
+
+    return [
+      `- Milestone ${ref.milestoneId}: ${ref.path}`,
+      `(${source}; failed ${summary.failedCheckCount}/${summary.totalCheckCount}`,
+      `; full report: ${summary.fullCheckReportArtifactPath}${command}${tests}${errors})`,
+      unreadable,
+    ].join("");
+  });
+}
+
+function formatCheckFailureSource(
+  source: GoalSummaryCheckFailureRef["source"],
+  attempt: number | null,
+): string {
+  const attemptLabel = attempt === null ? "unknown attempt" : `attempt ${attempt}`;
+  switch (source) {
+    case "failed":
+      return `initial failed checks ${attemptLabel}`;
+    case "repair":
+      return `check repair ${attemptLabel}`;
+    case "recheck":
+      return `manual recheck ${attemptLabel}`;
+  }
 }
 
 async function readAutonomousDecisionArtifacts(
@@ -860,6 +1230,14 @@ function sortJson(value: unknown): unknown {
   }
 
   return value;
+}
+
+function safeJsonParse(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (error) {
+    return { ok: false, error: `Invalid JSON: ${formatError(error)}` };
+  }
 }
 
 function formatError(error: unknown): string {

@@ -43,6 +43,8 @@ export function createInitialState(options: CreateInitialStateOptions): RunState
     },
     milestoneStatuses: {},
     fixAttempts: {},
+    checkFixAttempts: {},
+    milestoneBaselines: {},
     artifacts: {
       goal: toRunRelativePath(options.paths.runDir, options.paths.files.goal),
       ...(options.inputArtifacts === undefined ? {} : { inputs: options.inputArtifacts }),

@@ -152,6 +152,8 @@ test("major plan prompt exposes and renders initial context", async () => {
     assert.match(rendered.value, /Initial context files:/);
     assert.match(rendered.value, /README\.md/);
     assert.match(rendered.value, /docs\/architecture\.md/);
+    assert.match(rendered.value, /Do not add `\.agent-work` paths/);
+    assert.match(rendered.value, /dedicated ledger files/);
   }
 });
 
@@ -190,6 +192,7 @@ test("milestone prompts expose the expected implementation variables", async () 
     "milestone-plan-review",
     "final-milestone-plan",
     "implement-milestone",
+    "fix-check-failures",
   ], {
     cwd: process.cwd(),
   });
@@ -228,6 +231,19 @@ test("milestone prompts expose the expected implementation variables", async () 
     "milestonePlan",
     "state",
   ]);
+  assert.deepEqual(findPromptVariables(prompts.value["fix-check-failures"]?.text ?? ""), [
+    "activeMilestone",
+    "checkFailureSummary",
+    "checkFixAttempts",
+    "finalMajorPlan",
+    "goal",
+    "implementationReport",
+    "latestDiff",
+    "latestFailedCheckReport",
+    "maxCheckFixAttempts",
+    "milestonePlan",
+    "state",
+  ]);
 });
 
 test("milestone prompts render with workflow-shaped values", async () => {
@@ -236,6 +252,7 @@ test("milestone prompts render with workflow-shaped values", async () => {
     "milestone-plan-review",
     "final-milestone-plan",
     "implement-milestone",
+    "fix-check-failures",
   ], {
     cwd: process.cwd(),
   });
@@ -255,6 +272,8 @@ test("milestone prompts render with workflow-shaped values", async () => {
     assert.match(planPrompt.value, /Add feature X/);
     assert.match(planPrompt.value, /Milestone 1/);
     assert.match(planPrompt.value, /Do not implement code/);
+    assert.match(planPrompt.value, /Do not tell the implementation agent to write `\.agent-work` paths/);
+    assert.match(planPrompt.value, /dedicated ledger files/);
   }
 
   const planReviewPrompt = renderPrompt(
@@ -293,6 +312,7 @@ test("milestone prompts render with workflow-shaped values", async () => {
     assert.match(finalPlanPrompt.value, /Milestone 1/);
     assert.match(finalPlanPrompt.value, /Tighten validation/);
     assert.match(finalPlanPrompt.value, /Write only the corrected Markdown implementation plan/);
+    assert.match(finalPlanPrompt.value, /Do not tell implementation agents to write `\.agent-work` paths/);
     assert.match(finalPlanPrompt.value, /Do not include commentary before or after/);
   }
 
@@ -308,6 +328,30 @@ test("milestone prompts render with workflow-shaped values", async () => {
     assert.match(implementationPrompt.value, /Implement only the active milestone/);
     assert.match(implementationPrompt.value, /Do not create commits/);
     assert.match(implementationPrompt.value, /# Milestone Plan/);
+  }
+
+  const checkRepairPrompt = renderPrompt(
+    prompts.value["fix-check-failures"]?.text ?? "",
+    {
+      goal: "Add feature X",
+      finalMajorPlan: "# Final Plan",
+      activeMilestone: { id: 1, title: "Milestone 1" },
+      milestonePlan: "# Milestone Plan",
+      implementationReport: "# Implementation",
+      latestDiff: "diff --git a/file b/file",
+      latestFailedCheckReport: "Overall: failed",
+      checkFailureSummary: "Failed check 1: npm test",
+      checkFixAttempts: 1,
+      maxCheckFixAttempts: 2,
+      state: { currentPhase: "checks_failed" },
+    },
+  );
+  assert.equal(checkRepairPrompt.ok, true);
+  if (checkRepairPrompt.ok) {
+    assert.match(checkRepairPrompt.value, /Fix only the deterministic check failures/);
+    assert.match(checkRepairPrompt.value, /Do not create commits/);
+    assert.match(checkRepairPrompt.value, /Overall: failed/);
+    assert.match(checkRepairPrompt.value, /Failed check 1: npm test/);
   }
 });
 
@@ -546,6 +590,7 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
     "resolve-review-ambiguity",
     "resolve-resume-state",
     "fix-review-findings",
+    "fix-check-failures",
   ], {
     cwd: process.cwd(),
   });
@@ -571,6 +616,10 @@ test("real-run prompts keep orchestration and output contracts explicit", async 
 
   assert.match(text("milestone-plan"), /Do not tell the implementation agent to create commits/);
   assert.match(text("milestone-plan"), /Do not produce an inspection-only or no-op milestone plan/);
+  assert.match(text("fix-check-failures"), /Fix only the deterministic check failures/);
+  assert.match(text("fix-check-failures"), /orchestrator will capture the Git diff, rerun all configured checks/i);
+  assert.match(text("fix-check-failures"), /Do not create commits/);
+  assert.match(text("fix-check-failures"), /Structured check-failure summary/);
 
   assert.match(text("milestone-plan-review"), /implementation agents orchestration authority/);
   assert.match(text("milestone-plan-review"), /Return a concise Markdown review/);

@@ -4,13 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildMilestoneArtifactPaths } from "../../src/artifacts/milestone-artifacts.js";
+import {
+  buildCheckFailureArtifactPath,
+  buildCheckRepairAttemptArtifactPaths,
+  buildMilestoneArtifactPaths,
+  buildRecheckAttemptArtifactPaths,
+} from "../../src/artifacts/milestone-artifacts.js";
 import {
   buildBaseReviewArtifactPaths,
   buildFixAttemptArtifactPaths,
 } from "../../src/artifacts/review-artifacts.js";
 import { buildRunPaths, type RunPaths } from "../../src/artifacts/paths.js";
 import { writeJsonArtifact } from "../../src/artifacts/planning-artifacts.js";
+import { buildCheckFailureSummaryArtifact } from "../../src/checks/check-failure-summary.js";
 import { createRunDirectory } from "../../src/artifacts/run-directory.js";
 import type { MilestoneMetadata } from "../../src/milestones/milestone-types.js";
 import { writeGoalSummary } from "../../src/orchestration/goal-summary.js";
@@ -119,6 +125,122 @@ test("writeGoalSummary writes a passed summary with changed files, artifacts, an
     assert.match(content, /Milestone 1: 1/);
     assert.match(content, /Milestone 2: 0/);
     assert.match(content, /Nonblocking finding from milestone 1 \(src\/app\.ts\): Minor cleanup remains\./);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("writeGoalSummary labels latest manual recheck check artifacts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
+  try {
+    const paths = buildRunPaths({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-1",
+    });
+    await createRunDirectory(paths, "Recheck failed milestone");
+
+    const metadata = testMilestoneMetadata();
+    const milestone1Paths = buildMilestoneArtifactPaths(paths, 1);
+    const milestone1RecheckPaths = buildRecheckAttemptArtifactPaths(paths, 1, 1);
+    const state: RunState = {
+      ...baseState(paths, tempDir),
+      currentPhase: "checks_failed",
+      status: "checks_failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "checks_failed",
+        "2": "pending",
+      },
+      artifacts: {
+        ...baseState(paths, tempDir).artifacts,
+        checks: {
+          "1": milestone1Paths.statePaths.checks,
+          "1-recheck-1": milestone1RecheckPaths.statePaths.checks,
+        },
+      },
+      lastError: {
+        message: "Checks failed during manual recheck attempt 1 for milestone 1.",
+        phase: "checks_failed",
+        occurredAt: "2026-05-10T12:00:00.000Z",
+      },
+      updatedAt: "2026-05-10T12:00:00.000Z",
+    };
+
+    const result = await writeGoalSummary({
+      paths,
+      state,
+      metadata,
+      cwd: tempDir,
+      commandRunner: diffRunner({ stdout: "" }),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    assert.match(
+      result.content,
+      /Milestone 1: checks\/31-milestone-1-recheck-1\.txt \(manual recheck 1\)/,
+    );
+    assert.match(result.content, /Stop reason: Checks failed during manual recheck attempt 1/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("writeGoalSummary prefers an advanced base pointer over stale recovery attempts", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
+  try {
+    const paths = buildRunPaths({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-1",
+    });
+    await createRunDirectory(paths, "Repair after failed recheck");
+
+    const metadata = testMilestoneMetadata();
+    const milestone1RepairPaths = buildCheckRepairAttemptArtifactPaths(paths, 1, 1);
+    const milestone1RecheckPaths = buildRecheckAttemptArtifactPaths(paths, 1, 1);
+    const state: RunState = {
+      ...baseState(paths, tempDir),
+      currentPhase: "ready_for_review",
+      status: "ready_for_review",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "ready_for_review",
+        "2": "pending",
+      },
+      artifacts: {
+        ...baseState(paths, tempDir).artifacts,
+        checks: {
+          "1": milestone1RepairPaths.statePaths.checks,
+          "1-recheck-1": milestone1RecheckPaths.statePaths.checks,
+          "1-repair-1": milestone1RepairPaths.statePaths.checks,
+        },
+      },
+      lastError: null,
+      updatedAt: "2026-05-10T12:00:00.000Z",
+    };
+
+    const result = await writeGoalSummary({
+      paths,
+      state,
+      metadata,
+      cwd: tempDir,
+      commandRunner: diffRunner({ stdout: "" }),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    assert.match(
+      result.content,
+      /Milestone 1: checks\/23-milestone-1-checks-after-check-repair-1\.txt \(after check repair 1\)/,
+    );
+    assert.doesNotMatch(
+      result.content,
+      /Milestone 1: checks\/31-milestone-1-recheck-1\.txt \(manual recheck 1\)/,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -303,6 +425,97 @@ test("writeGoalSummary writes blocked summaries with stop diagnostics and change
     assert.match(content, /Stop details: \{"pendingMilestoneIds":\[2\]\}/);
     assert.match(content, /Diagnostic: Selector returned blocked\. Details: \{"pendingMilestoneIds":\[2\]\}/);
     assert.match(content, /Changed-file capture failed: git diff --name-only exited with code 1: fatal: bad revision/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("writeGoalSummary includes structured check-failure summaries", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "milestone-runner-goal-summary-"));
+  try {
+    const paths = buildRunPaths({
+      cwd: tempDir,
+      artifactRoot: ".agent-work",
+      runId: "run-1",
+    });
+    await createRunDirectory(paths, "Add feature X");
+
+    const milestone1Paths = buildMilestoneArtifactPaths(paths, 1);
+    const failurePath = buildCheckFailureArtifactPath(paths, 1, 1);
+    await writeJsonArtifact(
+      failurePath.file,
+      buildCheckFailureSummaryArtifact({
+        milestoneId: 1,
+        attempt: 1,
+        stateKey: failurePath.stateKey,
+        fullCheckReportArtifactPath: milestone1Paths.statePaths.checks,
+        result: {
+          ok: false,
+          results: [
+            {
+              command: "node --test",
+              exitCode: 1,
+              stdout: "not ok 1 - rejects invalid config\n",
+              stderr: "Error: invalid config was accepted\n",
+              durationMs: 42,
+            },
+          ],
+          report: "Check results\n\nOverall: failed\n",
+        },
+        generatedAt: new Date("2026-05-10T12:00:00.000Z"),
+      }),
+    );
+
+    const state: RunState = {
+      ...baseState(paths, tempDir),
+      currentPhase: "checking",
+      status: "failed",
+      currentMilestoneId: 1,
+      milestoneStatuses: {
+        "1": "failed",
+        "2": "pending",
+      },
+      artifacts: {
+        ...baseState(paths, tempDir).artifacts,
+        checks: {
+          "1": milestone1Paths.statePaths.checks,
+        },
+        checkFailures: {
+          [failurePath.stateKey]: failurePath.statePath,
+        },
+      },
+      lastError: {
+        message: "Checks failed for milestone 1.",
+        phase: "checking",
+        occurredAt: "2026-05-10T12:00:00.000Z",
+        details: {
+          checkFailureSummary: failurePath.statePath,
+        },
+      },
+      updatedAt: "2026-05-10T12:00:00.000Z",
+    };
+
+    const result = await writeGoalSummary({
+      paths,
+      state,
+      metadata: testMilestoneMetadata(),
+      cwd: tempDir,
+      commandRunner: diffRunner({ stdout: "src/app.ts\n" }),
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    const content = await readFile(result.file, "utf8");
+    assert.match(content, /## Latest Check Failures/);
+    assert.match(
+      content,
+      /Milestone 1: checks\/13-milestone-1-check-failure-1\.json/,
+    );
+    assert.match(content, /full report: checks\/13-milestone-1-checks\.txt/);
+    assert.match(content, /command: node --test/);
+    assert.match(content, /tests: rejects invalid config/);
+    assert.match(content, /errors: invalid config was accepted/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -12,6 +12,8 @@ export interface BuildReviewEvidenceOptions {
     | { kind: "fix"; attempt: number };
   diff: string;
   packageJsonPath?: string;
+  seededMajorPlanPath?: string | null;
+  roadmapMutationAllowed?: boolean;
   maxSnippetMatches?: number;
   maxExcerptLines?: number;
   maxSnippets?: number;
@@ -152,6 +154,12 @@ export async function buildReviewEvidence(
   const warnings: ReviewEvidenceWarning[] = [];
   const context = resolveEvidenceContext(options, warnings);
   const claims = parseDiffClaims(options.diff);
+  appendSeededRoadmapPollutionWarnings({
+    addedMarkdownLines: claims.addedMarkdownLines,
+    options,
+    context,
+    warnings,
+  });
   const changedMarkdownFiles = new Set(
     claims.changedFiles.filter(isMarkdownPath).map(normalizeRelativePath),
   );
@@ -306,6 +314,90 @@ function parseDiffClaims(diff: string): DiffClaims {
     changedFiles: unique(changedFiles),
     addedMarkdownLines,
   };
+}
+
+function appendSeededRoadmapPollutionWarnings(options: {
+  addedMarkdownLines: AddedMarkdownLine[];
+  options: BuildReviewEvidenceOptions;
+  context: EvidenceContext;
+  warnings: ReviewEvidenceWarning[];
+}): void {
+  if (options.options.roadmapMutationAllowed === true) return;
+
+  const seededMajorPlanPath = normalizeSeededMajorPlanPath(
+    options.context.repoRoot,
+    options.options.seededMajorPlanPath,
+  );
+  if (seededMajorPlanPath === null) return;
+
+  for (const line of options.addedMarkdownLines) {
+    if (normalizeRelativePath(line.file) !== seededMajorPlanPath) continue;
+
+    const references = runSpecificRoadmapReferences(line.text, options.options.runId);
+    if (references.length === 0) continue;
+
+    options.warnings.push({
+      code: "seeded_roadmap_run_state_reference",
+      message:
+        `Seeded roadmap ${seededMajorPlanPath} added run-specific reference(s): ${references.join(", ")}. ` +
+        "Use orchestrator artifacts or dedicated ledger files unless roadmap edits were explicitly requested.",
+      file: seededMajorPlanPath,
+      snippet: truncateWarningSnippet(line.text),
+    });
+  }
+}
+
+function normalizeSeededMajorPlanPath(
+  repoRoot: string,
+  seededMajorPlanPath: string | null | undefined,
+): string | null {
+  if (!seededMajorPlanPath) return null;
+
+  const resolved = path.isAbsolute(seededMajorPlanPath)
+    ? path.resolve(seededMajorPlanPath)
+    : path.resolve(repoRoot, seededMajorPlanPath);
+  if (!pathIsInsideOrSame(repoRoot, resolved)) return null;
+
+  const relative = toRepoRelativePath(repoRoot, resolved);
+  return relative.length === 0 ? null : normalizeRelativePath(relative);
+}
+
+function runSpecificRoadmapReferences(text: string, runId: string): string[] {
+  const references: string[] = [];
+
+  if (/(^|[\s("'`])(?:\.\/)?\.agent-work(?:\/[A-Za-z0-9._<>/-]*)?/.test(text)) {
+    references.push(".agent-work path");
+  }
+
+  if (/\bstate\.json\b/.test(text)) {
+    references.push("state.json");
+  }
+
+  if (runId.length > 0 && text.includes(runId)) {
+    references.push("run id");
+  } else if (/\brun\s*id\b/i.test(text) || /\brunId\b/.test(text)) {
+    references.push("run id");
+  }
+
+  if (/\b(?:checks|diffs|fixes|logs|reviews|runner)\/[A-Za-z0-9._<>/-]+/.test(text)) {
+    references.push("run artifact path");
+  }
+
+  if (
+    /\b(?:currentPhase|current phase|current status|ready_for_milestone|ready_for_review|checks_failed|repairing_checks|rechecking|needs_human_review)\b/i.test(
+      text,
+    )
+  ) {
+    references.push("transient execution status");
+  }
+
+  return unique(references);
+}
+
+function truncateWarningSnippet(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= 160) return trimmed;
+  return `${trimmed.slice(0, 157)}...`;
 }
 
 function extractReviewEvidenceSnippets(

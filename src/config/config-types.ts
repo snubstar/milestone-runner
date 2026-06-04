@@ -27,6 +27,7 @@ export interface OrchestratorConfig {
   checks: string[];
   runner: RunnerConfig;
   maxFixAttempts: number;
+  maxCheckFixAttempts?: number;
   artifactRoot: string;
   milestonePlanPolicy: MilestonePlanPolicy;
   milestonePlanReviewPolicy: MilestonePlanReviewPolicy;

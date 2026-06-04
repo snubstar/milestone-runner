@@ -273,7 +273,7 @@ async function readRunState(
     };
   }
 
-  return { ok: true, state: parsed };
+  return { ok: true, state: normalizeRunState(parsed) };
 }
 
 async function readRunArtifacts(options: {
@@ -885,6 +885,7 @@ function groupForStateArtifact(field: string): DashboardArtifactGroup | null {
     case "diffs":
       return "diffs";
     case "checks":
+    case "checkFailures":
       return "checks";
     case "reviews":
       return "reviews";
@@ -897,6 +898,27 @@ function groupForStateArtifact(field: string): DashboardArtifactGroup | null {
     default:
       return null;
   }
+}
+
+function normalizeRunState(state: RunState): RunState {
+  return {
+    ...state,
+    checkFixAttempts: normalizeNumberRecord(state.checkFixAttempts),
+    milestoneBaselines: normalizeStringRecord(state.milestoneBaselines),
+  };
+}
+
+function normalizeNumberRecord(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, number] => {
+      return entry[0].length > 0 &&
+        typeof entry[1] === "number" &&
+        Number.isInteger(entry[1]) &&
+        entry[1] >= 0;
+    }),
+  );
 }
 
 function milestoneIdFromKeyPath(keyPath: string[]): number | null {
@@ -937,7 +959,9 @@ function compareArtifactLinks(left: DashboardArtifactLink, right: DashboardArtif
   return left.relativePath.localeCompare(right.relativePath);
 }
 
-function normalizeStringRecord(value: Record<string, unknown>): Record<string, string> {
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+
   return Object.fromEntries(
     Object.entries(value).filter((entry): entry is [string, string] => {
       return typeof entry[1] === "string";

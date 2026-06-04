@@ -85,6 +85,8 @@ test("createInitialState writes required initial fields", async () => {
     assert.equal(state.currentPhase, "initialized");
     assert.equal(state.status, "initialized");
     assert.equal(state.currentMilestoneId, null);
+    assert.deepEqual(state.checkFixAttempts, {});
+    assert.deepEqual(state.milestoneBaselines, {});
     assert.equal(state.artifacts.goal, "00-goal.txt");
     assert.deepEqual(state.artifacts.logs, { run: "logs/run.log" });
     assert.equal(state.createdAt, "2026-05-10T12:34:56.789Z");
